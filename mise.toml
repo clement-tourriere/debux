@@ -1,2 +1,43 @@
 [tools]
 go = "latest"
+
+[vars]
+binary = "debux"
+image = "ghcr.io/clement-tourriere/debux:latest"
+
+[tasks.build]
+description = "Build the binary with CGO disabled"
+run = "CGO_ENABLED=0 go build -o bin/$MISE_VARS_BINARY ./cmd/debux"
+
+[tasks.build-dev]
+description = "Build the binary for development (with CGO)"
+run = "go build -o bin/$MISE_VARS_BINARY ./cmd/debux"
+
+[tasks.install]
+description = "Build and install the binary to /usr/local/bin"
+depends = ["build"]
+run = "cp bin/$MISE_VARS_BINARY /usr/local/bin/$MISE_VARS_BINARY"
+
+[tasks.image-build]
+description = "Build the Docker debug image"
+run = "docker build -t $MISE_VARS_IMAGE -f images/debug/Dockerfile ."
+
+[tasks.image-push]
+description = "Push the Docker debug image"
+run = "docker push $MISE_VARS_IMAGE"
+
+[tasks.dev]
+description = "Build binary and Docker image for development"
+depends = ["build", "image-build"]
+
+[tasks.clean]
+description = "Remove build artifacts"
+run = "rm -rf bin/"
+
+[tasks.test]
+description = "Run tests"
+run = "go test ./..."
+
+[tasks.lint]
+description = "Run linter"
+run = "go vet ./..."

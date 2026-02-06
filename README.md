@@ -21,8 +21,8 @@ Existing solutions like `kubectl debug` or `docker exec` fall short when your co
 ```bash
 git clone https://github.com/clement-tourriere/debux.git
 cd debux
-make install        # Builds and copies to /usr/local/bin
-make image-build    # Build the debug image
+mise run install        # Builds and copies to /usr/local/bin
+mise run image-build    # Build the debug image
 ```
 
 ## Quick start
@@ -225,14 +225,14 @@ Packages installed with `dctl` persist across debug sessions:
 ## Build
 
 ```bash
-make build          # Build static binary → bin/debux
-make build-dev      # Build with CGO (for development)
-make image-build    # Build the debug Docker image
-make image-push     # Push image to ghcr.io
-make dev            # Build both binary and image
-make test           # Run tests
-make lint           # Run go vet
-make clean          # Remove build artifacts
+mise run build          # Build static binary → bin/debux
+mise run build-dev      # Build with CGO (for development)
+mise run image-build    # Build the debug Docker image
+mise run image-push     # Push image to ghcr.io
+mise run dev            # Build both binary and image
+mise run test           # Run tests
+mise run lint           # Run go vet
+mise run clean          # Remove build artifacts
 ```
 
 ## Roadmap
