@@ -59,6 +59,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 		User:         flagUser,
 		AutoRemove:   flagRemove,
 		ShareVolumes: !flagNoVolumes,
+		PullPolicy:   flagPullPolicy,
+		Fresh:        flagFresh,
 	}
 
 	switch target.Runtime {

@@ -19,6 +19,7 @@ export PATH="/nix/var/debux-profile/bin:/usr/local/bin:/root/.nix-profile/bin:$P
 
 # Export target root for easy access
 export DEBUX_TARGET_ROOT="/proc/1/root"
+ln -sfn "$DEBUX_TARGET_ROOT" /target 2>/dev/null || true
 
 # Create convenience symlinks for target filesystem
 ln -sf "$DEBUX_TARGET_ROOT/etc/hosts" /etc/hosts 2>/dev/null || true
@@ -27,5 +28,8 @@ ln -sf "$DEBUX_TARGET_ROOT/etc/resolv.conf" /etc/resolv.conf 2>/dev/null || true
 # Ensure persistent data directory exists (for shell history etc.)
 mkdir -p /nix/var/debux-data
 
-# Launch shell
+# Launch shell (or daemon mode for k8s container reuse)
+if [ "${DEBUX_DAEMON:-}" = "1" ]; then
+  exec tail -f /dev/null
+fi
 exec zsh

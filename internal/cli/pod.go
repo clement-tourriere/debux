@@ -44,6 +44,7 @@ func runPod(cmd *cobra.Command, args []string) error {
 		HostNetwork: hostNetwork,
 		Privileged:  flagPrivileged,
 		User:        flagUser,
+		PullPolicy:  flagPullPolicy,
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

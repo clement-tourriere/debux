@@ -92,7 +92,10 @@ echo "Volumes from target:"
 awk '!/\/(nix|proc|sys|dev)|overlay/{print "  " $2 " (" $3 ")"}' /proc/self/mounts 2>/dev/null || true
 echo ""
 
-# Launch shell
+# Launch shell (or daemon mode for k8s container reuse)
+if [ "${DEBUX_DAEMON:-}" = "1" ]; then
+  exec tail -f /dev/null
+fi
 exec zsh
 `
 

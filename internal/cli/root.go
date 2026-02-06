@@ -10,6 +10,8 @@ var (
 	flagUser       string
 	flagRemove     bool
 	flagNoVolumes  bool
+	flagPullPolicy string
+	flagFresh      bool
 )
 
 func NewRootCmd() *cobra.Command {
@@ -40,6 +42,8 @@ Target formats:
 	cmd.PersistentFlags().StringVar(&flagUser, "user", "", "Run as specific user (uid:gid)")
 	cmd.PersistentFlags().BoolVar(&flagRemove, "rm", true, "Auto-remove debug container on exit")
 	cmd.PersistentFlags().BoolVar(&flagNoVolumes, "no-volumes", false, "Don't share target container's volumes")
+	cmd.PersistentFlags().StringVar(&flagPullPolicy, "pull-policy", "IfNotPresent", "Image pull policy for Kubernetes (Always, IfNotPresent, Never)")
+	cmd.PersistentFlags().BoolVar(&flagFresh, "fresh", false, "Force a new debug container instead of reusing an existing one (Kubernetes)")
 	cmd.PersistentFlags().String("kubeconfig", "", "Override kubeconfig path")
 
 	cmd.AddCommand(newExecCmd())

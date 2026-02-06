@@ -22,7 +22,9 @@ type DebugOpts struct {
 	User         string
 	AutoRemove   bool
 	Kubeconfig   string
-	ShareVolumes bool // share target container's volumes (default: true)
+	ShareVolumes bool   // share target container's volumes (default: true)
+	PullPolicy   string // Kubernetes image pull policy (Always, IfNotPresent, Never)
+	Fresh        bool   // force a new ephemeral container instead of reusing an existing one
 }
 
 // PodOpts are options for creating a standalone debug pod.
@@ -34,6 +36,7 @@ type PodOpts struct {
 	HostNetwork bool
 	Privileged  bool
 	User        string
+	PullPolicy  string
 }
 
 // ImageOpts are options for debugging a Docker image directly.
