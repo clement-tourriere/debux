@@ -44,6 +44,7 @@ Target formats:
 
 	cmd.AddCommand(newExecCmd())
 	cmd.AddCommand(newPodCmd())
+	cmd.AddCommand(newImageCmd())
 	cmd.AddCommand(newStoreCmd())
 
 	return cmd

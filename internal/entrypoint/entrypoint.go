@@ -95,3 +95,76 @@ echo ""
 # Launch shell
 exec zsh
 `
+
+// ImageScript is the entrypoint script for image debugging.
+// Unlike Script, it does NOT wait for PID namespace sharing (there is no
+// running target process). The image filesystem is copied into /target.
+const ImageScript = `#!/bin/sh
+set -e
+
+# Ensure PATH includes all tool locations
+export PATH="/nix/var/debux-profile/bin:/usr/local/bin:/root/.nix-profile/bin:$PATH"
+
+# Export target root for easy access
+export DEBUX_TARGET_ROOT="/target"
+
+# Ensure persistent data directory exists (for shell history etc.)
+mkdir -p /nix/var/debux-data
+
+# Write shell configuration (overrides image default)
+cat > /root/.zshrc << 'ZSHRC_EOF'
+# debux shell configuration
+
+# Enable syntax highlighting
+if [[ -f /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]]; then
+  source /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+fi
+
+# Enable autosuggestions
+if [[ -f /root/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then
+  source /root/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+fi
+
+# Source command-not-found handler
+if [[ -f /etc/zsh/command-not-found-handler ]]; then
+  source /etc/zsh/command-not-found-handler
+fi
+
+# Prompt
+target="${DEBUX_TARGET:-unknown}"
+PS1="%F{cyan}[debux]%f %F{magenta}image:${target}%f %F{blue}%~%f %# "
+
+# History — stored on persistent volume so it survives container restarts
+HISTFILE=/nix/var/debux-data/.zsh_history
+HISTSIZE=10000
+SAVEHIST=10000
+setopt SHARE_HISTORY
+setopt HIST_IGNORE_DUPS
+setopt HIST_IGNORE_SPACE
+setopt HIST_REDUCE_BLANKS
+setopt INC_APPEND_HISTORY
+
+# Aliases
+alias l='ls -lah --color=auto'
+alias ll='ls -alh --color=auto'
+alias la='ls -A --color=auto'
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
+alias ..='cd ..'
+alias ...='cd ../..'
+alias md='mkdir -p'
+alias rd='rmdir'
+
+# Target filesystem shortcut
+alias target='cd $DEBUX_TARGET_ROOT'
+
+# Key bindings
+bindkey -e
+ZSHRC_EOF
+
+echo "Image filesystem available at /target"
+echo ""
+
+# Launch shell
+exec zsh
+`

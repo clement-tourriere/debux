@@ -36,6 +36,14 @@ type PodOpts struct {
 	User        string
 }
 
+// ImageOpts are options for debugging a Docker image directly.
+type ImageOpts struct {
+	DebugImage string
+	Privileged bool
+	User       string
+	AutoRemove bool
+}
+
 // ParseTarget parses a target string into a Target struct.
 //
 // Formats:
