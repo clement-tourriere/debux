@@ -33,7 +33,7 @@ func DockerList(ctx context.Context) ([]ContainerInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connecting to Docker: %w", err)
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	containers, err := cli.ContainerList(ctx, container.ListOptions{})
 	if err != nil {
@@ -276,7 +276,7 @@ func DockerImage(ctx context.Context, imageRef string, opts ImageOpts) error {
 	if err != nil {
 		return fmt.Errorf("copying filesystem from target: %w", err)
 	}
-	defer tarReader.Close()
+	defer func() { _ = tarReader.Close() }()
 
 	// Ensure debug image and nix volumes
 	if err := dbximage.EnsureImage(ctx, cli, opts.DebugImage); err != nil {

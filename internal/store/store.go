@@ -51,7 +51,7 @@ func Clean(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("connecting to Docker: %w", err)
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	for _, name := range Volumes() {
 		if err := cli.VolumeRemove(ctx, name, true); err != nil {
@@ -67,7 +67,7 @@ func Info(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("connecting to Docker: %w", err)
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	f := filters.NewArgs(filters.Arg("label", "managed-by=debux"))
 	list, err := cli.VolumeList(ctx, volume.ListOptions{Filters: f})

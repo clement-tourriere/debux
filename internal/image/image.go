@@ -22,7 +22,7 @@ func EnsureImage(ctx context.Context, cli *client.Client, ref string) error {
 	if err != nil {
 		return fmt.Errorf("pulling image: %w", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	// Consume the pull output (docker requires reading the response)
 	dec := json.NewDecoder(reader)
