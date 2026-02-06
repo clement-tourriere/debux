@@ -128,6 +128,7 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		Env: []string{
 			fmt.Sprintf("DEBUX_TARGET=%s", target.Name),
 			fmt.Sprintf("DEBUX_TARGET_ID=%s", targetID),
+			"DEBUX_TARGET_ROOT=/proc/1/root",
 			"DEBUX_DAEMON=1",
 		},
 	}

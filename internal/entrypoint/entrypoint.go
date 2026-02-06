@@ -46,6 +46,10 @@ fi
 cat > "$DEBUX_HOME/.zshrc" << 'ZSHRC_EOF'
 # debux shell configuration
 
+# Ensure PATH includes all tool locations (needed for exec sessions in daemon mode)
+export PATH="/nix/var/debux-profile/bin:/usr/local/bin:${HOME:-/tmp}/.nix-profile/bin:${PATH}"
+export DEBUX_TARGET_ROOT="${DEBUX_TARGET_ROOT:-/proc/1/root}"
+
 # Enable syntax highlighting
 if [[ -f "${HOME:-/tmp}/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]]; then
   source "${HOME:-/tmp}/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
@@ -92,6 +96,9 @@ alias rd='rmdir'
 
 # Target filesystem shortcut
 alias target='cd $DEBUX_TARGET_ROOT'
+
+# Wrap dctl to rehash after install/remove so new binaries are found immediately
+dctl() { command dctl "$@"; local ret=$?; rehash; return $ret; }
 
 # Import target container environment variables
 _debux_import_target_env() {
