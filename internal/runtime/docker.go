@@ -10,6 +10,7 @@ import (
 	"github.com/ctourriere/debux/internal/entrypoint"
 	dbximage "github.com/ctourriere/debux/internal/image"
 	"github.com/ctourriere/debux/internal/store"
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
@@ -127,6 +128,15 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		Privileged: opts.Privileged,
 	}
 
+	// Share target container's volumes
+	if opts.ShareVolumes {
+		shared := targetMounts(targetInfo)
+		if len(shared) > 0 {
+			fmt.Printf("Sharing %d volume(s) from %s\n", len(shared), targetName)
+			hostConfig.Mounts = append(hostConfig.Mounts, shared...)
+		}
+	}
+
 	if opts.User != "" {
 		config.User = opts.User
 	}
@@ -220,6 +230,45 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	}
 
 	return nil
+}
+
+// targetMounts extracts the target container's mounts and converts them to
+// mount.Mount entries for the debug container, skipping paths reserved by debux.
+func targetMounts(info types.ContainerJSON) []mount.Mount {
+	if info.Mounts == nil {
+		return nil
+	}
+	// Paths used by the debug container itself — skip conflicts
+	reserved := map[string]bool{
+		"/nix/store": true,
+		"/nix/var":   true,
+	}
+	var mounts []mount.Mount
+	for _, mp := range info.Mounts {
+		if reserved[mp.Destination] {
+			continue
+		}
+		m := mount.Mount{
+			Type:     mp.Type,
+			Target:   mp.Destination,
+			ReadOnly: !mp.RW,
+		}
+		switch mp.Type {
+		case mount.TypeVolume:
+			m.Source = mp.Name
+		case mount.TypeBind:
+			m.Source = mp.Source
+			if mp.Propagation != "" {
+				m.BindOptions = &mount.BindOptions{Propagation: mp.Propagation}
+			}
+		case mount.TypeTmpfs:
+			// no source needed
+		default:
+			continue // skip unknown types
+		}
+		mounts = append(mounts, m)
+	}
+	return mounts
 }
 
 func resizeTTY(ctx context.Context, cli *client.Client, containerID string, fd uintptr) {

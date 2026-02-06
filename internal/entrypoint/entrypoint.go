@@ -87,6 +87,11 @@ alias target='cd $DEBUX_TARGET_ROOT'
 bindkey -e
 ZSHRC_EOF
 
+# Show shared volumes (read /proc/self/mounts directly — no external 'mount' command needed)
+echo "Volumes from target:"
+awk '!/\/(nix|proc|sys|dev)|overlay/{print "  " $2 " (" $3 ")"}' /proc/self/mounts 2>/dev/null || true
+echo ""
+
 # Launch shell
 exec zsh
 `

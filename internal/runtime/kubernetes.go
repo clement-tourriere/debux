@@ -106,6 +106,16 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		TargetContainerName: targetContainer,
 	}
 
+	// Share target container's volume mounts
+	if opts.ShareVolumes {
+		for _, c := range pod.Spec.Containers {
+			if c.Name == targetContainer {
+				ephemeralContainer.VolumeMounts = c.VolumeMounts
+				break
+			}
+		}
+	}
+
 	if opts.Privileged {
 		t := true
 		ephemeralContainer.SecurityContext = &corev1.SecurityContext{

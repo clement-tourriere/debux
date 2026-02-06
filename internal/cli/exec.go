@@ -54,10 +54,11 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}
 
 	opts := runtime.DebugOpts{
-		Image:      image,
-		Privileged: flagPrivileged,
-		User:       flagUser,
-		AutoRemove: flagRemove,
+		Image:        image,
+		Privileged:   flagPrivileged,
+		User:         flagUser,
+		AutoRemove:   flagRemove,
+		ShareVolumes: !flagNoVolumes,
 	}
 
 	switch target.Runtime {

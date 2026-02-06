@@ -17,11 +17,12 @@ type Target struct {
 
 // DebugOpts are options for debugging a running container.
 type DebugOpts struct {
-	Image      string
-	Privileged bool
-	User       string
-	AutoRemove bool
-	Kubeconfig string
+	Image        string
+	Privileged   bool
+	User         string
+	AutoRemove   bool
+	Kubeconfig   string
+	ShareVolumes bool // share target container's volumes (default: true)
 }
 
 // PodOpts are options for creating a standalone debug pod.

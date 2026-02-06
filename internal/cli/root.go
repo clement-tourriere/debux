@@ -9,6 +9,7 @@ var (
 	flagPrivileged bool
 	flagUser       string
 	flagRemove     bool
+	flagNoVolumes  bool
 )
 
 func NewRootCmd() *cobra.Command {
@@ -38,6 +39,7 @@ Target formats:
 	cmd.PersistentFlags().BoolVar(&flagPrivileged, "privileged", false, "Run debug container in privileged mode")
 	cmd.PersistentFlags().StringVar(&flagUser, "user", "", "Run as specific user (uid:gid)")
 	cmd.PersistentFlags().BoolVar(&flagRemove, "rm", true, "Auto-remove debug container on exit")
+	cmd.PersistentFlags().BoolVar(&flagNoVolumes, "no-volumes", false, "Don't share target container's volumes")
 	cmd.PersistentFlags().String("kubeconfig", "", "Override kubeconfig path")
 
 	cmd.AddCommand(newExecCmd())
