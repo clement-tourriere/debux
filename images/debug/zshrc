@@ -19,8 +19,13 @@ fi
 target="${DEBUX_TARGET:-unknown}"
 PS1="%F{cyan}[debux]%f %F{yellow}${target}%f %F{blue}%~%f %# "
 
-# History — stored on persistent volume so it survives container restarts
-HISTFILE=/nix/var/debux-data/.zsh_history
+# History — stored on persistent path so it survives exec sessions
+if [[ -d /nix/var/debux-data ]] && [[ -w /nix/var/debux-data ]]; then
+  HISTFILE=/nix/var/debux-data/.zsh_history
+else
+  mkdir -p /tmp/debux-data 2>/dev/null
+  HISTFILE=/tmp/debux-data/.zsh_history
+fi
 HISTSIZE=10000
 SAVEHIST=10000
 setopt SHARE_HISTORY

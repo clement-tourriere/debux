@@ -3,7 +3,6 @@ package runtime
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,7 +11,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -26,7 +24,13 @@ import (
 // SecurityContextForProfile returns the SecurityContext for the given profile.
 func SecurityContextForProfile(profile string) (*corev1.SecurityContext, error) {
 	switch profile {
-	case ProfileGeneral, ProfileBaseline, "":
+	case ProfileGeneral, "":
+		// Explicitly allow running as root so the debug container is not
+		// blocked by a pod-level runAsNonRoot constraint.
+		return &corev1.SecurityContext{
+			RunAsNonRoot: &[]bool{false}[0],
+		}, nil
+	case ProfileBaseline:
 		return nil, nil
 	case ProfileRestricted:
 		f := false
@@ -165,6 +169,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 				{Name: "DEBUX_TARGET", Value: target.Name},
 				{Name: "DEBUX_TARGET_ROOT", Value: "/proc/1/root"},
 				{Name: "DEBUX_DAEMON", Value: "1"},
+				{Name: "HOME", Value: "/root"},
 			},
 		},
 		TargetContainerName: targetContainer,
@@ -192,22 +197,12 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		ephemeralContainer.SecurityContext = sc
 	}
 
-	// Patch the pod to add the ephemeral container
-	patch := map[string]any{
-		"spec": map[string]any{
-			"ephemeralContainers": append(pod.Spec.EphemeralContainers, ephemeralContainer),
-		},
-	}
-
-	patchBytes, err := json.Marshal(patch)
+	// Add the ephemeral container to the pod spec and update via the
+	// ephemeralcontainers subresource (PUT), matching kubectl debug behavior.
+	pod.Spec.EphemeralContainers = append(pod.Spec.EphemeralContainers, ephemeralContainer)
+	patchedPod, err := clientset.CoreV1().Pods(namespace).UpdateEphemeralContainers(ctx, podName, pod, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("marshaling patch: %w", err)
-	}
-
-	patchedPod, err := clientset.CoreV1().Pods(namespace).Patch(ctx, podName,
-		types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{}, "ephemeralcontainers")
-	if err != nil {
-		return fmt.Errorf("patching pod with ephemeral container: %w", err)
+		return fmt.Errorf("updating ephemeral containers: %w", err)
 	}
 
 	// Verify the ephemeral container actually appears in the patched pod.
@@ -230,8 +225,11 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 
 	fmt.Printf("Waiting for debug container %q to start...\n", debugContainerName)
 
-	// Wait for the ephemeral container to be running
-	if err := waitForEphemeralContainer(ctx, clientset, namespace, podName, debugContainerName); err != nil {
+	// Wait for the ephemeral container to be running.
+	// Pass the resourceVersion from the update response so the watch starts
+	// from the right point and we don't miss status changes that happen
+	// between the update and the watch setup.
+	if err := waitForEphemeralContainer(ctx, clientset, namespace, podName, debugContainerName, patchedPod.ResourceVersion); err != nil {
 		return err
 	}
 
@@ -262,7 +260,7 @@ func execInPod(ctx context.Context, config *rest.Config, clientset *kubernetes.C
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: containerName,
-			Command:   []string{"sh", "-c", "export DEBUX_TARGET_ROOT=/proc/1/root; exec zsh"},
+			Command:   []string{"sh", "-c", "mkdir -p /nix/var/debux-data /tmp/debux-data 2>/dev/null; export DEBUX_TARGET_ROOT=/proc/1/root; exec zsh"},
 			Stdin:     true,
 			Stdout:    true,
 			Stderr:    true,
@@ -422,9 +420,10 @@ func getK8sClient(kubeconfig string) (*rest.Config, *kubernetes.Clientset, error
 	return config, clientset, nil
 }
 
-func waitForEphemeralContainer(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName, containerName string) error {
+func waitForEphemeralContainer(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName, containerName, resourceVersion string) error {
 	watcher, err := clientset.CoreV1().Pods(namespace).Watch(ctx, metav1.ListOptions{
-		FieldSelector: fmt.Sprintf("metadata.name=%s", podName),
+		FieldSelector:   fmt.Sprintf("metadata.name=%s", podName),
+		ResourceVersion: resourceVersion,
 	})
 	if err != nil {
 		return fmt.Errorf("watching pod: %w", err)
