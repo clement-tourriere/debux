@@ -1,7 +1,8 @@
 FROM nixos/nix:latest AS builder
 
 # Enable flakes (needed for dctl's nix build/search fallbacks)
-RUN echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf
+RUN echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf && \
+    echo "filter-syscalls = false" >> /etc/nix/nix.conf
 
 # Remove git-minimal that ships with the base image (conflicts with full git)
 RUN nix-env -e git-minimal 2>/dev/null || true
