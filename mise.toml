@@ -1,5 +1,7 @@
 [tools]
 go = "latest"
+"pipx:pre-commit" = { version = "latest", uvx_args = "--python-preference=system" }
+"go:github.com/golangci/golangci-lint/v2/cmd/golangci-lint" = "latest"
 
 [vars]
 binary = "debux"
@@ -40,4 +42,4 @@ run = "go test ./..."
 
 [tasks.lint]
 description = "Run linter"
-run = "go vet ./..."
+run = "golangci-lint run"

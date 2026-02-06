@@ -87,7 +87,7 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	if err != nil {
 		return fmt.Errorf("connecting to Docker: %w", err)
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	// Verify target container exists and is running
 	targetInfo, err := cli.ContainerInspect(ctx, target.Name)
@@ -268,7 +268,7 @@ func DockerImage(ctx context.Context, imageRef string, opts ImageOpts) error {
 	if err != nil {
 		return fmt.Errorf("connecting to Docker: %w", err)
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	// Check if the target image exists locally; if not, try pulling it.
 	// Unlike the debug image, the target may be a local-only build that
