@@ -14,9 +14,9 @@ description = "Build the binary for development (with CGO)"
 run = "go build -o bin/{{vars.binary}} ./cmd/debux"
 
 [tasks.install]
-description = "Build and install the binary to /usr/local/bin"
+description = "Build and install the binary to ~/.local/bin"
 depends = ["build"]
-run = "cp bin/{{vars.binary}} /usr/local/bin/{{vars.binary}}"
+run = "cp bin/{{vars.binary}} ~/.local/bin/{{vars.binary}}"
 
 [tasks.image-build]
 description = "Build the Docker debug image"
