@@ -26,6 +26,11 @@ func newPodCmd() *cobra.Command {
 }
 
 func runPod(cmd *cobra.Command, args []string) error {
+	profile, err := resolveProfile(cmd)
+	if err != nil {
+		return err
+	}
+
 	namespace, _ := cmd.Flags().GetString("namespace")
 	kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
 	keep, _ := cmd.Flags().GetBool("keep")
@@ -45,6 +50,7 @@ func runPod(cmd *cobra.Command, args []string) error {
 		Privileged:  flagPrivileged,
 		User:        flagUser,
 		PullPolicy:  flagPullPolicy,
+		Profile:     profile,
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

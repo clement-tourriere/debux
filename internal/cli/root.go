@@ -1,6 +1,11 @@
 package cli
 
 import (
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/clement-tourriere/debux/internal/runtime"
 	"github.com/spf13/cobra"
 )
 
@@ -12,6 +17,7 @@ var (
 	flagNoVolumes  bool
 	flagPullPolicy string
 	flagFresh      bool
+	flagProfile    string
 )
 
 func NewRootCmd() *cobra.Command {
@@ -45,6 +51,9 @@ Target formats:
 	cmd.PersistentFlags().StringVar(&flagPullPolicy, "pull-policy", "IfNotPresent", "Image pull policy for Kubernetes (Always, IfNotPresent, Never)")
 	cmd.PersistentFlags().BoolVar(&flagFresh, "fresh", false, "Force a new debug container instead of reusing an existing one (Kubernetes)")
 	cmd.PersistentFlags().String("kubeconfig", "", "Override kubeconfig path")
+	cmd.PersistentFlags().StringVar(&flagProfile, "profile", "general",
+		fmt.Sprintf("Security profile for Kubernetes (%s)", strings.Join(runtime.ValidProfiles, ", ")))
+	_ = cmd.PersistentFlags().MarkDeprecated("privileged", "use --profile=sysadmin instead")
 
 	cmd.AddCommand(newExecCmd())
 	cmd.AddCommand(newPodCmd())
@@ -52,6 +61,38 @@ Target formats:
 	cmd.AddCommand(newStoreCmd())
 
 	return cmd
+}
+
+// resolveProfile resolves the security profile from --profile and --privileged flags.
+func resolveProfile(cmd *cobra.Command) (string, error) {
+	privilegedSet := cmd.Flags().Changed("privileged") && flagPrivileged
+	profileSet := cmd.Flags().Changed("profile")
+
+	if privilegedSet && profileSet && flagProfile != runtime.ProfileSysadmin {
+		return "", fmt.Errorf("conflicting flags: --privileged and --profile=%s (use --profile=sysadmin or remove --privileged)", flagProfile)
+	}
+
+	if privilegedSet {
+		fmt.Fprintln(os.Stderr, "Warning: --privileged is deprecated, use --profile=sysadmin instead")
+		return runtime.ProfileSysadmin, nil
+	}
+
+	if profileSet {
+		// Validate profile
+		valid := false
+		for _, p := range runtime.ValidProfiles {
+			if flagProfile == p {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return "", fmt.Errorf("invalid profile %q: must be one of %s", flagProfile, strings.Join(runtime.ValidProfiles, ", "))
+		}
+		return flagProfile, nil
+	}
+
+	return runtime.ProfileGeneral, nil
 }
 
 func Execute() error {

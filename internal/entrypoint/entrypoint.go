@@ -24,7 +24,7 @@ fi
 
 # Ensure PATH includes all tool locations
 # /nix/var/debux-profile/bin = user-installed packages via dctl
-export PATH="/nix/var/debux-profile/bin:/usr/local/bin:/root/.nix-profile/bin:$PATH"
+export PATH="/nix/var/debux-profile/bin:/usr/local/bin:${HOME:-/tmp}/.nix-profile/bin:$PATH"
 
 # Export target root for easy access
 export DEBUX_TARGET_ROOT="/proc/1/root"
@@ -34,20 +34,26 @@ ln -sf "$DEBUX_TARGET_ROOT/etc/hosts" /etc/hosts 2>/dev/null || true
 ln -sf "$DEBUX_TARGET_ROOT/etc/resolv.conf" /etc/resolv.conf 2>/dev/null || true
 
 # Ensure persistent data directory exists (for shell history etc.)
-mkdir -p /nix/var/debux-data
+mkdir -p /nix/var/debux-data 2>/dev/null || mkdir -p /tmp/debux-data
+
+# Determine writable home for zshrc
+DEBUX_HOME="${HOME:-/tmp}"
+if [ ! -w "$DEBUX_HOME" ]; then
+  DEBUX_HOME="/tmp"
+fi
 
 # Write shell configuration (overrides image default)
-cat > /root/.zshrc << 'ZSHRC_EOF'
+cat > "$DEBUX_HOME/.zshrc" << 'ZSHRC_EOF'
 # debux shell configuration
 
 # Enable syntax highlighting
-if [[ -f /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]]; then
-  source /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+if [[ -f "${HOME:-/tmp}/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]]; then
+  source "${HOME:-/tmp}/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 fi
 
 # Enable autosuggestions
-if [[ -f /root/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then
-  source /root/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+if [[ -f "${HOME:-/tmp}/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh" ]]; then
+  source "${HOME:-/tmp}/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh"
 fi
 
 # Source command-not-found handler
@@ -60,7 +66,11 @@ target="${DEBUX_TARGET:-unknown}"
 PS1="%F{cyan}[debux]%f %F{yellow}${target}%f %F{blue}%~%f %# "
 
 # History — stored on persistent volume so it survives container restarts
-HISTFILE=/nix/var/debux-data/.zsh_history
+if [[ -d /nix/var/debux-data ]]; then
+  HISTFILE=/nix/var/debux-data/.zsh_history
+else
+  HISTFILE=/tmp/debux-data/.zsh_history
+fi
 HISTSIZE=10000
 SAVEHIST=10000
 setopt SHARE_HISTORY
@@ -106,26 +116,32 @@ const ImageScript = `#!/bin/sh
 set -e
 
 # Ensure PATH includes all tool locations
-export PATH="/nix/var/debux-profile/bin:/usr/local/bin:/root/.nix-profile/bin:$PATH"
+export PATH="/nix/var/debux-profile/bin:/usr/local/bin:${HOME:-/tmp}/.nix-profile/bin:$PATH"
 
 # Export target root for easy access
 export DEBUX_TARGET_ROOT="/target"
 
 # Ensure persistent data directory exists (for shell history etc.)
-mkdir -p /nix/var/debux-data
+mkdir -p /nix/var/debux-data 2>/dev/null || mkdir -p /tmp/debux-data
+
+# Determine writable home for zshrc
+DEBUX_HOME="${HOME:-/tmp}"
+if [ ! -w "$DEBUX_HOME" ]; then
+  DEBUX_HOME="/tmp"
+fi
 
 # Write shell configuration (overrides image default)
-cat > /root/.zshrc << 'ZSHRC_EOF'
+cat > "$DEBUX_HOME/.zshrc" << 'ZSHRC_EOF'
 # debux shell configuration
 
 # Enable syntax highlighting
-if [[ -f /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]]; then
-  source /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+if [[ -f "${HOME:-/tmp}/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]]; then
+  source "${HOME:-/tmp}/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 fi
 
 # Enable autosuggestions
-if [[ -f /root/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then
-  source /root/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+if [[ -f "${HOME:-/tmp}/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh" ]]; then
+  source "${HOME:-/tmp}/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh"
 fi
 
 # Source command-not-found handler
@@ -138,7 +154,11 @@ target="${DEBUX_TARGET:-unknown}"
 PS1="%F{cyan}[debux]%f %F{magenta}image:${target}%f %F{blue}%~%f %# "
 
 # History — stored on persistent volume so it survives container restarts
-HISTFILE=/nix/var/debux-data/.zsh_history
+if [[ -d /nix/var/debux-data ]]; then
+  HISTFILE=/nix/var/debux-data/.zsh_history
+else
+  HISTFILE=/tmp/debux-data/.zsh_history
+fi
 HISTSIZE=10000
 SAVEHIST=10000
 setopt SHARE_HISTORY

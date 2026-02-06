@@ -7,6 +7,24 @@ import (
 
 const DefaultImage = "ghcr.io/clement-tourriere/debux:latest"
 
+// Security profile constants matching kubectl debug --profile behavior.
+const (
+	ProfileGeneral    = "general"
+	ProfileBaseline   = "baseline"
+	ProfileRestricted = "restricted"
+	ProfileNetadmin   = "netadmin"
+	ProfileSysadmin   = "sysadmin"
+)
+
+// ValidProfiles lists all supported security profiles.
+var ValidProfiles = []string{
+	ProfileGeneral,
+	ProfileBaseline,
+	ProfileRestricted,
+	ProfileNetadmin,
+	ProfileSysadmin,
+}
+
 // Target represents a parsed container/pod target.
 type Target struct {
 	Runtime   string // "docker", "containerd", "kubernetes"
@@ -25,6 +43,7 @@ type DebugOpts struct {
 	ShareVolumes bool   // share target container's volumes (default: true)
 	PullPolicy   string // Kubernetes image pull policy (Always, IfNotPresent, Never)
 	Fresh        bool   // force a new ephemeral container instead of reusing an existing one
+	Profile      string // security profile (general, baseline, restricted, netadmin, sysadmin)
 }
 
 // PodOpts are options for creating a standalone debug pod.
@@ -37,6 +56,7 @@ type PodOpts struct {
 	Privileged  bool
 	User        string
 	PullPolicy  string
+	Profile     string // security profile (general, baseline, restricted, netadmin, sysadmin)
 }
 
 // ImageOpts are options for debugging a Docker image directly.

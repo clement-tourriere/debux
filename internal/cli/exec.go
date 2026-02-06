@@ -48,6 +48,11 @@ func runExec(cmd *cobra.Command, args []string) error {
 		target.Name = name
 	}
 
+	profile, err := resolveProfile(cmd)
+	if err != nil {
+		return err
+	}
+
 	image := flagImage
 	if image == "" {
 		image = runtime.DefaultImage
@@ -61,6 +66,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		ShareVolumes: !flagNoVolumes,
 		PullPolicy:   flagPullPolicy,
 		Fresh:        flagFresh,
+		Profile:      profile,
 	}
 
 	switch target.Runtime {

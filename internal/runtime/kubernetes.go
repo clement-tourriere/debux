@@ -23,6 +23,41 @@ import (
 	"github.com/moby/term"
 )
 
+// SecurityContextForProfile returns the SecurityContext for the given profile.
+func SecurityContextForProfile(profile string) (*corev1.SecurityContext, error) {
+	switch profile {
+	case ProfileGeneral, ProfileBaseline, "":
+		return nil, nil
+	case ProfileRestricted:
+		f := false
+		var uid int64 = 65534
+		return &corev1.SecurityContext{
+			RunAsNonRoot:             &[]bool{true}[0],
+			RunAsUser:                &uid,
+			AllowPrivilegeEscalation: &f,
+			SeccompProfile: &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
+			},
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+			},
+		}, nil
+	case ProfileNetadmin:
+		return &corev1.SecurityContext{
+			Capabilities: &corev1.Capabilities{
+				Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
+			},
+		}, nil
+	case ProfileSysadmin:
+		t := true
+		return &corev1.SecurityContext{
+			Privileged: &t,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unknown profile: %s", profile)
+	}
+}
+
 // PodInfo holds metadata about a running Kubernetes pod.
 type PodInfo struct {
 	Name       string
@@ -128,6 +163,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 			TTY:             true,
 			Env: []corev1.EnvVar{
 				{Name: "DEBUX_TARGET", Value: target.Name},
+				{Name: "DEBUX_TARGET_ROOT", Value: "/proc/1/root"},
 				{Name: "DEBUX_DAEMON", Value: "1"},
 			},
 		},
@@ -148,11 +184,12 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		}
 	}
 
-	if opts.Privileged {
-		t := true
-		ephemeralContainer.SecurityContext = &corev1.SecurityContext{
-			Privileged: &t,
-		}
+	sc, err := SecurityContextForProfile(opts.Profile)
+	if err != nil {
+		return err
+	}
+	if sc != nil {
+		ephemeralContainer.SecurityContext = sc
 	}
 
 	// Patch the pod to add the ephemeral container
@@ -167,10 +204,28 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		return fmt.Errorf("marshaling patch: %w", err)
 	}
 
-	_, err = clientset.CoreV1().Pods(namespace).Patch(ctx, podName,
+	patchedPod, err := clientset.CoreV1().Pods(namespace).Patch(ctx, podName,
 		types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{}, "ephemeralcontainers")
 	if err != nil {
 		return fmt.Errorf("patching pod with ephemeral container: %w", err)
+	}
+
+	// Verify the ephemeral container actually appears in the patched pod.
+	// Admission controllers or webhooks can silently strip it.
+	found := false
+	for _, ec := range patchedPod.Spec.EphemeralContainers {
+		if ec.Name == debugContainerName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("ephemeral container %q was not created — the API server accepted the patch but the container is missing from the pod spec.\n"+
+			"This typically means an admission webhook or policy (e.g. Gatekeeper, Kyverno, PodSecurity) stripped it.\n"+
+			"Check cluster events and webhook configurations:\n"+
+			"  kubectl get events -n %s --field-selector involvedObject.name=%s\n"+
+			"  kubectl get validatingwebhookconfigurations,mutatingwebhookconfigurations",
+			debugContainerName, namespace, podName)
 	}
 
 	fmt.Printf("Waiting for debug container %q to start...\n", debugContainerName)
@@ -207,7 +262,7 @@ func execInPod(ctx context.Context, config *rest.Config, clientset *kubernetes.C
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: containerName,
-			Command:   []string{"zsh"},
+			Command:   []string{"sh", "-c", "export DEBUX_TARGET_ROOT=/proc/1/root; exec zsh"},
 			Stdin:     true,
 			Stdout:    true,
 			Stderr:    true,
@@ -280,11 +335,12 @@ func KubernetesPod(ctx context.Context, opts PodOpts) error {
 		},
 	}
 
-	if opts.Privileged {
-		t := true
-		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{
-			Privileged: &t,
-		}
+	sc, err := SecurityContextForProfile(opts.Profile)
+	if err != nil {
+		return err
+	}
+	if sc != nil {
+		pod.Spec.Containers[0].SecurityContext = sc
 	}
 
 	if opts.User != "" {
@@ -375,6 +431,7 @@ func waitForEphemeralContainer(ctx context.Context, clientset *kubernetes.Client
 	}
 	defer watcher.Stop()
 
+	var lastReason string
 	timeout := time.After(2 * time.Minute)
 	for {
 		select {
@@ -403,15 +460,78 @@ func waitForEphemeralContainer(ctx context.Context, clientset *kubernetes.Client
 							return fmt.Errorf("ephemeral container %q failed to start: %s: %s",
 								containerName, w.Reason, w.Message)
 						}
+						// Print intermediate waiting status so the user can see progress
+						if w.Reason != "" && w.Reason != lastReason {
+							fmt.Printf("  Container status: %s", w.Reason)
+							if w.Message != "" {
+								fmt.Printf(" (%s)", w.Message)
+							}
+							fmt.Println()
+							lastReason = w.Reason
+						}
 					}
 				}
 			}
 		case <-timeout:
-			return fmt.Errorf("timeout waiting for ephemeral container %q to start", containerName)
+			return fmt.Errorf("timeout waiting for ephemeral container %q to start\n%s",
+				containerName, describeContainerFailure(ctx, clientset, namespace, podName, containerName))
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
+}
+
+// describeContainerFailure fetches the current pod status and recent events to
+// help diagnose why an ephemeral container failed to start.
+func describeContainerFailure(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName, containerName string) string {
+	var details []string
+
+	// Fetch latest pod status
+	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		details = append(details, fmt.Sprintf("  (could not fetch pod status: %v)", err))
+	} else {
+		found := false
+		for _, cs := range pod.Status.EphemeralContainerStatuses {
+			if cs.Name != containerName {
+				continue
+			}
+			found = true
+			if cs.State.Waiting != nil {
+				details = append(details, fmt.Sprintf("  Container is waiting: %s: %s", cs.State.Waiting.Reason, cs.State.Waiting.Message))
+			} else if cs.State.Terminated != nil {
+				details = append(details, fmt.Sprintf("  Container terminated: %s (exit code %d)", cs.State.Terminated.Reason, cs.State.Terminated.ExitCode))
+			} else {
+				details = append(details, "  Container state is unknown (no waiting/running/terminated status)")
+			}
+			break
+		}
+		if !found {
+			details = append(details, "  Ephemeral container not found in pod status (it may not have been created)")
+			details = append(details, "  Possible causes: RBAC denied ephemeral container creation, or the API server rejected it silently")
+		}
+	}
+
+	// Fetch recent events for the pod
+	events, err := clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Pod", podName),
+	})
+	if err == nil && len(events.Items) > 0 {
+		details = append(details, "  Recent pod events:")
+		// Show last 5 events
+		start := 0
+		if len(events.Items) > 5 {
+			start = len(events.Items) - 5
+		}
+		for _, ev := range events.Items[start:] {
+			details = append(details, fmt.Sprintf("    %s: %s: %s", ev.Type, ev.Reason, ev.Message))
+		}
+	}
+
+	if len(details) == 0 {
+		return "  No additional diagnostic information available"
+	}
+	return strings.Join(details, "\n")
 }
 
 func waitForPodRunning(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName string) error {
