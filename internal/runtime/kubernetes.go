@@ -290,6 +290,7 @@ func execInPod(ctx context.Context, config *rest.Config, clientset *kubernetes.C
 		if err == nil {
 			defer func() {
 				_ = term.RestoreTerminal(stdinFd, oldState)
+				resetTerminalEmulator()
 			}()
 		}
 	}
@@ -600,6 +601,7 @@ func attachToPod(ctx context.Context, config *rest.Config, clientset *kubernetes
 		if err == nil {
 			defer func() {
 				_ = term.RestoreTerminal(stdinFd, oldState)
+				resetTerminalEmulator()
 			}()
 		}
 	}

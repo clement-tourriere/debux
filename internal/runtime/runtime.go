@@ -2,8 +2,24 @@ package runtime
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
+
+// resetTerminalEmulator sends ANSI escape sequences to reset terminal emulator
+// state that may have been altered by the remote session. term.RestoreTerminal
+// only restores termios (stty) settings; it does not undo changes made via
+// escape sequences such as alternate screen buffer, mouse tracking, or
+// bracketed paste mode.
+func resetTerminalEmulator() {
+	_, _ = os.Stdout.WriteString(
+		"\033[?25h" + // show cursor
+			"\033[?1049l" + // exit alternate screen buffer
+			"\033[?7h" + // re-enable line wrapping
+			"\033[?2004l" + // disable bracketed paste mode
+			"\033[0m", // reset text attributes (color, bold, etc.)
+	)
+}
 
 const DefaultImage = "ghcr.io/clement-tourriere/debux:latest"
 

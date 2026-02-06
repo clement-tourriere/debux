@@ -36,6 +36,9 @@ ln -sf "$DEBUX_TARGET_ROOT/etc/resolv.conf" /etc/resolv.conf 2>/dev/null || true
 # Ensure persistent data directory exists (for shell history etc.)
 mkdir -p /nix/var/debux-data 2>/dev/null || mkdir -p /tmp/debux-data
 
+# Ensure XDG config directory exists so tools can write their configs
+mkdir -p "${HOME:-/tmp}/.config" 2>/dev/null || true
+
 # Determine writable home for zshrc
 DEBUX_HOME="${HOME:-/tmp}"
 if [ ! -w "$DEBUX_HOME" ]; then
@@ -194,6 +197,9 @@ export DEBUX_TARGET_ROOT="/target"
 
 # Ensure persistent data directory exists (for shell history etc.)
 mkdir -p /nix/var/debux-data 2>/dev/null || mkdir -p /tmp/debux-data
+
+# Ensure XDG config directory exists so tools can write their configs
+mkdir -p "${HOME:-/tmp}/.config" 2>/dev/null || true
 
 # Determine writable home for zshrc
 DEBUX_HOME="${HOME:-/tmp}"

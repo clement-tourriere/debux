@@ -222,6 +222,7 @@ func runInteractiveContainer(ctx context.Context, cli *client.Client, containerI
 		if err == nil {
 			defer func() {
 				_ = term.RestoreTerminal(stdinFd, oldState)
+				resetTerminalEmulator()
 			}()
 		}
 	}
@@ -493,7 +494,10 @@ func execInContainer(ctx context.Context, cli *client.Client, containerID string
 	if isTerminal {
 		oldState, err := term.SetRawTerminal(stdinFd)
 		if err == nil {
-			defer func() { _ = term.RestoreTerminal(stdinFd, oldState) }()
+			defer func() {
+				_ = term.RestoreTerminal(stdinFd, oldState)
+				resetTerminalEmulator()
+			}()
 		}
 	}
 
