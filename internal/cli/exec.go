@@ -105,10 +105,19 @@ func pickDockerContainer(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("no running Docker containers found")
 	}
 
+	// Sort: active debux sessions first
+	sort.SliceStable(containers, func(i, j int) bool {
+		return containers[i].HasDebuxSession && !containers[j].HasDebuxSession
+	})
+
 	items := make([]picker.Item, len(containers))
 	for i, c := range containers {
+		label := fmt.Sprintf("%s (%s) — %s", c.Name, c.Image, c.Status)
+		if c.HasDebuxSession {
+			label = "● " + label
+		}
 		items[i] = picker.Item{
-			Label: fmt.Sprintf("%s (%s) — %s", c.Name, c.Image, c.Status),
+			Label: label,
 			Value: c.Name,
 		}
 	}

@@ -93,6 +93,70 @@ alias rd='rmdir'
 # Target filesystem shortcut
 alias target='cd $DEBUX_TARGET_ROOT'
 
+# Import target container environment variables
+_debux_import_target_env() {
+  local environ_file="/proc/1/environ"
+  [[ -f "$environ_file" ]] || return 0
+
+  local -a skip_exact=(
+    HOME USER LOGNAME SHELL TERM HOSTNAME PWD OLDPWD SHLVL _ TMPDIR
+    NOTIFY_SOCKET SSH_AUTH_SOCK XDG_RUNTIME_DIR container
+  )
+  local -a path_colon_vars=(
+    PYTHONPATH LD_LIBRARY_PATH MANPATH PERL5LIB NODE_PATH
+    GEM_PATH GOPATH CLASSPATH PKG_CONFIG_PATH
+  )
+  local -a path_single_vars=(
+    VIRTUAL_ENV JAVA_HOME CONDA_PREFIX GEM_HOME GOROOT
+    CARGO_HOME RUSTUP_HOME NVM_DIR PYENV_ROOT RBENV_ROOT
+  )
+
+  local key val entry
+  while IFS= read -r -d '' entry; do
+    key="${entry%%=*}"
+    val="${entry#*=}"
+    [[ -z "$key" || "$key" == "$entry" ]] && continue
+
+    # Skip blocklist: exact matches
+    if (( ${skip_exact[(Ie)$key]} )); then
+      continue
+    fi
+    # Skip blocklist: pattern matches
+    if [[ "$key" == LANG || "$key" == LC_* || "$key" == DEBUX_* || "$key" == KUBERNETES_* ]]; then
+      continue
+    fi
+
+    if [[ "$key" == "PATH" ]]; then
+      # Translate each PATH component and append to current PATH
+      local -a translated=()
+      local component
+      while IFS= read -r -d ':' component || [[ -n "$component" ]]; do
+        translated+=("${DEBUX_TARGET_ROOT}${component}")
+      done <<< "$val"
+      export PATH="${PATH}:${(j.:.)translated}"
+
+    elif (( ${path_colon_vars[(Ie)$key]} )); then
+      # Colon-separated path vars: translate each component
+      local -a translated=()
+      local component
+      while IFS= read -r -d ':' component || [[ -n "$component" ]]; do
+        translated+=("${DEBUX_TARGET_ROOT}${component}")
+      done <<< "$val"
+      export "$key"="${(j.:.)translated}"
+
+    elif (( ${path_single_vars[(Ie)$key]} )); then
+      # Single-path vars: prepend target root
+      export "$key"="${DEBUX_TARGET_ROOT}${val}"
+
+    else
+      # Everything else: export as-is
+      export "$key"="$val"
+    fi
+  done < <(command cat "$environ_file" 2>/dev/null)
+}
+_debux_import_target_env
+unfunction _debux_import_target_env
+
 # Key bindings
 bindkey -e
 ZSHRC_EOF
