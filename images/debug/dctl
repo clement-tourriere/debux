@@ -83,11 +83,10 @@ case "${1:-}" in
     shift
     for pkg in "$@"; do
       resolved=$(resolve_pkg "$pkg")
-      # Find the index of the package in the profile
-      idx=$(nix profile list --profile "$DEBUX_PROFILE" 2>/dev/null | grep -i "$resolved" | head -1 | awk '{print $1}')
-      if [[ -n "$idx" ]]; then
-        nix profile remove --profile "$DEBUX_PROFILE" "$idx"
-        echo "Removed $resolved."
+      # Use --json to reliably check if the element exists (avoids ANSI / whitespace issues)
+      if nix profile list --profile "$DEBUX_PROFILE" --json 2>/dev/null | jq -e --arg pkg "$resolved" '.elements[$pkg]' >/dev/null 2>&1; then
+        nix profile remove --profile "$DEBUX_PROFILE" "$resolved"
+        echo -e "\e[32mRemoved $resolved.\e[0m"
       else
         echo "Package '$resolved' not found in profile."
       fi

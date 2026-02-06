@@ -89,7 +89,7 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 
 	config := &container.Config{
 		Image:        opts.Image,
-		Cmd:          []string{"/bin/sh", "-c", entrypoint.Script},
+		Entrypoint:   []string{"/bin/sh", "-c", entrypoint.Script},
 		Tty:          true,
 		OpenStdin:    true,
 		AttachStdin:  true,

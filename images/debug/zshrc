@@ -19,18 +19,26 @@ fi
 target="${DEBUX_TARGET:-unknown}"
 PS1="%F{cyan}[debux]%f %F{yellow}${target}%f %F{blue}%~%f %# "
 
-# History
-HISTFILE=~/.zsh_history
+# History — stored on persistent volume so it survives container restarts
+HISTFILE=/nix/var/debux-data/.zsh_history
 HISTSIZE=10000
 SAVEHIST=10000
 setopt SHARE_HISTORY
 setopt HIST_IGNORE_DUPS
+setopt HIST_IGNORE_SPACE
+setopt HIST_REDUCE_BLANKS
+setopt INC_APPEND_HISTORY
 
 # Aliases
+alias l='ls -lah --color=auto'
 alias ll='ls -alh --color=auto'
 alias la='ls -A --color=auto'
 alias ls='ls --color=auto'
 alias grep='grep --color=auto'
+alias ..='cd ..'
+alias ...='cd ../..'
+alias md='mkdir -p'
+alias rd='rmdir'
 
 # Target filesystem shortcut
 alias target='cd $DEBUX_TARGET_ROOT'

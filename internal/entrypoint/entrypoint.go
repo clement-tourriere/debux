@@ -2,7 +2,11 @@ package entrypoint
 
 // Script is the entrypoint script injected into the debug container.
 // It waits for the target's PID namespace to be visible, sets up
-// convenience symlinks, and launches zsh.
+// convenience symlinks, writes the shell configuration, and launches zsh.
+//
+// The zshrc is written at runtime (rather than relying on the baked-in
+// image copy) so that Go rebuilds pick up config changes immediately
+// without requiring a Docker image rebuild+push.
 const Script = `#!/bin/sh
 set -e
 
@@ -28,6 +32,60 @@ export DEBUX_TARGET_ROOT="/proc/1/root"
 # Create convenience symlinks for target filesystem
 ln -sf "$DEBUX_TARGET_ROOT/etc/hosts" /etc/hosts 2>/dev/null || true
 ln -sf "$DEBUX_TARGET_ROOT/etc/resolv.conf" /etc/resolv.conf 2>/dev/null || true
+
+# Ensure persistent data directory exists (for shell history etc.)
+mkdir -p /nix/var/debux-data
+
+# Write shell configuration (overrides image default)
+cat > /root/.zshrc << 'ZSHRC_EOF'
+# debux shell configuration
+
+# Enable syntax highlighting
+if [[ -f /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]]; then
+  source /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+fi
+
+# Enable autosuggestions
+if [[ -f /root/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then
+  source /root/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+fi
+
+# Source command-not-found handler
+if [[ -f /etc/zsh/command-not-found-handler ]]; then
+  source /etc/zsh/command-not-found-handler
+fi
+
+# Prompt
+target="${DEBUX_TARGET:-unknown}"
+PS1="%F{cyan}[debux]%f %F{yellow}${target}%f %F{blue}%~%f %# "
+
+# History — stored on persistent volume so it survives container restarts
+HISTFILE=/nix/var/debux-data/.zsh_history
+HISTSIZE=10000
+SAVEHIST=10000
+setopt SHARE_HISTORY
+setopt HIST_IGNORE_DUPS
+setopt HIST_IGNORE_SPACE
+setopt HIST_REDUCE_BLANKS
+setopt INC_APPEND_HISTORY
+
+# Aliases
+alias l='ls -lah --color=auto'
+alias ll='ls -alh --color=auto'
+alias la='ls -A --color=auto'
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
+alias ..='cd ..'
+alias ...='cd ../..'
+alias md='mkdir -p'
+alias rd='rmdir'
+
+# Target filesystem shortcut
+alias target='cd $DEBUX_TARGET_ROOT'
+
+# Key bindings
+bindkey -e
+ZSHRC_EOF
 
 # Launch shell
 exec zsh

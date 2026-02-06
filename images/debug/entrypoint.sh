@@ -24,5 +24,8 @@ export DEBUX_TARGET_ROOT="/proc/1/root"
 ln -sf "$DEBUX_TARGET_ROOT/etc/hosts" /etc/hosts 2>/dev/null || true
 ln -sf "$DEBUX_TARGET_ROOT/etc/resolv.conf" /etc/resolv.conf 2>/dev/null || true
 
+# Ensure persistent data directory exists (for shell history etc.)
+mkdir -p /nix/var/debux-data
+
 # Launch shell
 exec zsh
