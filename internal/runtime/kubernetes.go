@@ -64,10 +64,11 @@ func SecurityContextForProfile(profile string) (*corev1.SecurityContext, error) 
 
 // PodInfo holds metadata about a running Kubernetes pod.
 type PodInfo struct {
-	Name       string
-	Namespace  string
-	Status     string
-	Containers []string
+	Name            string
+	Namespace       string
+	Status          string
+	Containers      []string
+	HasDebuxSession bool // true if pod has a running debux ephemeral container
 }
 
 // KubernetesList returns running pods, optionally filtered by namespace.
@@ -108,11 +109,21 @@ func KubernetesList(ctx context.Context, kubeconfig string, namespace string) ([
 		for _, c := range pod.Spec.Containers {
 			containers = append(containers, c.Name)
 		}
+
+		hasSession := false
+		for _, cs := range pod.Status.EphemeralContainerStatuses {
+			if strings.HasPrefix(cs.Name, "debux-") && cs.State.Running != nil {
+				hasSession = true
+				break
+			}
+		}
+
 		result = append(result, PodInfo{
-			Name:       pod.Name,
-			Namespace:  pod.Namespace,
-			Status:     string(pod.Status.Phase),
-			Containers: containers,
+			Name:            pod.Name,
+			Namespace:       pod.Namespace,
+			Status:          string(pod.Status.Phase),
+			Containers:      containers,
+			HasDebuxSession: hasSession,
 		})
 	}
 	return result, nil

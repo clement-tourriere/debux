@@ -27,6 +27,8 @@ func Pick(title string, items []Item) (string, error) {
 	err := huh.NewSelect[string]().
 		Title(title).
 		Options(opts...).
+		Filtering(true).
+		Height(15).
 		Value(&selected).
 		Run()
 	if err != nil {

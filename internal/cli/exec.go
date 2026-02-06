@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -124,9 +125,17 @@ func pickK8sPod(ctx context.Context, kubeconfig, namespace string) (string, erro
 		return "", fmt.Errorf("no running pods found")
 	}
 
+	// Sort: active debux sessions first
+	sort.SliceStable(pods, func(i, j int) bool {
+		return pods[i].HasDebuxSession && !pods[j].HasDebuxSession
+	})
+
 	items := make([]picker.Item, len(pods))
 	for i, p := range pods {
 		label := fmt.Sprintf("%s/%s [%s]", p.Namespace, p.Name, strings.Join(p.Containers, ", "))
+		if p.HasDebuxSession {
+			label = "● " + label
+		}
 		items[i] = picker.Item{
 			Label: label,
 			Value: p.Name,
