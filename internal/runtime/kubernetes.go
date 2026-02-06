@@ -22,6 +22,50 @@ import (
 	"github.com/moby/term"
 )
 
+// PodInfo holds metadata about a running Kubernetes pod.
+type PodInfo struct {
+	Name       string
+	Namespace  string
+	Status     string
+	Containers []string
+}
+
+// KubernetesList returns running pods, optionally filtered by namespace.
+func KubernetesList(ctx context.Context, kubeconfig string, namespace string) ([]PodInfo, error) {
+	_, clientset, err := getK8sClient(kubeconfig)
+	if err != nil {
+		return nil, err
+	}
+
+	// Empty namespace means all namespaces
+	listNs := namespace
+	if listNs == "default" {
+		listNs = ""
+	}
+
+	pods, err := clientset.CoreV1().Pods(listNs).List(ctx, metav1.ListOptions{
+		FieldSelector: "status.phase=Running",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing pods: %w", err)
+	}
+
+	var result []PodInfo
+	for _, pod := range pods.Items {
+		var containers []string
+		for _, c := range pod.Spec.Containers {
+			containers = append(containers, c.Name)
+		}
+		result = append(result, PodInfo{
+			Name:       pod.Name,
+			Namespace:  pod.Namespace,
+			Status:     string(pod.Status.Phase),
+			Containers: containers,
+		})
+	}
+	return result, nil
+}
+
 // KubernetesExec debugs a running pod using ephemeral containers.
 func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	config, clientset, err := getK8sClient(opts.Kubeconfig)

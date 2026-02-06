@@ -56,10 +56,6 @@ func ParseTarget(raw string) (*Target, error) {
 		schema := raw[:idx]
 		rest := raw[idx+3:]
 
-		if rest == "" {
-			return nil, fmt.Errorf("empty target after schema %q", schema)
-		}
-
 		switch schema {
 		case "docker":
 			return &Target{Runtime: "docker", Name: rest}, nil
@@ -80,15 +76,21 @@ func ParseTarget(raw string) (*Target, error) {
 }
 
 func parseK8sTarget(rest string) (*Target, error) {
-	parts := strings.Split(rest, "/")
 	t := &Target{Runtime: "kubernetes", Namespace: "default"}
+
+	// Empty rest means k8s:// — list all pods
+	if rest == "" {
+		return t, nil
+	}
+
+	parts := strings.Split(rest, "/")
 
 	switch len(parts) {
 	case 1:
 		// k8s://<pod>
 		t.Name = parts[0]
 	case 2:
-		// k8s://<namespace>/<pod>
+		// k8s://<namespace>/<pod> or k8s://<namespace>/
 		t.Namespace = parts[0]
 		t.Name = parts[1]
 	case 3:
@@ -98,10 +100,6 @@ func parseK8sTarget(rest string) (*Target, error) {
 		t.Container = parts[2]
 	default:
 		return nil, fmt.Errorf("invalid k8s target format: %s", rest)
-	}
-
-	if t.Name == "" {
-		return nil, fmt.Errorf("empty pod name in k8s target")
 	}
 
 	return t, nil

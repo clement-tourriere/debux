@@ -4,39 +4,48 @@ import (
 	"context"
 	"fmt"
 	"os/signal"
+	"strings"
 	"syscall"
 
+	"github.com/ctourriere/debux/internal/picker"
 	"github.com/ctourriere/debux/internal/runtime"
 	"github.com/spf13/cobra"
 )
 
 func newExecCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "exec <target>",
-		Short: "Debug a running container",
-		Long: `Debug a running container by launching a sidecar with shared namespaces.
-
-Target formats:
-  <container>                     Docker container (default runtime)
-  docker://<container>            Docker container
-  containerd://<container>        containerd container
-  nerdctl://<container>           containerd container (alias)
-  k8s://<pod>                     Kubernetes pod (default namespace)
-  k8s://<namespace>/<pod>         Kubernetes pod (specific namespace)
-  k8s://<ns>/<pod>/<container>    Kubernetes pod (specific container)`,
-		Args: cobra.ExactArgs(1),
-		RunE: runExec,
+	return &cobra.Command{
+		Use:    "exec [target]",
+		Short:  "Debug a running container",
+		Hidden: true,
+		Args:   cobra.MaximumNArgs(1),
+		RunE:   runExec,
 	}
-
-	cmd.Flags().String("kubeconfig", "", "Override kubeconfig path")
-
-	return cmd
 }
 
 func runExec(cmd *cobra.Command, args []string) error {
-	target, err := runtime.ParseTarget(args[0])
-	if err != nil {
-		return fmt.Errorf("invalid target: %w", err)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	var target *runtime.Target
+
+	if len(args) == 0 {
+		// No args: default to Docker, show picker
+		target = &runtime.Target{Runtime: "docker"}
+	} else {
+		var err error
+		target, err = runtime.ParseTarget(args[0])
+		if err != nil {
+			return fmt.Errorf("invalid target: %w", err)
+		}
+	}
+
+	// If name is empty, show interactive picker for the runtime
+	if target.Name == "" {
+		name, err := pickTarget(ctx, cmd, target)
+		if err != nil {
+			return err
+		}
+		target.Name = name
 	}
 
 	image := flagImage
@@ -51,9 +60,6 @@ func runExec(cmd *cobra.Command, args []string) error {
 		AutoRemove: flagRemove,
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
 	switch target.Runtime {
 	case "docker":
 		return runtime.DockerExec(ctx, target, opts)
@@ -66,4 +72,57 @@ func runExec(cmd *cobra.Command, args []string) error {
 	default:
 		return fmt.Errorf("unsupported runtime: %s", target.Runtime)
 	}
+}
+
+func pickTarget(ctx context.Context, cmd *cobra.Command, target *runtime.Target) (string, error) {
+	switch target.Runtime {
+	case "docker":
+		return pickDockerContainer(ctx)
+	case "kubernetes":
+		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
+		return pickK8sPod(ctx, kubeconfig, target.Namespace)
+	default:
+		return "", fmt.Errorf("interactive selection is not supported for runtime %q", target.Runtime)
+	}
+}
+
+func pickDockerContainer(ctx context.Context) (string, error) {
+	containers, err := runtime.DockerList(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(containers) == 0 {
+		return "", fmt.Errorf("no running Docker containers found")
+	}
+
+	items := make([]picker.Item, len(containers))
+	for i, c := range containers {
+		items[i] = picker.Item{
+			Label: fmt.Sprintf("%s (%s) — %s", c.Name, c.Image, c.Status),
+			Value: c.Name,
+		}
+	}
+
+	return picker.Pick("Select a container", items)
+}
+
+func pickK8sPod(ctx context.Context, kubeconfig, namespace string) (string, error) {
+	pods, err := runtime.KubernetesList(ctx, kubeconfig, namespace)
+	if err != nil {
+		return "", err
+	}
+	if len(pods) == 0 {
+		return "", fmt.Errorf("no running pods found")
+	}
+
+	items := make([]picker.Item, len(pods))
+	for i, p := range pods {
+		label := fmt.Sprintf("%s/%s [%s]", p.Namespace, p.Name, strings.Join(p.Containers, ", "))
+		items[i] = picker.Item{
+			Label: label,
+			Value: p.Name,
+		}
+	}
+
+	return picker.Pick("Select a pod", items)
 }

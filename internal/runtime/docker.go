@@ -16,6 +16,43 @@ import (
 	"github.com/moby/term"
 )
 
+// ContainerInfo holds metadata about a running Docker container.
+type ContainerInfo struct {
+	ID     string
+	Name   string
+	Image  string
+	Status string
+}
+
+// DockerList returns running Docker containers.
+func DockerList(ctx context.Context) ([]ContainerInfo, error) {
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		return nil, fmt.Errorf("connecting to Docker: %w", err)
+	}
+	defer cli.Close()
+
+	containers, err := cli.ContainerList(ctx, container.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("listing containers: %w", err)
+	}
+
+	var result []ContainerInfo
+	for _, c := range containers {
+		name := c.ID[:12]
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+		result = append(result, ContainerInfo{
+			ID:     c.ID[:12],
+			Name:   name,
+			Image:  c.Image,
+			Status: c.Status,
+		})
+	}
+	return result, nil
+}
+
 // DockerExec launches a debug sidecar sharing namespaces with the target container.
 func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
