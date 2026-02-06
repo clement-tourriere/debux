@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ctourriere/debux/internal/cli"
+	"github.com/clement-tourriere/debux/internal/cli"
 )
 
 func main() {

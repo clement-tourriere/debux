@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-const DefaultImage = "ghcr.io/ctourriere/debux:latest"
+const DefaultImage = "ghcr.io/clement-tourriere/debux:latest"
 
 // Target represents a parsed container/pod target.
 type Target struct {

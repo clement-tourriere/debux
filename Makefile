@@ -1,5 +1,5 @@
 BINARY := debux
-IMAGE  := ghcr.io/ctourriere/debux:latest
+IMAGE  := ghcr.io/clement-tourriere/debux:latest
 
 .PHONY: build build-dev install image-build image-push dev clean test lint
 

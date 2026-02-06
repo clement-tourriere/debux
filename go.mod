@@ -1,4 +1,4 @@
-module github.com/ctourriere/debux
+module github.com/clement-tourriere/debux
 
 go 1.25.7
 

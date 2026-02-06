@@ -37,7 +37,7 @@ Target formats:
 		SilenceErrors: true,
 	}
 
-	cmd.PersistentFlags().StringVar(&flagImage, "image", "", "Override debug image (default: ghcr.io/ctourriere/debux:latest)")
+	cmd.PersistentFlags().StringVar(&flagImage, "image", "", "Override debug image (default: ghcr.io/clement-tourriere/debux:latest)")
 	cmd.PersistentFlags().BoolVar(&flagPrivileged, "privileged", false, "Run debug container in privileged mode")
 	cmd.PersistentFlags().StringVar(&flagUser, "user", "", "Run as specific user (uid:gid)")
 	cmd.PersistentFlags().BoolVar(&flagRemove, "rm", true, "Auto-remove debug container on exit")

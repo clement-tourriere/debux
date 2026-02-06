@@ -9,9 +9,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ctourriere/debux/internal/entrypoint"
-	dbximage "github.com/ctourriere/debux/internal/image"
-	"github.com/ctourriere/debux/internal/store"
+	"github.com/clement-tourriere/debux/internal/entrypoint"
+	dbximage "github.com/clement-tourriere/debux/internal/image"
+	"github.com/clement-tourriere/debux/internal/store"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"

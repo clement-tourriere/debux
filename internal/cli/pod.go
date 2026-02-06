@@ -5,7 +5,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/ctourriere/debux/internal/runtime"
+	"github.com/clement-tourriere/debux/internal/runtime"
 	"github.com/spf13/cobra"
 )
 

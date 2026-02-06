@@ -19,7 +19,7 @@ Existing solutions like `kubectl debug` or `docker exec` fall short when your co
 ### From source
 
 ```bash
-git clone https://github.com/ctourriere/debux.git
+git clone https://github.com/clement-tourriere/debux.git
 cd debux
 make install        # Builds and copies to /usr/local/bin
 make image-build    # Build the debug image
@@ -120,7 +120,7 @@ debux store clean    # Remove all persistent store volumes
 
 | Flag | Description |
 |---|---|
-| `--image <image>` | Override debug image (default: `ghcr.io/ctourriere/debux:latest`) |
+| `--image <image>` | Override debug image (default: `ghcr.io/clement-tourriere/debux:latest`) |
 | `--privileged` | Run debug container in privileged mode |
 | `--user <uid:gid>` | Run as a specific user |
 | `--rm` | Auto-remove debug container on exit (default: `true`) |

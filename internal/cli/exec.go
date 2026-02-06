@@ -7,8 +7,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/ctourriere/debux/internal/picker"
-	"github.com/ctourriere/debux/internal/runtime"
+	"github.com/clement-tourriere/debux/internal/picker"
+	"github.com/clement-tourriere/debux/internal/runtime"
 	"github.com/spf13/cobra"
 )
 

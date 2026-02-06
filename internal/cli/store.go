@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/ctourriere/debux/internal/store"
+	"github.com/clement-tourriere/debux/internal/store"
 	"github.com/spf13/cobra"
 )
 
