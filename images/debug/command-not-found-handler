@@ -1,0 +1,21 @@
+command_not_found_handler() {
+  local cmd="$1"
+  shift
+
+  echo -e "\e[33m$cmd\e[0m: command not found"
+  echo ""
+  echo -e "  Install with: \e[32mdctl install $cmd\e[0m"
+  echo ""
+  read "REPLY?  Install now? [y/N] "
+  if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+    if dctl install "$cmd"; then
+      command "$cmd" "$@"
+      return $?
+    else
+      echo ""
+      echo "  Package '$cmd' not found. Try: dctl search $cmd"
+    fi
+  fi
+
+  return 127
+}

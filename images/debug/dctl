@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# dctl - debux package manager
+set -euo pipefail
+
+# User-installed packages go in a separate nix profile (persisted in /nix/var volume)
+DEBUX_PROFILE="/nix/var/debux-profile"
+
+# Command-to-nixpkgs mapping for common mismatches
+declare -A ALIASES=(
+  [nvim]=neovim
+  [python]=python3
+  [node]=nodejs
+  [npm]=nodejs
+  [npx]=nodejs
+  [cc]=gcc
+  [c++]=gcc
+  [g++]=gcc
+  [make]=gnumake
+  [ip]=iproute2
+  [ss]=iproute2
+  [netstat]=nettools
+  [ifconfig]=nettools
+  [ping]=inetutils
+  [telnet]=inetutils
+  [nc]=nmap
+  [ncat]=nmap
+  [cargo]=rustc
+  [pgrep]=procps
+  [pkill]=procps
+  [free]=procps
+  [watch]=procps
+  [xargs]=findutils
+  [locate]=findutils
+  [sed]=gnused
+  [awk]=gawk
+  [diff]=diffutils
+  [tar]=gnutar
+  [unzip]=unzip
+  [zip]=zip
+  [ag]=silver-searcher
+  [rg]=ripgrep
+  [fd]=fd
+  [bat]=bat
+  [tmux]=tmux
+  [http]=httpie
+  [https]=httpie
+  [delta]=delta
+  [lazygit]=lazygit
+  [k9s]=k9s
+  [stern]=stern
+  [kubectx]=kubectx
+  [kustomize]=kustomize
+)
+
+resolve_pkg() {
+  local pkg="$1"
+  if [[ -n "${ALIASES[$pkg]+x}" ]]; then
+    echo "${ALIASES[$pkg]}"
+  else
+    echo "$pkg"
+  fi
+}
+
+case "${1:-}" in
+  install)
+    shift
+    for pkg in "$@"; do
+      resolved=$(resolve_pkg "$pkg")
+      if [[ "$resolved" != "$pkg" ]]; then
+        echo -e "\e[36m$pkg\e[0m → \e[32m$resolved\e[0m"
+      fi
+      echo "Installing $resolved..."
+      if nix profile add --profile "$DEBUX_PROFILE" "nixpkgs#$resolved"; then
+        echo -e "\e[32mInstalled $resolved.\e[0m"
+      else
+        echo ""
+        echo -e "  \e[31mPackage '$resolved' not found.\e[0m"
+        echo "  Try: dctl search $pkg"
+      fi
+    done
+    ;;
+  remove)
+    shift
+    for pkg in "$@"; do
+      resolved=$(resolve_pkg "$pkg")
+      # Find the index of the package in the profile
+      idx=$(nix profile list --profile "$DEBUX_PROFILE" 2>/dev/null | grep -i "$resolved" | head -1 | awk '{print $1}')
+      if [[ -n "$idx" ]]; then
+        nix profile remove --profile "$DEBUX_PROFILE" "$idx"
+        echo "Removed $resolved."
+      else
+        echo "Package '$resolved' not found in profile."
+      fi
+    done
+    ;;
+  search)
+    shift
+    nix search nixpkgs "$1" 2>/dev/null || echo "Search failed. Try: nix search nixpkgs $1"
+    ;;
+  list)
+    echo "Base packages (from image):"
+    nix-env -q 2>/dev/null || true
+    echo ""
+    echo "User-installed packages:"
+    nix profile list --profile "$DEBUX_PROFILE" 2>/dev/null || echo "  (none)"
+    ;;
+  update)
+    nix-channel --update
+    ;;
+  *)
+    echo "dctl - debux package manager"
+    echo ""
+    echo "Usage:"
+    echo "  dctl install <pkg> [pkg...]   Install packages from nixpkgs"
+    echo "  dctl remove <pkg> [pkg...]    Remove installed packages"
+    echo "  dctl search <query>           Search available packages"
+    echo "  dctl list                     List installed packages"
+    echo "  dctl update                   Update package index"
+    ;;
+esac

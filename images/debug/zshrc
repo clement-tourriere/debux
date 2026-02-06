@@ -1,0 +1,39 @@
+# debux shell configuration
+
+# Enable syntax highlighting
+if [[ -f /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]]; then
+  source /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+fi
+
+# Enable autosuggestions
+if [[ -f /root/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then
+  source /root/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+fi
+
+# Source command-not-found handler
+if [[ -f /etc/zsh/command-not-found-handler ]]; then
+  source /etc/zsh/command-not-found-handler
+fi
+
+# Prompt
+target="${DEBUX_TARGET:-unknown}"
+PS1="%F{cyan}[debux]%f %F{yellow}${target}%f %F{blue}%~%f %# "
+
+# History
+HISTFILE=~/.zsh_history
+HISTSIZE=10000
+SAVEHIST=10000
+setopt SHARE_HISTORY
+setopt HIST_IGNORE_DUPS
+
+# Aliases
+alias ll='ls -alh --color=auto'
+alias la='ls -A --color=auto'
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
+
+# Target filesystem shortcut
+alias target='cd $DEBUX_TARGET_ROOT'
+
+# Key bindings
+bindkey -e
