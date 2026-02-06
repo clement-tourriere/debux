@@ -7,24 +7,24 @@ image = "ghcr.io/clement-tourriere/debux:latest"
 
 [tasks.build]
 description = "Build the binary with CGO disabled"
-run = "CGO_ENABLED=0 go build -o bin/$MISE_VARS_BINARY ./cmd/debux"
+run = "CGO_ENABLED=0 go build -o bin/{{vars.binary}} ./cmd/debux"
 
 [tasks.build-dev]
 description = "Build the binary for development (with CGO)"
-run = "go build -o bin/$MISE_VARS_BINARY ./cmd/debux"
+run = "go build -o bin/{{vars.binary}} ./cmd/debux"
 
 [tasks.install]
 description = "Build and install the binary to /usr/local/bin"
 depends = ["build"]
-run = "cp bin/$MISE_VARS_BINARY /usr/local/bin/$MISE_VARS_BINARY"
+run = "cp bin/{{vars.binary}} /usr/local/bin/{{vars.binary}}"
 
 [tasks.image-build]
 description = "Build the Docker debug image"
-run = "docker build -t $MISE_VARS_IMAGE -f images/debug/Dockerfile ."
+run = "docker build -t {{vars.image}} -f images/debug/Dockerfile ."
 
 [tasks.image-push]
 description = "Push the Docker debug image"
-run = "docker push $MISE_VARS_IMAGE"
+run = "docker push {{vars.image}}"
 
 [tasks.dev]
 description = "Build binary and Docker image for development"
