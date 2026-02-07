@@ -3,7 +3,9 @@ package runtime
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 )
 
 // resetTerminalEmulator sends ANSI escape sequences to reset terminal emulator
@@ -13,12 +15,29 @@ import (
 // bracketed paste mode.
 func resetTerminalEmulator() {
 	_, _ = os.Stdout.WriteString(
-		"\033[?25h" + // show cursor
+		"\033[?1000l" + // disable normal mouse tracking
+			"\033[?1002l" + // disable button event tracking
+			"\033[?1003l" + // disable any-event mouse tracking (htop)
+			"\033[?1006l" + // disable SGR extended mouse mode
+			"\033[?1015l" + // disable urxvt extended mouse mode
+			"\033[?1l" + // reset DECCKM (application cursor keys → normal)
+			"\033[?25h" + // show cursor
 			"\033[?1049l" + // exit alternate screen buffer
 			"\033[?7h" + // re-enable line wrapping
 			"\033[?2004l" + // disable bracketed paste mode
+			"\033(B" + // reset G0 character set to ASCII
+			"\033>" + // numeric keypad mode (DECPNM)
+			"\033[r" + // reset scroll region to full screen
 			"\033[0m", // reset text attributes (color, bold, etc.)
 	)
+}
+
+// watchSIGWINCH returns a channel that receives a value on each SIGWINCH signal
+// and a stop function to unregister the signal handler.
+func watchSIGWINCH() (<-chan os.Signal, func()) {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGWINCH)
+	return sigCh, func() { signal.Stop(sigCh) }
 }
 
 const DefaultImage = "ghcr.io/clement-tourriere/debux:latest"

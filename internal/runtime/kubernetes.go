@@ -302,7 +302,9 @@ func execInPod(ctx context.Context, config *rest.Config, clientset *kubernetes.C
 	}
 
 	if isTerminal {
-		streamOpts.TerminalSizeQueue = newTerminalSizeQueue(stdinFd)
+		tsq := newTerminalSizeQueue(stdinFd)
+		defer tsq.Close()
+		streamOpts.TerminalSizeQueue = tsq
 	}
 
 	return exec.StreamWithContext(ctx, streamOpts)
@@ -613,23 +615,38 @@ func attachToPod(ctx context.Context, config *rest.Config, clientset *kubernetes
 	}
 
 	if isTerminal {
-		streamOpts.TerminalSizeQueue = newTerminalSizeQueue(stdinFd)
+		tsq := newTerminalSizeQueue(stdinFd)
+		defer tsq.Close()
+		streamOpts.TerminalSizeQueue = tsq
 	}
 
 	return exec.StreamWithContext(ctx, streamOpts)
 }
 
-// terminalSizeQueue implements remotecommand.TerminalSizeQueue
+// terminalSizeQueue implements remotecommand.TerminalSizeQueue.
+// It returns the initial terminal size on the first call to Next(), then blocks
+// on SIGWINCH for subsequent calls (matching kubectl behavior).
 type terminalSizeQueue struct {
-	fd   uintptr
-	done chan struct{}
+	fd      uintptr
+	sigCh   <-chan os.Signal
+	stopSig func()
+	first   bool
 }
 
 func newTerminalSizeQueue(fd uintptr) *terminalSizeQueue {
-	return &terminalSizeQueue{fd: fd, done: make(chan struct{})}
+	sigCh, stopSig := watchSIGWINCH()
+	return &terminalSizeQueue{fd: fd, sigCh: sigCh, stopSig: stopSig, first: true}
 }
 
 func (t *terminalSizeQueue) Next() *remotecommand.TerminalSize {
+	if t.first {
+		t.first = false
+	} else {
+		// Block until a resize signal arrives; return nil if the channel is closed.
+		if _, ok := <-t.sigCh; !ok {
+			return nil
+		}
+	}
 	size, err := term.GetWinsize(t.fd)
 	if err != nil || size == nil {
 		return nil
@@ -638,4 +655,8 @@ func (t *terminalSizeQueue) Next() *remotecommand.TerminalSize {
 		Width:  size.Width,
 		Height: size.Height,
 	}
+}
+
+func (t *terminalSizeQueue) Close() {
+	t.stopSig()
 }

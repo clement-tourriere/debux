@@ -256,6 +256,14 @@ func runInteractiveContainer(ctx context.Context, cli *client.Client, containerI
 		case <-outputDone:
 		case <-statusCh:
 		}
+	case <-ctx.Done():
+		// Wait briefly for the output goroutine to flush remaining data
+		// before terminal state is restored by the deferred RestoreTerminal.
+		select {
+		case <-outputDone:
+		case <-time.After(2 * time.Second):
+		}
+		return ctx.Err()
 	}
 
 	return nil
@@ -464,8 +472,19 @@ func resizeTTY(ctx context.Context, cli *client.Client, containerID string, fd u
 	// Initial resize
 	resize()
 
-	// Watch for SIGWINCH is handled by the terminal library
-	// The raw mode terminal will propagate resize events
+	// Watch for terminal resize signals
+	sigCh, stopSig := watchSIGWINCH()
+	go func() {
+		defer stopSig()
+		for {
+			select {
+			case <-sigCh:
+				resize()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 }
 
 // execInContainer starts an interactive zsh session inside a running container
@@ -502,13 +521,29 @@ func execInContainer(ctx context.Context, cli *client.Client, containerID string
 	}
 
 	if isTerminal {
-		size, err := term.GetWinsize(stdinFd)
-		if err == nil && size != nil {
-			_ = cli.ContainerExecResize(ctx, resp.ID, container.ResizeOptions{
-				Height: uint(size.Height),
-				Width:  uint(size.Width),
-			})
+		resizeExec := func() {
+			size, err := term.GetWinsize(stdinFd)
+			if err == nil && size != nil {
+				_ = cli.ContainerExecResize(ctx, resp.ID, container.ResizeOptions{
+					Height: uint(size.Height),
+					Width:  uint(size.Width),
+				})
+			}
 		}
+		resizeExec()
+
+		sigCh, stopSig := watchSIGWINCH()
+		go func() {
+			defer stopSig()
+			for {
+				select {
+				case <-sigCh:
+					resizeExec()
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 	}
 
 	outputDone := make(chan error, 1)
@@ -528,6 +563,12 @@ func execInContainer(ctx context.Context, cli *client.Client, containerID string
 	case <-inputDone:
 		<-outputDone
 	case <-ctx.Done():
+		// Wait briefly for the output goroutine to flush remaining data
+		// before terminal state is restored by the deferred RestoreTerminal.
+		select {
+		case <-outputDone:
+		case <-time.After(2 * time.Second):
+		}
 		return ctx.Err()
 	}
 
