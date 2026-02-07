@@ -63,10 +63,67 @@ if [[ -f "${HOME:-/tmp}/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestio
   source "${HOME:-/tmp}/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh"
 fi
 
-# Source command-not-found handler
-if [[ -f /etc/zsh/command-not-found-handler ]]; then
-  source /etc/zsh/command-not-found-handler
-fi
+# Command-not-found handler with chroot fallback for target binaries
+command_not_found_handler() {
+  local cmd="$1"
+  shift
+
+  # Check if command exists in target container by searching its PATH dirs
+  if [[ -n "$DEBUX_TARGET_ROOT" && -d "$DEBUX_TARGET_ROOT" ]]; then
+    local target_bin=""
+    # Read target's PATH from /proc/1/environ
+    local target_path=""
+    if [[ -f /proc/1/environ ]]; then
+      target_path=$(command tr '\0' '\n' < /proc/1/environ 2>/dev/null | command sed -n 's/^PATH=//p')
+    fi
+    [[ -z "$target_path" ]] && target_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    local search_dir
+    while IFS= read -r -d ':' search_dir || [[ -n "$search_dir" ]]; do
+      if [[ -x "${DEBUX_TARGET_ROOT}${search_dir}/${cmd}" || -L "${DEBUX_TARGET_ROOT}${search_dir}/${cmd}" ]]; then
+        target_bin="${search_dir}/${cmd}"
+        break
+      fi
+    done <<< "$target_path"
+
+    if [[ -n "$target_bin" ]]; then
+      # Run via chroot with target's full original environment (same as docker exec)
+      local save_dir="$PWD"
+      case "$PWD" in
+        "${DEBUX_TARGET_ROOT}"/*) ;;
+        *) cd "$DEBUX_TARGET_ROOT" 2>/dev/null || true ;;
+      esac
+      local -a target_env=()
+      local entry
+      while IFS= read -r -d '' entry; do
+        target_env+=("$entry")
+      done < /proc/1/environ 2>/dev/null
+      local chroot_bin=$(command -v chroot)
+      env -i "${target_env[@]}" TERM="$TERM" \
+        "$chroot_bin" --skip-chdir "$DEBUX_TARGET_ROOT" "$target_bin" "$@"
+      local ret=$?
+      cd "$save_dir" 2>/dev/null || true
+      return $ret
+    fi
+  fi
+
+  # Fallback: offer to install via dctl
+  echo -e "\e[33m$cmd\e[0m: command not found"
+  echo ""
+  echo -e "  Install with: \e[32mdctl install $cmd\e[0m"
+  echo ""
+  read "REPLY?  Install now? [y/N] "
+  if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+    if dctl install "$cmd"; then
+      command "$cmd" "$@"
+      return $?
+    else
+      echo ""
+      echo "  Package '$cmd' not found. Try: dctl search $cmd"
+    fi
+  fi
+
+  return 127
+}
 
 # Prompt
 target="${DEBUX_TARGET:-unknown}"
@@ -85,6 +142,7 @@ setopt HIST_IGNORE_DUPS
 setopt HIST_IGNORE_SPACE
 setopt HIST_REDUCE_BLANKS
 setopt INC_APPEND_HISTORY
+setopt AUTO_CD
 
 # Aliases
 alias l='ls -lah --color=auto'
@@ -107,6 +165,9 @@ dctl() { command dctl "$@"; local ret=$?; rehash; return $ret; }
 _debux_import_target_env() {
   local environ_file="/proc/1/environ"
   [[ -f "$environ_file" ]] || return 0
+
+  # Save sidecar's PATH before target env modification (used by wrapper generator)
+  _debux_sidecar_path="$PATH"
 
   local -a skip_exact=(
     HOME USER LOGNAME SHELL TERM HOSTNAME PWD OLDPWD SHLVL _ TMPDIR
@@ -143,6 +204,8 @@ _debux_import_target_env() {
       while IFS= read -r -d ':' component || [[ -n "$component" ]]; do
         translated+=("${DEBUX_TARGET_ROOT}${component}")
       done <<< "$val"
+      # Save original target PATH for wrapper generation
+      _debux_target_path="$val"
       export PATH="${PATH}:${(j.:.)translated}"
 
     elif (( ${path_colon_vars[(Ie)$key]} )); then
@@ -166,6 +229,81 @@ _debux_import_target_env() {
 }
 _debux_import_target_env
 unfunction _debux_import_target_env
+
+# Generate chroot wrapper scripts for target binaries
+_debux_generate_wrappers() {
+  [[ -z "$DEBUX_TARGET_ROOT" || ! -d "$DEBUX_TARGET_ROOT" ]] && return 0
+  [[ -z "$_debux_target_path" ]] && return 0
+
+  local wrapper_dir="/tmp/debux-target-bin"
+  mkdir -p "$wrapper_dir"
+
+  # Create shared chroot-exec helper
+  # Restores the target container's full original environment from
+  # /proc/1/environ before chroot+exec — same env as "docker exec".
+  # CWD is preserved by --skip-chdir: /proc/1/root/app becomes /app.
+  cat > "$wrapper_dir/.chroot-exec" << 'HELPER_EOF'
+#!/bin/sh
+TARGET_ROOT="${DEBUX_TARGET_ROOT:-/proc/1/root}"
+CHROOT=$(command -v chroot)
+cmd="$1"; shift
+case "$PWD" in
+  "${TARGET_ROOT}"/*) ;;
+  *) cd "$TARGET_ROOT" 2>/dev/null || true ;;
+esac
+# Restore target container's original environment
+while IFS= read -r line; do
+  case "$line" in *=*) export "$line" ;; esac
+done <<ENVEOF
+$(tr '\0' '\n' < /proc/1/environ 2>/dev/null)
+ENVEOF
+exec "$CHROOT" --skip-chdir "$TARGET_ROOT" "$cmd" "$@"
+HELPER_EOF
+  chmod +x "$wrapper_dir/.chroot-exec"
+
+  # Collect sidecar's own binaries from the pre-modification PATH
+  local -A sidecar_cmds
+  local p
+  while IFS= read -r -d ':' p || [[ -n "$p" ]]; do
+    [[ -d "$p" ]] || continue
+    for f in "$p"/*(-.:t N); do
+      sidecar_cmds[$f]=1
+    done
+  done <<< "$_debux_sidecar_path"
+
+  # Walk each target PATH dir and create wrappers for missing commands
+  local dir
+  while IFS= read -r -d ':' dir || [[ -n "$dir" ]]; do
+    local target_dir="${DEBUX_TARGET_ROOT}${dir}"
+    [[ -d "$target_dir" ]] || continue
+    for bin_path in "$target_dir"/*(N^/); do
+      local bin_name="${bin_path:t}"
+      # Skip if sidecar already has this command or wrapper already exists
+      (( ${+sidecar_cmds[$bin_name]} )) && continue
+      [[ -e "$wrapper_dir/$bin_name" ]] && continue
+      # Create a one-line wrapper
+      printf '#!/bin/sh\nexec /tmp/debux-target-bin/.chroot-exec "%s" "$@"\n' "${dir}/${bin_name}" > "$wrapper_dir/$bin_name"
+      chmod +x "$wrapper_dir/$bin_name"
+    done
+  done <<< "$_debux_target_path"
+
+  # Prepend wrapper dir to PATH (before /proc/1/root/... entries)
+  export PATH="$wrapper_dir:$PATH"
+  unset _debux_target_path _debux_sidecar_path
+}
+_debux_generate_wrappers
+unfunction _debux_generate_wrappers
+
+# Auto-cd to target container's working directory
+if [[ -n "$DEBUX_TARGET_ROOT" && -r /proc/1/cwd ]]; then
+  _debux_target_cwd=$(readlink /proc/1/cwd 2>/dev/null)
+  if [[ -n "$_debux_target_cwd" && -d "${DEBUX_TARGET_ROOT}${_debux_target_cwd}" ]]; then
+    cd "${DEBUX_TARGET_ROOT}${_debux_target_cwd}"
+  elif [[ -d "$DEBUX_TARGET_ROOT" ]]; then
+    cd "$DEBUX_TARGET_ROOT"
+  fi
+  unset _debux_target_cwd
+fi
 
 # Key bindings
 bindkey -e

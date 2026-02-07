@@ -2,6 +2,45 @@ command_not_found_handler() {
   local cmd="$1"
   shift
 
+  # Check if command exists in target container by searching its PATH dirs
+  if [[ -n "$DEBUX_TARGET_ROOT" && -d "$DEBUX_TARGET_ROOT" ]]; then
+    local target_bin=""
+    # Read target's PATH from /proc/1/environ
+    local target_path=""
+    if [[ -f /proc/1/environ ]]; then
+      target_path=$(command tr '\0' '\n' < /proc/1/environ 2>/dev/null | command sed -n 's/^PATH=//p')
+    fi
+    [[ -z "$target_path" ]] && target_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    local search_dir
+    while IFS= read -r -d ':' search_dir || [[ -n "$search_dir" ]]; do
+      if [[ -x "${DEBUX_TARGET_ROOT}${search_dir}/${cmd}" || -L "${DEBUX_TARGET_ROOT}${search_dir}/${cmd}" ]]; then
+        target_bin="${search_dir}/${cmd}"
+        break
+      fi
+    done <<< "$target_path"
+
+    if [[ -n "$target_bin" ]]; then
+      # Run via chroot with target's full original environment (same as docker exec)
+      local save_dir="$PWD"
+      case "$PWD" in
+        "${DEBUX_TARGET_ROOT}"/*) ;;
+        *) cd "$DEBUX_TARGET_ROOT" 2>/dev/null || true ;;
+      esac
+      local -a target_env=()
+      local entry
+      while IFS= read -r -d '' entry; do
+        target_env+=("$entry")
+      done < /proc/1/environ 2>/dev/null
+      local chroot_bin=$(command -v chroot)
+      env -i "${target_env[@]}" TERM="$TERM" \
+        "$chroot_bin" --skip-chdir "$DEBUX_TARGET_ROOT" "$target_bin" "$@"
+      local ret=$?
+      cd "$save_dir" 2>/dev/null || true
+      return $ret
+    fi
+  fi
+
+  # Fallback: offer to install via dctl
   echo -e "\e[33m$cmd\e[0m: command not found"
   echo ""
   echo -e "  Install with: \e[32mdctl install $cmd\e[0m"
