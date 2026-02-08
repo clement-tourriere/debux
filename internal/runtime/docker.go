@@ -79,6 +79,59 @@ func DockerList(ctx context.Context) ([]ContainerInfo, error) {
 	return result, nil
 }
 
+// DockerKill force-removes the debux sidecar container for the given target.
+func DockerKill(ctx context.Context, targetName string) error {
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		return fmt.Errorf("connecting to Docker: %w", err)
+	}
+	defer func() { _ = cli.Close() }()
+
+	containerName := fmt.Sprintf("debux-%s", targetName)
+	if err := cli.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true}); err != nil {
+		return fmt.Errorf("removing container %q: %w", containerName, err)
+	}
+	fmt.Printf("Killed debug session for %s\n", targetName)
+	return nil
+}
+
+// DockerKillAll force-removes all running debux sidecar containers.
+func DockerKillAll(ctx context.Context) error {
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		return fmt.Errorf("connecting to Docker: %w", err)
+	}
+	defer func() { _ = cli.Close() }()
+
+	containers, err := cli.ContainerList(ctx, container.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("listing containers: %w", err)
+	}
+
+	killed := 0
+	for _, c := range containers {
+		name := ""
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+		if strings.HasPrefix(name, "debux-") && c.State == "running" {
+			if err := cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
+				fmt.Printf("Warning: failed to kill %s: %v\n", name, err)
+				continue
+			}
+			fmt.Printf("Killed %s\n", name)
+			killed++
+		}
+	}
+
+	if killed == 0 {
+		fmt.Println("No running debux sessions found")
+	} else {
+		fmt.Printf("Killed %d debug session(s)\n", killed)
+	}
+	return nil
+}
+
 // DockerExec launches a debug sidecar sharing namespaces with the target container.
 // The sidecar runs in daemon mode (tail -f /dev/null) and persists between sessions,
 // matching K8s ephemeral container behavior. Interactive shells are started via exec.

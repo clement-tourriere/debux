@@ -56,6 +56,7 @@ Target formats:
 	_ = cmd.PersistentFlags().MarkDeprecated("privileged", "use --profile=sysadmin instead")
 
 	cmd.AddCommand(newExecCmd())
+	cmd.AddCommand(newKillCmd())
 	cmd.AddCommand(newPodCmd())
 	cmd.AddCommand(newImageCmd())
 	cmd.AddCommand(newStoreCmd())

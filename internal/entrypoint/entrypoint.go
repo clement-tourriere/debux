@@ -243,7 +243,7 @@ _debux_generate_wrappers() {
   # /proc/1/environ before chroot+exec — same env as "docker exec".
   # CWD is preserved by --skip-chdir: /proc/1/root/app becomes /app.
   cat > "$wrapper_dir/.chroot-exec" << 'HELPER_EOF'
-#!/bin/sh
+#!/usr/bin/env zsh
 TARGET_ROOT="${DEBUX_TARGET_ROOT:-/proc/1/root}"
 CHROOT=$(command -v chroot)
 cmd="$1"; shift
@@ -251,13 +251,11 @@ case "$PWD" in
   "${TARGET_ROOT}"/*) ;;
   *) cd "$TARGET_ROOT" 2>/dev/null || true ;;
 esac
-# Restore target container's original environment
-while IFS= read -r line; do
-  case "$line" in *=*) export "$line" ;; esac
-done <<ENVEOF
-$(tr '\0' '\n' < /proc/1/environ 2>/dev/null)
-ENVEOF
-exec "$CHROOT" --skip-chdir "$TARGET_ROOT" "$cmd" "$@"
+local -a target_env=()
+while IFS= read -r -d '' entry; do
+  target_env+=("$entry")
+done < /proc/1/environ 2>/dev/null
+exec env -i "${target_env[@]}" "$CHROOT" --skip-chdir "$TARGET_ROOT" "$cmd" "$@"
 HELPER_EOF
   chmod +x "$wrapper_dir/.chroot-exec"
 
@@ -286,6 +284,16 @@ HELPER_EOF
       chmod +x "$wrapper_dir/$bin_name"
     done
   done <<< "$_debux_target_path"
+
+  # Common aliases: create symlink if canonical exists but alias doesn't
+  local -A cmd_aliases=(
+    [python]=python3
+    [pip]=pip3
+  )
+  for alias_name canonical in "${(@kv)cmd_aliases}"; do
+    [[ ! -e "$wrapper_dir/$alias_name" && -e "$wrapper_dir/$canonical" ]] && \
+      ln -sf "$canonical" "$wrapper_dir/$alias_name"
+  done
 
   # Prepend wrapper dir to PATH (before /proc/1/root/... entries)
   export PATH="$wrapper_dir:$PATH"
@@ -316,7 +324,7 @@ echo ""
 
 # Launch shell (or daemon mode for k8s container reuse)
 if [ "${DEBUX_DAEMON:-}" = "1" ]; then
-  exec tail -f /dev/null
+  trap 'exit 0' TERM INT; while :; do sleep 86400 & wait; done
 fi
 exec zsh
 `

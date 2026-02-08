@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/clement-tourriere/debux/internal/entrypoint"
+	"github.com/moby/term"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
@@ -17,8 +20,6 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
-
-	"github.com/moby/term"
 )
 
 // SecurityContextForProfile returns the SecurityContext for the given profile.
@@ -129,6 +130,104 @@ func KubernetesList(ctx context.Context, kubeconfig string, namespace string) ([
 	return result, nil
 }
 
+// KubernetesKill terminates the debux ephemeral container on a specific pod by
+// killing PID 1 inside it. K8s ephemeral containers cannot be removed from the
+// pod spec, but killing their init process terminates them.
+func KubernetesKill(ctx context.Context, target *Target, kubeconfig string) error {
+	config, clientset, err := getK8sClient(kubeconfig)
+	if err != nil {
+		return err
+	}
+
+	namespace := target.Namespace
+	if namespace == "default" {
+		namespace = resolveNamespace(kubeconfig)
+	}
+
+	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, target.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("getting pod %s/%s: %w", namespace, target.Name, err)
+	}
+
+	containerName := findRunningDebuxContainer(pod)
+	if containerName == "" {
+		return fmt.Errorf("no running debux session found on pod %s/%s", namespace, target.Name)
+	}
+
+	if err := killInContainer(ctx, config, clientset, namespace, target.Name, containerName); err != nil {
+		return fmt.Errorf("killing debug session on %s/%s: %w", namespace, target.Name, err)
+	}
+
+	fmt.Printf("Killed debug session on %s/%s (container: %s)\n", namespace, target.Name, containerName)
+	return nil
+}
+
+// KubernetesKillAll terminates all running debux ephemeral containers across
+// all pods in the resolved namespace.
+func KubernetesKillAll(ctx context.Context, kubeconfig string, namespace string) error {
+	config, clientset, err := getK8sClient(kubeconfig)
+	if err != nil {
+		return err
+	}
+
+	if namespace == "default" {
+		namespace = resolveNamespace(kubeconfig)
+	}
+
+	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		FieldSelector: "status.phase=Running",
+	})
+	if err != nil {
+		return fmt.Errorf("listing pods: %w", err)
+	}
+
+	killed := 0
+	for _, pod := range pods.Items {
+		for _, cs := range pod.Status.EphemeralContainerStatuses {
+			if strings.HasPrefix(cs.Name, "debux-") && cs.State.Running != nil {
+				if err := killInContainer(ctx, config, clientset, namespace, pod.Name, cs.Name); err != nil {
+					fmt.Printf("Warning: failed to kill %s on %s/%s: %v\n", cs.Name, namespace, pod.Name, err)
+					continue
+				}
+				fmt.Printf("Killed %s on %s/%s\n", cs.Name, namespace, pod.Name)
+				killed++
+			}
+		}
+	}
+
+	if killed == 0 {
+		fmt.Println("No running debux sessions found")
+	} else {
+		fmt.Printf("Killed %d debug session(s)\n", killed)
+	}
+	return nil
+}
+
+// killInContainer execs "kill 1" inside a container to terminate PID 1.
+func killInContainer(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string) error {
+	req := clientset.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(namespace).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: containerName,
+			Command:   []string{"kill", "1"},
+			Stdout:    true,
+			Stderr:    true,
+		}, scheme.ParameterCodec)
+
+	exec, err := remotecommand.NewSPDYExecutor(config, http.MethodPost, req.URL())
+	if err != nil {
+		return fmt.Errorf("creating executor: %w", err)
+	}
+
+	return exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	})
+}
+
 // KubernetesExec debugs a running pod using ephemeral containers.
 // It reuses an existing running debux container when possible, or creates a new
 // one in daemon mode (DEBUX_DAEMON=1) so it stays alive between sessions.
@@ -173,7 +272,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 			Name:            debugContainerName,
 			Image:           opts.Image,
 			ImagePullPolicy: corev1.PullPolicy(opts.PullPolicy),
-			Command:         []string{"/entrypoint.sh"},
+			Command:         []string{"/bin/sh", "-c", entrypoint.Script},
 			Stdin:           true,
 			TTY:             true,
 			Env: []corev1.EnvVar{
