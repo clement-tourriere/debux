@@ -1,5 +1,11 @@
 # debux shell configuration
 
+# Source runtime-generated config if available (for K8s exec sessions)
+if [[ -f /tmp/.zshrc ]]; then
+  source /tmp/.zshrc
+  return 0
+fi
+
 # Enable syntax highlighting
 if [[ -f /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]]; then
   source /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh

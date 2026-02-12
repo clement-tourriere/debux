@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/clement-tourriere/debux/internal/entrypoint"
@@ -14,6 +16,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/httpstream"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -224,7 +227,7 @@ func killInContainer(ctx context.Context, config *rest.Config, clientset *kubern
 			Stderr:    true,
 		}, scheme.ParameterCodec)
 
-	exec, err := remotecommand.NewSPDYExecutor(config, http.MethodPost, req.URL())
+	exec, err := newRemoteExecutor(config, req.URL())
 	if err != nil {
 		return fmt.Errorf("creating executor: %w", err)
 	}
@@ -233,6 +236,27 @@ func killInContainer(ctx context.Context, config *rest.Config, clientset *kubern
 		Stdout: &bytes.Buffer{},
 		Stderr: &bytes.Buffer{},
 	})
+}
+
+func newRemoteExecutor(config *rest.Config, reqURL *url.URL) (remotecommand.Executor, error) {
+	websocketExec, err := remotecommand.NewWebSocketExecutor(config, http.MethodGet, reqURL.String())
+	if err != nil {
+		return nil, fmt.Errorf("creating websocket executor: %w", err)
+	}
+
+	spdyExec, err := remotecommand.NewSPDYExecutor(config, http.MethodPost, reqURL)
+	if err != nil {
+		return nil, fmt.Errorf("creating SPDY executor: %w", err)
+	}
+
+	exec, err := remotecommand.NewFallbackExecutor(websocketExec, spdyExec, func(err error) bool {
+		return httpstream.IsUpgradeFailure(err) || httpstream.IsHTTPSProxyError(err)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating fallback executor: %w", err)
+	}
+
+	return exec, nil
 }
 
 // KubernetesExec debugs a running pod using ephemeral containers.
@@ -377,16 +401,16 @@ func execInPod(ctx context.Context, config *rest.Config, clientset *kubernetes.C
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: containerName,
-			Command:   []string{"sh", "-c", "mkdir -p /nix/var/debux-data /tmp/debux-data 2>/dev/null; export DEBUX_TARGET_ROOT=/proc/1/root; ZDOTDIR=/tmp exec zsh"},
+			Command:   []string{"zsh"},
 			Stdin:     true,
 			Stdout:    true,
 			Stderr:    true,
 			TTY:       true,
 		}, scheme.ParameterCodec)
 
-	exec, err := remotecommand.NewSPDYExecutor(config, http.MethodPost, req.URL())
+	exec, err := newRemoteExecutor(config, req.URL())
 	if err != nil {
-		return fmt.Errorf("creating SPDY executor: %w", err)
+		return fmt.Errorf("creating executor: %w", err)
 	}
 
 	// Set terminal to raw mode
@@ -697,9 +721,9 @@ func attachToPod(ctx context.Context, config *rest.Config, clientset *kubernetes
 			TTY:       true,
 		}, scheme.ParameterCodec)
 
-	exec, err := remotecommand.NewSPDYExecutor(config, http.MethodPost, req.URL())
+	exec, err := newRemoteExecutor(config, req.URL())
 	if err != nil {
-		return fmt.Errorf("creating SPDY executor: %w", err)
+		return fmt.Errorf("creating executor: %w", err)
 	}
 
 	// Set terminal to raw mode
@@ -729,40 +753,68 @@ func attachToPod(ctx context.Context, config *rest.Config, clientset *kubernetes
 	return exec.StreamWithContext(ctx, streamOpts)
 }
 
-// terminalSizeQueue implements remotecommand.TerminalSizeQueue.
-// It returns the initial terminal size on the first call to Next(), then blocks
-// on SIGWINCH for subsequent calls (matching kubectl behavior).
 type terminalSizeQueue struct {
-	fd      uintptr
-	sigCh   <-chan os.Signal
-	stopSig func()
-	first   bool
+	resizeChan   chan remotecommand.TerminalSize
+	stopResizing chan struct{}
+	done         chan struct{}
+	stopOnce     sync.Once
 }
 
 func newTerminalSizeQueue(fd uintptr) *terminalSizeQueue {
-	sigCh, stopSig := watchSIGWINCH()
-	return &terminalSizeQueue{fd: fd, sigCh: sigCh, stopSig: stopSig, first: true}
+	tsq := &terminalSizeQueue{
+		resizeChan:   make(chan remotecommand.TerminalSize, 1),
+		stopResizing: make(chan struct{}),
+		done:         make(chan struct{}),
+	}
+
+	if size, err := term.GetWinsize(fd); err == nil && size != nil {
+		tsq.resizeChan <- remotecommand.TerminalSize{
+			Width:  size.Width,
+			Height: size.Height,
+		}
+	}
+
+	go tsq.monitorSize(fd)
+
+	return tsq
 }
 
 func (t *terminalSizeQueue) Next() *remotecommand.TerminalSize {
-	if t.first {
-		t.first = false
-	} else {
-		// Block until a resize signal arrives; return nil if the channel is closed.
-		if _, ok := <-t.sigCh; !ok {
-			return nil
-		}
-	}
-	size, err := term.GetWinsize(t.fd)
-	if err != nil || size == nil {
+	size, ok := <-t.resizeChan
+	if !ok {
 		return nil
 	}
-	return &remotecommand.TerminalSize{
-		Width:  size.Width,
-		Height: size.Height,
+	return &size
+}
+
+func (t *terminalSizeQueue) monitorSize(fd uintptr) {
+	sigCh, stopSig := watchSIGWINCH()
+	defer func() {
+		stopSig()
+		close(t.resizeChan)
+		close(t.done)
+	}()
+
+	for {
+		select {
+		case <-sigCh:
+			if size, err := term.GetWinsize(fd); err == nil && size != nil {
+				select {
+				case t.resizeChan <- remotecommand.TerminalSize{Width: size.Width, Height: size.Height}:
+				case <-t.stopResizing:
+					return
+				default:
+				}
+			}
+		case <-t.stopResizing:
+			return
+		}
 	}
 }
 
 func (t *terminalSizeQueue) Close() {
-	t.stopSig()
+	t.stopOnce.Do(func() {
+		close(t.stopResizing)
+		<-t.done
+	})
 }

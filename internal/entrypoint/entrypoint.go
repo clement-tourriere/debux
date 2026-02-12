@@ -39,7 +39,13 @@ mkdir -p /nix/var/debux-data 2>/dev/null || mkdir -p /tmp/debux-data
 # Ensure XDG config directory exists so tools can write their configs
 mkdir -p "${HOME:-/tmp}/.config" 2>/dev/null || true
 
-# Write shell configuration to /tmp since ZDOTDIR=/tmp is set in exec sessions
+# Write .zshenv to set ZDOTDIR for all zsh sessions (including exec)
+# .zshenv is always sourced by zsh before .zshrc
+cat > /root/.zshenv << 'ZSHENV_EOF'
+export ZDOTDIR=/tmp
+ZSHENV_EOF
+
+# Write shell configuration to /tmp/.zshrc (ZDOTDIR points here)
 cat > /tmp/.zshrc << 'ZSHRC_EOF'
 # debux shell configuration
 
@@ -164,7 +170,7 @@ _debux_import_target_env() {
   _debux_sidecar_path="$PATH"
 
   local -a skip_exact=(
-    HOME USER LOGNAME SHELL TERM HOSTNAME PWD OLDPWD SHLVL _ TMPDIR
+    HOME USER LOGNAME SHELL TERM COLUMNS LINES HOSTNAME PWD OLDPWD SHLVL _ TMPDIR
     NOTIFY_SOCKET SSH_AUTH_SOCK XDG_RUNTIME_DIR container
   )
   local -a path_colon_vars=(
