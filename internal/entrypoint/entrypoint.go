@@ -39,14 +39,8 @@ mkdir -p /nix/var/debux-data 2>/dev/null || mkdir -p /tmp/debux-data
 # Ensure XDG config directory exists so tools can write their configs
 mkdir -p "${HOME:-/tmp}/.config" 2>/dev/null || true
 
-# Determine writable home for zshrc
-DEBUX_HOME="${HOME:-/tmp}"
-if [ ! -w "$DEBUX_HOME" ]; then
-  DEBUX_HOME="/tmp"
-fi
-
-# Write shell configuration (overrides image default)
-cat > "$DEBUX_HOME/.zshrc" << 'ZSHRC_EOF'
+# Write shell configuration to /tmp since ZDOTDIR=/tmp is set in exec sessions
+cat > /tmp/.zshrc << 'ZSHRC_EOF'
 # debux shell configuration
 
 # Ensure PATH includes all tool locations (needed for exec sessions in daemon mode)
@@ -347,14 +341,8 @@ mkdir -p /nix/var/debux-data 2>/dev/null || mkdir -p /tmp/debux-data
 # Ensure XDG config directory exists so tools can write their configs
 mkdir -p "${HOME:-/tmp}/.config" 2>/dev/null || true
 
-# Determine writable home for zshrc
-DEBUX_HOME="${HOME:-/tmp}"
-if [ ! -w "$DEBUX_HOME" ]; then
-  DEBUX_HOME="/tmp"
-fi
-
-# Write shell configuration (overrides image default)
-cat > "$DEBUX_HOME/.zshrc" << 'ZSHRC_EOF'
+# Write shell configuration (ZDOTDIR not used for image debugging)
+cat > "${HOME:-/tmp}/.zshrc" << 'ZSHRC_EOF'
 # debux shell configuration
 
 # Enable syntax highlighting

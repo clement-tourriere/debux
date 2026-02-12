@@ -26,10 +26,17 @@ import (
 func SecurityContextForProfile(profile string) (*corev1.SecurityContext, error) {
 	switch profile {
 	case ProfileGeneral, "":
-		// Explicitly allow running as root so the debug container is not
-		// blocked by a pod-level runAsNonRoot constraint.
+		// Run as root (UID 0) with capabilities needed for debugging:
+		// - SYS_PTRACE: ptrace system calls for debugging
+		// - SYS_ADMIN: namespace operations and /proc/1/root access
+		// - SYS_CHROOT: execute target binaries via chroot
+		var uid int64 = 0
 		return &corev1.SecurityContext{
 			RunAsNonRoot: &[]bool{false}[0],
+			RunAsUser:    &uid,
+			Capabilities: &corev1.Capabilities{
+				Add: []corev1.Capability{"SYS_PTRACE", "SYS_ADMIN", "SYS_CHROOT"},
+			},
 		}, nil
 	case ProfileBaseline:
 		return nil, nil
@@ -370,7 +377,7 @@ func execInPod(ctx context.Context, config *rest.Config, clientset *kubernetes.C
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: containerName,
-			Command:   []string{"sh", "-c", "mkdir -p /nix/var/debux-data /tmp/debux-data 2>/dev/null; export DEBUX_TARGET_ROOT=/proc/1/root; exec zsh"},
+			Command:   []string{"sh", "-c", "mkdir -p /nix/var/debux-data /tmp/debux-data 2>/dev/null; export DEBUX_TARGET_ROOT=/proc/1/root; ZDOTDIR=/tmp exec zsh"},
 			Stdin:     true,
 			Stdout:    true,
 			Stderr:    true,
