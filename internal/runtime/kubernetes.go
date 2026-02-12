@@ -16,6 +16,7 @@ import (
 	"github.com/moby/term"
 
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/httpstream"
 	remotecommandconsts "k8s.io/apimachinery/pkg/util/remotecommand"
@@ -296,6 +297,10 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		targetContainer = pod.Spec.Containers[0].Name
 	}
 
+	if opts.Copy {
+		return kubernetesExecWithPodCopy(ctx, config, clientset, namespace, pod, targetContainer, opts)
+	}
+
 	// Try to reuse an existing running debux container
 	if !opts.Fresh {
 		if existing := findRunningDebuxContainer(pod); existing != "" {
@@ -353,6 +358,9 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	pod.Spec.EphemeralContainers = append(pod.Spec.EphemeralContainers, ephemeralContainer)
 	patchedPod, err := clientset.CoreV1().Pods(namespace).UpdateEphemeralContainers(ctx, podName, pod, metav1.UpdateOptions{})
 	if err != nil {
+		if k8serrors.IsForbidden(err) {
+			return fmt.Errorf("updating ephemeral containers: %w\nHint: your RBAC may not allow pods/ephemeralcontainers. Retry with --copy to use pod-copy debug mode", err)
+		}
 		return fmt.Errorf("updating ephemeral containers: %w", err)
 	}
 
@@ -390,6 +398,141 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	return execInPod(ctx, config, clientset, namespace, podName, debugContainerName)
 }
 
+func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace string, sourcePod *corev1.Pod, targetContainer string, opts DebugOpts) error {
+	spec := *sourcePod.Spec.DeepCopy()
+
+	// The copied pod should be scheduler-managed, not pinned to the original node.
+	spec.NodeName = ""
+	spec.EphemeralContainers = nil
+
+	// Match kubectl debug --copy-to --share-processes behavior.
+	shareProcesses := true
+	spec.ShareProcessNamespace = &shareProcesses
+
+	existingNames := make(map[string]struct{}, len(spec.Containers))
+	for _, c := range spec.Containers {
+		existingNames[c.Name] = struct{}{}
+	}
+
+	debugContainerName := "debux"
+	if _, exists := existingNames[debugContainerName]; exists {
+		for i := 1; ; i++ {
+			candidate := fmt.Sprintf("debux-%d", i)
+			if _, taken := existingNames[candidate]; !taken {
+				debugContainerName = candidate
+				break
+			}
+		}
+	}
+
+	debugContainer := corev1.Container{
+		Name:            debugContainerName,
+		Image:           opts.Image,
+		ImagePullPolicy: corev1.PullPolicy(opts.PullPolicy),
+		Command:         []string{"/bin/sh", "-c", entrypoint.Script},
+		Stdin:           true,
+		TTY:             true,
+		Env: []corev1.EnvVar{
+			{Name: "DEBUX_TARGET", Value: fmt.Sprintf("%s/%s", namespace, sourcePod.Name)},
+			{Name: "DEBUX_DAEMON", Value: "1"},
+			{Name: "HOME", Value: "/root"},
+		},
+	}
+
+	if opts.ShareVolumes {
+		for _, c := range sourcePod.Spec.Containers {
+			if c.Name == targetContainer {
+				debugContainer.VolumeMounts = append(debugContainer.VolumeMounts, c.VolumeMounts...)
+				break
+			}
+		}
+	}
+
+	sc, err := SecurityContextForProfile(opts.Profile)
+	if err != nil {
+		return err
+	}
+	if sc != nil {
+		debugContainer.SecurityContext = sc
+	}
+
+	if opts.User != "" {
+		debugContainer.Env = append(debugContainer.Env, corev1.EnvVar{Name: "DEBUX_USER", Value: opts.User})
+	}
+
+	spec.Containers = append(spec.Containers, debugContainer)
+
+	copyPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "debux-copy-",
+			Namespace:    namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "debux",
+				"debux.clement-tourriere/mode": "copy",
+			},
+			Annotations: map[string]string{
+				"debux.clement-tourriere/source-pod": sourcePod.Name,
+			},
+		},
+		Spec: spec,
+	}
+
+	created, err := clientset.CoreV1().Pods(namespace).Create(ctx, copyPod, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("creating debug copy pod: %w", err)
+	}
+
+	defer func() {
+		fmt.Printf("Deleting debug copy pod %s...\n", created.Name)
+		_ = clientset.CoreV1().Pods(namespace).Delete(context.Background(), created.Name, metav1.DeleteOptions{})
+	}()
+
+	fmt.Printf("Waiting for debug copy pod %q to start...\n", created.Name)
+	if err := waitForContainerRunning(ctx, clientset, namespace, created.Name, debugContainerName, created.ResourceVersion); err != nil {
+		return err
+	}
+
+	runningCopyPod, err := clientset.CoreV1().Pods(namespace).Get(ctx, created.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("getting debug copy pod %s/%s: %w", namespace, created.Name, err)
+	}
+
+	targetContainerID := findContainerID(runningCopyPod, targetContainer)
+	if targetContainerID == "" {
+		fmt.Printf("Warning: could not resolve container ID for target container %q in copy pod %s/%s; filesystem/env integration may be limited\n", targetContainer, namespace, created.Name)
+	}
+
+	fmt.Printf("Debugging copy %s/%s (container: %s, source: %s)\n", namespace, created.Name, debugContainerName, sourcePod.Name)
+
+	return execInPodWithCommand(ctx, config, clientset, namespace, created.Name, debugContainerName, copyPodShellCommand(targetContainerID))
+}
+
+func findContainerID(pod *corev1.Pod, containerName string) string {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name != containerName {
+			continue
+		}
+		containerID := strings.TrimSpace(cs.ContainerID)
+		if idx := strings.Index(containerID, "://"); idx != -1 {
+			containerID = containerID[idx+3:]
+		}
+		return containerID
+	}
+	return ""
+}
+
+func copyPodShellCommand(targetContainerID string) []string {
+	cmd := "ZDOTDIR=/tmp exec zsh"
+	if targetContainerID != "" {
+		shortID := targetContainerID
+		if len(shortID) > 12 {
+			shortID = shortID[:12]
+		}
+		cmd = fmt.Sprintf("target_cid=%q; target_cid_short=%q; target_pid=''; if [ -n \"$target_cid\" ]; then for p in /proc/[0-9]*; do [ -r \"$p/cgroup\" ] || continue; if grep -q \"$target_cid\" \"$p/cgroup\" 2>/dev/null || grep -q \"$target_cid_short\" \"$p/cgroup\" 2>/dev/null; then target_pid=\"${p##*/}\"; break; fi; done; fi; if [ -n \"$target_pid\" ] && [ -d \"/proc/$target_pid/root\" ]; then export DEBUX_TARGET_ROOT=\"/proc/$target_pid/root\"; export DEBUX_TARGET_ENVIRON=\"/proc/$target_pid/environ\"; export DEBUX_TARGET_CWD_LINK=\"/proc/$target_pid/cwd\"; fi; ZDOTDIR=/tmp exec zsh", targetContainerID, shortID)
+	}
+	return []string{"sh", "-c", cmd}
+}
+
 // findRunningDebuxContainer looks for an existing running ephemeral container
 // with the "debux-" prefix on the given pod. Returns its name, or "" if none found.
 func findRunningDebuxContainer(pod *corev1.Pod) string {
@@ -404,6 +547,10 @@ func findRunningDebuxContainer(pod *corev1.Pod) string {
 // execInPod starts a new interactive zsh session inside a running container
 // using the /exec subresource (unlike attachToPod which uses /attach).
 func execInPod(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string) error {
+	return execInPodWithCommand(ctx, config, clientset, namespace, podName, containerName, []string{"zsh"})
+}
+
+func execInPodWithCommand(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string, command []string) error {
 	req := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).
@@ -411,7 +558,7 @@ func execInPod(ctx context.Context, config *rest.Config, clientset *kubernetes.C
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: containerName,
-			Command:   []string{"zsh"},
+			Command:   command,
 			Stdin:     true,
 			Stdout:    true,
 			Stderr:    true,
@@ -629,6 +776,68 @@ func waitForEphemeralContainer(ctx context.Context, clientset *kubernetes.Client
 		case <-timeout:
 			return fmt.Errorf("timeout waiting for ephemeral container %q to start\n%s",
 				containerName, describeContainerFailure(ctx, clientset, namespace, podName, containerName))
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func waitForContainerRunning(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName, containerName, resourceVersion string) error {
+	watcher, err := clientset.CoreV1().Pods(namespace).Watch(ctx, metav1.ListOptions{
+		FieldSelector:   fmt.Sprintf("metadata.name=%s", podName),
+		ResourceVersion: resourceVersion,
+	})
+	if err != nil {
+		return fmt.Errorf("watching pod: %w", err)
+	}
+	defer watcher.Stop()
+
+	var lastReason string
+	timeout := time.After(2 * time.Minute)
+	for {
+		select {
+		case event := <-watcher.ResultChan():
+			if event.Type != watch.Modified && event.Type != watch.Added {
+				continue
+			}
+
+			pod, ok := event.Object.(*corev1.Pod)
+			if !ok {
+				continue
+			}
+
+			for _, cs := range pod.Status.ContainerStatuses {
+				if cs.Name != containerName {
+					continue
+				}
+
+				if cs.State.Running != nil {
+					return nil
+				}
+				if cs.State.Terminated != nil {
+					return fmt.Errorf("debug container %q in copy pod %q terminated: %s (exit code %d)",
+						containerName, podName, cs.State.Terminated.Reason, cs.State.Terminated.ExitCode)
+				}
+				if w := cs.State.Waiting; w != nil {
+					switch w.Reason {
+					case "ImagePullBackOff", "ErrImagePull", "InvalidImageName",
+						"CrashLoopBackOff", "RunContainerError", "CreateContainerError",
+						"CreateContainerConfigError":
+						return fmt.Errorf("debug container %q in copy pod %q failed to start: %s: %s",
+							containerName, podName, w.Reason, w.Message)
+					}
+					if w.Reason != "" && w.Reason != lastReason {
+						fmt.Printf("  Container status: %s", w.Reason)
+						if w.Message != "" {
+							fmt.Printf(" (%s)", w.Message)
+						}
+						fmt.Println()
+						lastReason = w.Reason
+					}
+				}
+			}
+		case <-timeout:
+			return fmt.Errorf("timeout waiting for debug container %q in copy pod %q to start", containerName, podName)
 		case <-ctx.Done():
 			return ctx.Err()
 		}

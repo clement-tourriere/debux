@@ -44,6 +44,9 @@ debux exec k8s://my-pod
 debux exec k8s://my-namespace/my-pod
 debux exec k8s://my-namespace/my-pod/my-container
 
+# Debug by creating a copied pod (when pods/ephemeralcontainers RBAC is denied)
+debux exec k8s://my-namespace/my-pod --copy
+
 # Standalone debug pod
 debux pod -n my-namespace
 ```
@@ -76,6 +79,8 @@ debux exec k8s://       # Pick from Kubernetes pods
 | `--image <image>` | Override debug image |
 | `--privileged` | Run in privileged mode |
 | `--user <uid:gid>` | Run as a specific user |
+| `--fresh` | Force a new Kubernetes debug container |
+| `--copy` | For Kubernetes, debug a copied pod instead of an ephemeral container |
 | `--kubeconfig <path>` | Override kubeconfig path |
 
 ### `debux pod [flags]`

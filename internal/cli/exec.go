@@ -67,6 +67,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		ShareVolumes: !flagNoVolumes,
 		PullPolicy:   flagPullPolicy,
 		Fresh:        flagFresh,
+		Copy:         flagCopy,
 		Profile:      profile,
 	}
 

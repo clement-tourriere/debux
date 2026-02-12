@@ -17,6 +17,7 @@ var (
 	flagNoVolumes  bool
 	flagPullPolicy string
 	flagFresh      bool
+	flagCopy       bool
 	flagProfile    string
 )
 
@@ -50,6 +51,7 @@ Target formats:
 	cmd.PersistentFlags().BoolVar(&flagNoVolumes, "no-volumes", false, "Don't share target container's volumes")
 	cmd.PersistentFlags().StringVar(&flagPullPolicy, "pull-policy", "IfNotPresent", "Image pull policy for Kubernetes (Always, IfNotPresent, Never)")
 	cmd.PersistentFlags().BoolVar(&flagFresh, "fresh", false, "Force a new debug container instead of reusing an existing one (Kubernetes)")
+	cmd.PersistentFlags().BoolVar(&flagCopy, "copy", false, "For Kubernetes, create a copied debug pod instead of an ephemeral container")
 	cmd.PersistentFlags().String("kubeconfig", "", "Override kubeconfig path")
 	cmd.PersistentFlags().StringVar(&flagProfile, "profile", "general",
 		fmt.Sprintf("Security profile for Kubernetes (%s)", strings.Join(runtime.ValidProfiles, ", ")))

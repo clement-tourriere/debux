@@ -27,7 +27,10 @@ fi
 export PATH="/nix/var/debux-profile/bin:/usr/local/bin:${HOME:-/tmp}/.nix-profile/bin:$PATH"
 
 # Export target root for easy access
-export DEBUX_TARGET_ROOT="/proc/1/root"
+: "${DEBUX_TARGET_ROOT:=/proc/1/root}"
+: "${DEBUX_TARGET_ENVIRON:=/proc/1/environ}"
+: "${DEBUX_TARGET_CWD_LINK:=/proc/1/cwd}"
+export DEBUX_TARGET_ROOT DEBUX_TARGET_ENVIRON DEBUX_TARGET_CWD_LINK
 
 # Create convenience symlinks for target filesystem
 ln -sf "$DEBUX_TARGET_ROOT/etc/hosts" /etc/hosts 2>/dev/null || true
@@ -73,8 +76,8 @@ command_not_found_handler() {
     local target_bin=""
     # Read target's PATH from /proc/1/environ
     local target_path=""
-    if [[ -f /proc/1/environ ]]; then
-      target_path=$(command tr '\0' '\n' < /proc/1/environ 2>/dev/null | command sed -n 's/^PATH=//p')
+    if [[ -f "${DEBUX_TARGET_ENVIRON:-/proc/1/environ}" ]]; then
+      target_path=$(command tr '\0' '\n' < "${DEBUX_TARGET_ENVIRON:-/proc/1/environ}" 2>/dev/null | command sed -n 's/^PATH=//p')
     fi
     [[ -z "$target_path" ]] && target_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     local search_dir
@@ -96,7 +99,7 @@ command_not_found_handler() {
       local entry
       while IFS= read -r -d '' entry; do
         target_env+=("$entry")
-      done < /proc/1/environ 2>/dev/null
+      done < "${DEBUX_TARGET_ENVIRON:-/proc/1/environ}" 2>/dev/null
       local chroot_bin=$(command -v chroot)
       env -i "${target_env[@]}" TERM="$TERM" \
         "$chroot_bin" --skip-chdir "$DEBUX_TARGET_ROOT" "$target_bin" "$@"
@@ -163,7 +166,7 @@ dctl() { command dctl "$@"; local ret=$?; rehash; return $ret; }
 
 # Import target container environment variables
 _debux_import_target_env() {
-  local environ_file="/proc/1/environ"
+  local environ_file="${DEBUX_TARGET_ENVIRON:-/proc/1/environ}"
   [[ -f "$environ_file" ]] || return 0
 
   # Save sidecar's PATH before target env modification (used by wrapper generator)
@@ -254,7 +257,7 @@ esac
 local -a target_env=()
 while IFS= read -r -d '' entry; do
   target_env+=("$entry")
-done < /proc/1/environ 2>/dev/null
+done < "${DEBUX_TARGET_ENVIRON:-/proc/1/environ}" 2>/dev/null
 exec env -i "${target_env[@]}" "$CHROOT" --skip-chdir "$TARGET_ROOT" "$cmd" "$@"
 HELPER_EOF
   chmod +x "$wrapper_dir/.chroot-exec"
@@ -303,8 +306,8 @@ _debux_generate_wrappers
 unfunction _debux_generate_wrappers
 
 # Auto-cd to target container's working directory
-if [[ -n "$DEBUX_TARGET_ROOT" && -r /proc/1/cwd ]]; then
-  _debux_target_cwd=$(readlink /proc/1/cwd 2>/dev/null)
+if [[ -n "$DEBUX_TARGET_ROOT" && -r "${DEBUX_TARGET_CWD_LINK:-/proc/1/cwd}" ]]; then
+  _debux_target_cwd=$(readlink "${DEBUX_TARGET_CWD_LINK:-/proc/1/cwd}" 2>/dev/null)
   if [[ -n "$_debux_target_cwd" && -d "${DEBUX_TARGET_ROOT}${_debux_target_cwd}" ]]; then
     cd "${DEBUX_TARGET_ROOT}${_debux_target_cwd}"
   elif [[ -d "$DEBUX_TARGET_ROOT" ]]; then

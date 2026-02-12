@@ -78,6 +78,7 @@ type DebugOpts struct {
 	ShareVolumes bool   // share target container's volumes (default: true)
 	PullPolicy   string // Kubernetes image pull policy (Always, IfNotPresent, Never)
 	Fresh        bool   // force a new ephemeral container instead of reusing an existing one
+	Copy         bool   // for Kubernetes: debug a copied pod instead of using ephemeral containers
 	Profile      string // security profile (general, baseline, restricted, netadmin, sysadmin)
 }
 
