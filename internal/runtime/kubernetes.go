@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/httpstream"
+	remotecommandconsts "k8s.io/apimachinery/pkg/util/remotecommand"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -239,17 +241,25 @@ func killInContainer(ctx context.Context, config *rest.Config, clientset *kubern
 }
 
 func newRemoteExecutor(config *rest.Config, reqURL *url.URL) (remotecommand.Executor, error) {
-	websocketExec, err := remotecommand.NewWebSocketExecutor(config, http.MethodGet, reqURL.String())
-	if err != nil {
-		return nil, fmt.Errorf("creating websocket executor: %w", err)
-	}
-
 	spdyExec, err := remotecommand.NewSPDYExecutor(config, http.MethodPost, reqURL)
 	if err != nil {
 		return nil, fmt.Errorf("creating SPDY executor: %w", err)
 	}
 
-	exec, err := remotecommand.NewFallbackExecutor(websocketExec, spdyExec, func(err error) bool {
+	websocketExec, err := remotecommand.NewWebSocketExecutorForProtocols(
+		config,
+		http.MethodGet,
+		reqURL.String(),
+		remotecommandconsts.StreamProtocolV5Name,
+		remotecommandconsts.StreamProtocolV4Name,
+		remotecommandconsts.StreamProtocolV3Name,
+		remotecommandconsts.StreamProtocolV2Name,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating websocket executor: %w", err)
+	}
+
+	exec, err := remotecommand.NewFallbackExecutor(spdyExec, websocketExec, func(err error) bool {
 		return httpstream.IsUpgradeFailure(err) || httpstream.IsHTTPSProxyError(err)
 	})
 	if err != nil {
@@ -429,6 +439,7 @@ func execInPod(ctx context.Context, config *rest.Config, clientset *kubernetes.C
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
 		Stderr: &bytes.Buffer{}, // TTY merges stderr into stdout
+		Tty:    true,
 	}
 
 	if isTerminal {
@@ -742,6 +753,7 @@ func attachToPod(ctx context.Context, config *rest.Config, clientset *kubernetes
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
 		Stderr: &bytes.Buffer{}, // TTY merges stderr into stdout
+		Tty:    true,
 	}
 
 	if isTerminal {
@@ -760,6 +772,47 @@ type terminalSizeQueue struct {
 	stopOnce     sync.Once
 }
 
+func parsePositiveUint16Env(key string) (uint16, bool) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(v, 10, 16)
+	if err != nil || n == 0 {
+		return 0, false
+	}
+	return uint16(n), true
+}
+
+func terminalSizeFromFd(fd uintptr) (remotecommand.TerminalSize, bool) {
+	ws, err := term.GetWinsize(fd)
+	if err != nil || ws == nil || ws.Width == 0 || ws.Height == 0 {
+		return remotecommand.TerminalSize{}, false
+	}
+	return remotecommand.TerminalSize{Width: ws.Width, Height: ws.Height}, true
+}
+
+func detectTerminalSize(fd uintptr) remotecommand.TerminalSize {
+	if size, ok := terminalSizeFromFd(fd); ok {
+		return size
+	}
+
+	stdoutFd, stdoutIsTerminal := term.GetFdInfo(os.Stdout)
+	if stdoutIsTerminal {
+		if size, ok := terminalSizeFromFd(stdoutFd); ok {
+			return size
+		}
+	}
+
+	if cols, okCols := parsePositiveUint16Env("COLUMNS"); okCols {
+		if lines, okLines := parsePositiveUint16Env("LINES"); okLines {
+			return remotecommand.TerminalSize{Width: cols, Height: lines}
+		}
+	}
+
+	return remotecommand.TerminalSize{Width: 80, Height: 24}
+}
+
 func newTerminalSizeQueue(fd uintptr) *terminalSizeQueue {
 	tsq := &terminalSizeQueue{
 		resizeChan:   make(chan remotecommand.TerminalSize, 1),
@@ -767,12 +820,7 @@ func newTerminalSizeQueue(fd uintptr) *terminalSizeQueue {
 		done:         make(chan struct{}),
 	}
 
-	if size, err := term.GetWinsize(fd); err == nil && size != nil {
-		tsq.resizeChan <- remotecommand.TerminalSize{
-			Width:  size.Width,
-			Height: size.Height,
-		}
-	}
+	tsq.resizeChan <- detectTerminalSize(fd)
 
 	go tsq.monitorSize(fd)
 
@@ -798,13 +846,12 @@ func (t *terminalSizeQueue) monitorSize(fd uintptr) {
 	for {
 		select {
 		case <-sigCh:
-			if size, err := term.GetWinsize(fd); err == nil && size != nil {
-				select {
-				case t.resizeChan <- remotecommand.TerminalSize{Width: size.Width, Height: size.Height}:
-				case <-t.stopResizing:
-					return
-				default:
-				}
+			size := detectTerminalSize(fd)
+			select {
+			case t.resizeChan <- size:
+			case <-t.stopResizing:
+				return
+			default:
 			}
 		case <-t.stopResizing:
 			return
