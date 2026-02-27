@@ -326,6 +326,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 				{Name: "DEBUX_TARGET_ROOT", Value: "/proc/1/root"},
 				{Name: "DEBUX_DAEMON", Value: "1"},
 				{Name: "HOME", Value: "/root"},
+				{Name: "ZDOTDIR", Value: "/tmp"},
 			},
 		},
 		TargetContainerName: targetContainer,
@@ -436,6 +437,7 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 			{Name: "DEBUX_TARGET", Value: fmt.Sprintf("%s/%s", namespace, sourcePod.Name)},
 			{Name: "DEBUX_DAEMON", Value: "1"},
 			{Name: "HOME", Value: "/root"},
+			{Name: "ZDOTDIR", Value: "/tmp"},
 		},
 	}
 

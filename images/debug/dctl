@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # dctl - debux package manager
 set -euo pipefail
+cd /
+
+# Ensure nix experimental features are available regardless of /etc/nix/nix.conf
+export NIX_CONFIG="experimental-features = nix-command flakes"
 
 # User-installed packages go in a separate nix profile (persisted in /nix/var volume)
 DEBUX_PROFILE="/nix/var/debux-profile"
