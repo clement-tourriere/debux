@@ -1,7 +1,7 @@
 [tools]
 go = "latest"
+golangci-lint = "latest"
 "pipx:pre-commit" = { version = "latest", uvx_args = "--python-preference=system" }
-"go:github.com/golangci/golangci-lint/v2/cmd/golangci-lint" = "latest"
 
 [vars]
 binary = "debux"
