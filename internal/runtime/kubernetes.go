@@ -18,11 +18,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/httpstream"
 	remotecommandconsts "k8s.io/apimachinery/pkg/util/remotecommand"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
@@ -91,16 +93,24 @@ func KubernetesList(ctx context.Context, kubeconfig string, kubeContext string, 
 	return kubernetesListPods(ctx, kubeconfig, kubeContext, namespace, "")
 }
 
-const kubernetesPodListLimit int64 = 200
+const (
+	kubernetesPodListLimit       int64 = 50
+	kubernetesPodListResultLimit int   = 500
+)
+
+var podsResource = schema.GroupVersionResource{Version: "v1", Resource: "pods"}
 
 func kubernetesListPods(ctx context.Context, kubeconfig, kubeContext, namespace, query string) ([]PodInfo, error) {
-	_, clientset, err := getK8sClient(kubeconfig, kubeContext)
+	config, _, err := getK8sClient(kubeconfig, kubeContext)
 	if err != nil {
 		return nil, err
 	}
+	metadataClient, err := metadata.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("creating Kubernetes metadata client: %w", err)
+	}
 
 	listNs := resolveTargetNamespace(namespace, kubeconfig, kubeContext)
-	resolvedContext := kubeContext
 	query = strings.ToLower(strings.TrimSpace(query))
 
 	var result []PodInfo
@@ -110,7 +120,7 @@ func kubernetesListPods(ctx context.Context, kubeconfig, kubeContext, namespace,
 	}
 
 	for {
-		pods, err := clientset.CoreV1().Pods(listNs).List(ctx, listOptions)
+		pods, err := metadataClient.Resource(podsResource).Namespace(listNs).List(ctx, listOptions)
 		if err != nil {
 			return nil, fmt.Errorf("listing pods: %w", err)
 		}
@@ -119,41 +129,15 @@ func kubernetesListPods(ctx context.Context, kubeconfig, kubeContext, namespace,
 			if query != "" && !matchesPodQuery(pod.Namespace, pod.Name, query) {
 				continue
 			}
-
-			// Skip pods with no running containers. A failing readiness probe is often
-			// exactly why the user wants a debugger, so do not require Ready=true.
-			hasRunning := false
-			for _, cs := range pod.Status.ContainerStatuses {
-				if cs.State.Running != nil {
-					hasRunning = true
-					break
-				}
-			}
-			if !hasRunning {
-				continue
-			}
-
-			var containers []string
-			for _, c := range pod.Spec.Containers {
-				containers = append(containers, c.Name)
-			}
-
-			hasSession := false
-			for _, cs := range pod.Status.EphemeralContainerStatuses {
-				if strings.HasPrefix(cs.Name, "debux-") && cs.State.Running != nil {
-					hasSession = true
-					break
-				}
-			}
-
 			result = append(result, PodInfo{
-				Name:            pod.Name,
-				Namespace:       pod.Namespace,
-				Context:         resolvedContext,
-				Status:          string(pod.Status.Phase),
-				Containers:      containers,
-				HasDebuxSession: hasSession,
+				Name:      pod.Name,
+				Namespace: pod.Namespace,
+				Context:   kubeContext,
+				Status:    "Running",
 			})
+			if len(result) >= kubernetesPodListResultLimit {
+				return result, nil
+			}
 		}
 
 		if pods.Continue == "" {

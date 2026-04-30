@@ -242,11 +242,14 @@ func pickK8sPodFromList(title string, pods []runtime.PodInfo) (string, error) {
 		}
 	}
 
-	return picker.Pick(title, items)
+	return picker.PickText(title, items)
 }
 
 func formatK8sPodLabel(p runtime.PodInfo, active bool) string {
-	label := fmt.Sprintf("%s/%s [%s]", p.Namespace, p.Name, strings.Join(p.Containers, ", "))
+	label := fmt.Sprintf("%s/%s", p.Namespace, p.Name)
+	if len(p.Containers) > 0 {
+		label = fmt.Sprintf("%s [%s]", label, strings.Join(p.Containers, ", "))
+	}
 	if p.Context != "" {
 		label = fmt.Sprintf("%s · ctx: %s", label, p.Context)
 	}
