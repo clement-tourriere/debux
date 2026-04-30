@@ -169,8 +169,14 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		return fmt.Errorf("ensuring debug image: %w", err)
 	}
 
-	// Ensure persistent nix volumes
-	if err := store.EnsureVolumes(ctx, cli); err != nil {
+	// Ensure persistent Nix volumes for this exact debug image. The image-specific
+	// names avoid mounting an old /nix/store over a rebuilt image, which can make
+	// /bin/sh point at a missing store path before the container starts.
+	nixVolumes, err := debugImageVolumes(ctx, cli, opts.Image)
+	if err != nil {
+		return err
+	}
+	if err := store.EnsureVolumes(ctx, cli, nixVolumes); err != nil {
 		return fmt.Errorf("ensuring store volumes: %w", err)
 	}
 
@@ -202,12 +208,12 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		Mounts: []mount.Mount{
 			{
 				Type:   mount.TypeVolume,
-				Source: store.NixStoreVolume,
+				Source: nixVolumes.NixStore,
 				Target: "/nix/store",
 			},
 			{
 				Type:   mount.TypeVolume,
-				Source: store.NixVarVolume,
+				Source: nixVolumes.NixVar,
 				Target: "/nix/var",
 			},
 		},
@@ -249,6 +255,14 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	fmt.Printf("Debugging %s (container: %s)\n", target.Name, containerName)
 
 	return execInContainer(ctx, cli, resp.ID)
+}
+
+func debugImageVolumes(ctx context.Context, cli *client.Client, imageRef string) (store.VolumeSet, error) {
+	info, _, err := cli.ImageInspectWithRaw(ctx, imageRef)
+	if err != nil {
+		return store.VolumeSet{}, fmt.Errorf("inspecting debug image %q: %w", imageRef, err)
+	}
+	return store.VolumesForImage(info.ID), nil
 }
 
 // runInteractiveContainer attaches to a created container, starts it, streams
@@ -370,11 +384,15 @@ func DockerImage(ctx context.Context, imageRef string, opts ImageOpts) error {
 	}
 	defer func() { _ = tarReader.Close() }()
 
-	// Ensure debug image and nix volumes
+	// Ensure debug image and image-specific Nix volumes.
 	if err := dbximage.EnsureImage(ctx, cli, opts.DebugImage); err != nil {
 		return fmt.Errorf("ensuring debug image: %w", err)
 	}
-	if err := store.EnsureVolumes(ctx, cli); err != nil {
+	nixVolumes, err := debugImageVolumes(ctx, cli, opts.DebugImage)
+	if err != nil {
+		return err
+	}
+	if err := store.EnsureVolumes(ctx, cli, nixVolumes); err != nil {
 		return fmt.Errorf("ensuring store volumes: %w", err)
 	}
 
@@ -400,12 +418,12 @@ func DockerImage(ctx context.Context, imageRef string, opts ImageOpts) error {
 		Mounts: []mount.Mount{
 			{
 				Type:   mount.TypeVolume,
-				Source: store.NixStoreVolume,
+				Source: nixVolumes.NixStore,
 				Target: "/nix/store",
 			},
 			{
 				Type:   mount.TypeVolume,
-				Source: store.NixVarVolume,
+				Source: nixVolumes.NixVar,
 				Target: "/nix/var",
 			},
 		},
