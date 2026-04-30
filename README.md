@@ -341,6 +341,8 @@ mise run fix            # hk fixes on all files
 mise run hooks-install  # install hk git hooks with mise integration
 mise run image-build    # build debug image
 mise run release:bump   # bump version/changelog/tag with Commitizen
+mise run release:dry-run # build release artifacts locally without publishing
+mise run release:push   # push main + tags to trigger GitHub release
 mise run docs           # serve docs at http://localhost:8000
 mise run docs:open      # open local docs in your browser
 
@@ -353,6 +355,15 @@ The repository uses [hk](https://hk.jdx.dev/) for git hooks, [pkl](https://pkl-l
 ## Releases and distribution
 
 GitHub Releases publish prebuilt `debux` binaries for Linux and macOS on amd64/arm64 using GoReleaser. The one-line installer downloads those release assets and verifies `checksums.txt` when available.
+
+Release flow:
+
+```bash
+mise run release:bump      # updates .cz.toml/changelog and creates a vX.Y.Z tag
+mise run release:push      # git push origin main --follow-tags
+```
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which creates the GitHub Release, uploads checksummed CLI archives, and publishes the debug image to GHCR as `X.Y.Z`, `X.Y`, `X`, and `latest`. You can also run the **Release** workflow manually with a version input from GitHub Actions.
 
 After installation, keep the CLI current with:
 

@@ -15,7 +15,7 @@ builds:
       - -s -w -X github.com/clement-tourriere/debux/internal/version.Version={{ .Version }} -X github.com/clement-tourriere/debux/internal/version.Commit={{ .Commit }} -X github.com/clement-tourriere/debux/internal/version.Date={{ .Date }}
 
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
