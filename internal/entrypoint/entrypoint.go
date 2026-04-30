@@ -86,10 +86,19 @@ command_not_found_handler() {
   # Check if command exists in target container by searching its PATH dirs
   if [[ -n "$DEBUX_TARGET_ROOT" && -d "$DEBUX_TARGET_ROOT" ]]; then
     local target_bin=""
-    # Read target's PATH from /proc/1/environ
+    # Read target's PATH from /proc/1/environ. Some processes (notably nginx)
+    # overwrite argv/environ memory for process titles, so treat environ as
+    # untrusted and ignore malformed entries.
     local target_path=""
     if [[ -f "${DEBUX_TARGET_ENVIRON:-/proc/1/environ}" ]]; then
-      target_path=$(command tr '\0' '\n' < "${DEBUX_TARGET_ENVIRON:-/proc/1/environ}" 2>/dev/null | command sed -n 's/^PATH=//p')
+      local env_entry env_key
+      while IFS= read -r -d '' env_entry; do
+        [[ "$env_entry" == *=* ]] || continue
+        env_key="${env_entry%%=*}"
+        [[ "$env_key" == PATH ]] || continue
+        target_path="${env_entry#*=}"
+        break
+      done < "${DEBUX_TARGET_ENVIRON:-/proc/1/environ}" 2>/dev/null
     fi
     [[ -z "$target_path" ]] && target_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     local search_dir
@@ -110,6 +119,9 @@ command_not_found_handler() {
       local -a target_env=()
       local entry
       while IFS= read -r -d '' entry; do
+        [[ "$entry" == *=* ]] || continue
+        local env_key="${entry%%=*}"
+        [[ "$env_key" =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]] || continue
         target_env+=("$entry")
       done < "${DEBUX_TARGET_ENVIRON:-/proc/1/environ}" 2>/dev/null
       local chroot_bin=$(command -v chroot)
@@ -270,10 +282,12 @@ unfunction _debux_import_target_env
 
 # Generate chroot wrapper scripts for target binaries
 _debux_generate_wrappers() {
+  local wrapper_dir="/tmp/debux-target-bin"
+  rm -rf "$wrapper_dir" 2>/dev/null || true
+
   [[ -z "$DEBUX_TARGET_ROOT" || ! -d "$DEBUX_TARGET_ROOT" ]] && return 0
   [[ -z "$_debux_target_path" ]] && return 0
 
-  local wrapper_dir="/tmp/debux-target-bin"
   mkdir -p "$wrapper_dir"
 
   # Create shared chroot-exec helper
@@ -291,6 +305,9 @@ case "$PWD" in
 esac
 local -a target_env=()
 while IFS= read -r -d '' entry; do
+  [[ "$entry" == *=* ]] || continue
+  env_key="${entry%%=*}"
+  [[ "$env_key" =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]] || continue
   target_env+=("$entry")
 done < "${DEBUX_TARGET_ENVIRON:-/proc/1/environ}" 2>/dev/null
 exec env -i "${target_env[@]}" "$CHROOT" --skip-chdir "$TARGET_ROOT" "$cmd" "$@"

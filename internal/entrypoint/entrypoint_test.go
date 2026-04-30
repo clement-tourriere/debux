@@ -13,6 +13,8 @@ func TestShellBootstrapScriptIncludesDebuxZshConfig(t *testing.T) {
 		"command_not_found_handler()",
 		"PS1=",
 		"alias target='cd $DEBUX_TARGET_ROOT'",
+		"[[ \"$entry\" == *=* ]] || continue",
+		"rm -rf \"$wrapper_dir\"",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("ShellBootstrapScript() missing %q", want)

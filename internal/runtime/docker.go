@@ -685,6 +685,10 @@ func resizeTTY(ctx context.Context, cli *client.Client, containerID string, fd u
 // execInContainer starts an interactive zsh session inside a running container
 // using docker exec, similar to how K8s uses exec into daemon ephemeral containers.
 func execInContainer(ctx context.Context, cli *client.Client, containerID string, command []string) error {
+	if err := bootstrapDockerShell(ctx, cli, containerID); err != nil {
+		return fmt.Errorf("preparing debux shell config: %w", err)
+	}
+
 	resp, err := cli.ContainerExecCreate(ctx, containerID, container.ExecOptions{
 		Cmd:          debuxExecCommand(command),
 		AttachStdin:  true,
@@ -774,6 +778,43 @@ func execInContainer(ctx context.Context, cli *client.Client, containerID string
 		}
 	}
 
+	return nil
+}
+
+func bootstrapDockerShell(ctx context.Context, cli *client.Client, containerID string) error {
+	resp, err := cli.ContainerExecCreate(ctx, containerID, container.ExecOptions{
+		Cmd:          []string{"/bin/sh", "-c", entrypoint.ShellBootstrapScript()},
+		AttachStdout: true,
+		AttachStderr: true,
+		Tty:          true,
+	})
+	if err != nil {
+		return fmt.Errorf("creating bootstrap exec: %w", err)
+	}
+
+	hijacked, err := cli.ContainerExecAttach(ctx, resp.ID, container.ExecAttachOptions{Tty: true})
+	if err != nil {
+		return fmt.Errorf("attaching bootstrap exec: %w", err)
+	}
+	defer hijacked.Close()
+
+	var output bytes.Buffer
+	_, copyErr := io.Copy(&output, hijacked.Reader)
+	if copyErr != nil {
+		return fmt.Errorf("reading bootstrap output: %w", copyErr)
+	}
+
+	inspect, err := cli.ContainerExecInspect(ctx, resp.ID)
+	if err != nil {
+		return fmt.Errorf("inspecting bootstrap exec: %w", err)
+	}
+	if inspect.ExitCode != 0 {
+		details := strings.TrimSpace(output.String())
+		if details != "" {
+			return fmt.Errorf("bootstrap exited with status %d: %s", inspect.ExitCode, details)
+		}
+		return fmt.Errorf("bootstrap exited with status %d", inspect.ExitCode)
+	}
 	return nil
 }
 
