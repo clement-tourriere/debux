@@ -11,15 +11,21 @@ const Script = `#!/bin/sh
 set -e
 
 # Wait for target PID 1 to be visible (namespace sharing)
-timeout=30
+timeout_ticks=300
 elapsed=0
-while [ ! -d /proc/1/root ] && [ "$elapsed" -lt "$timeout" ]; do
+while [ ! -d /proc/1/root ] && [ "$elapsed" -lt "$timeout_ticks" ]; do
   sleep 0.1
   elapsed=$((elapsed + 1))
 done
 
 if [ ! -d /proc/1/root ]; then
   echo "Warning: could not find target process namespace"
+fi
+
+# If --user runs us as a non-root UID, /root is not writable. Keep the shell
+# functional by falling back to /tmp for startup files and history.
+if [ -z "${HOME:-}" ] || { [ -d "$HOME" ] && [ ! -w "$HOME" ]; }; then
+  export HOME=/tmp
 fi
 
 # Ensure PATH includes all tool locations
@@ -42,9 +48,9 @@ mkdir -p /nix/var/debux-data 2>/dev/null || mkdir -p /tmp/debux-data
 # Ensure XDG config directory exists so tools can write their configs
 mkdir -p "${HOME:-/tmp}/.config" 2>/dev/null || true
 
-# Write .zshenv to set ZDOTDIR for all zsh sessions (including exec)
-# .zshenv is always sourced by zsh before .zshrc
-cat > /root/.zshenv << 'ZSHENV_EOF'
+# Write .zshenv to set ZDOTDIR for all zsh sessions (including exec).
+# Keep it in /tmp so --user non-root sessions can start too.
+cat > /tmp/.zshenv << 'ZSHENV_EOF'
 export ZDOTDIR=/tmp
 ZSHENV_EOF
 
@@ -337,6 +343,12 @@ exec zsh
 // running target process). The image filesystem is copied into /target.
 const ImageScript = `#!/bin/sh
 set -e
+
+# If --user runs us as a non-root UID, /root is not writable. Keep the shell
+# functional by falling back to /tmp for startup files and history.
+if [ -z "${HOME:-}" ] || { [ -d "$HOME" ] && [ ! -w "$HOME" ]; }; then
+  export HOME=/tmp
+fi
 
 # Ensure PATH includes all tool locations
 export PATH="/nix/var/debux-profile/bin:/usr/local/bin:${HOME:-/tmp}/.nix-profile/bin:$PATH"

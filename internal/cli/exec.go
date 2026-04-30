@@ -15,11 +15,10 @@ import (
 
 func newExecCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:    "exec [target]",
-		Short:  "Debug a running container",
-		Hidden: true,
-		Args:   cobra.MaximumNArgs(1),
-		RunE:   runExec,
+		Use:   "exec [target]",
+		Short: "Debug a running container",
+		Args:  cobra.MaximumNArgs(1),
+		RunE:  runExec,
 	}
 }
 

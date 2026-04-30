@@ -35,7 +35,7 @@ Target formats:
   docker://<container>            Docker container
   containerd://<container>        containerd container
   nerdctl://<container>           containerd container (alias)
-  k8s://<pod>                     Kubernetes pod (default namespace)
+  k8s://<pod>                     Kubernetes pod (current kube-context namespace)
   k8s://<namespace>/<pod>         Kubernetes pod (specific namespace)
   k8s://<ns>/<pod>/<container>    Kubernetes pod (specific container)`,
 		Args:          cobra.MaximumNArgs(1),
@@ -49,7 +49,7 @@ Target formats:
 	cmd.PersistentFlags().StringVar(&flagUser, "user", "", "Run as specific user (uid:gid)")
 	cmd.PersistentFlags().BoolVar(&flagRemove, "rm", true, "Auto-remove debug container on exit")
 	cmd.PersistentFlags().BoolVar(&flagNoVolumes, "no-volumes", false, "Don't share target container's volumes")
-	cmd.PersistentFlags().StringVar(&flagPullPolicy, "pull-policy", "IfNotPresent", "Image pull policy for Kubernetes (Always, IfNotPresent, Never)")
+	cmd.PersistentFlags().StringVar(&flagPullPolicy, "pull-policy", "", "Image pull policy for Kubernetes (default: Kubernetes default; Always for :latest)")
 	cmd.PersistentFlags().BoolVar(&flagFresh, "fresh", false, "Force a new debug container instead of reusing an existing one (Kubernetes)")
 	cmd.PersistentFlags().BoolVar(&flagCopy, "copy", false, "For Kubernetes, create a copied debug pod instead of an ephemeral container")
 	cmd.PersistentFlags().String("kubeconfig", "", "Override kubeconfig path")

@@ -2,15 +2,21 @@
 set -e
 
 # Wait for target PID 1 to be visible (namespace sharing)
-timeout=30
+timeout_ticks=300
 elapsed=0
-while [ ! -d /proc/1/root ] && [ "$elapsed" -lt "$timeout" ]; do
+while [ ! -d /proc/1/root ] && [ "$elapsed" -lt "$timeout_ticks" ]; do
   sleep 0.1
   elapsed=$((elapsed + 1))
 done
 
 if [ ! -d /proc/1/root ]; then
   echo "Warning: could not find target process namespace"
+fi
+
+# If --user runs us as a non-root UID, /root is not writable. Keep the shell
+# functional by falling back to /tmp for startup files and history.
+if [ -z "${HOME:-}" ] || { [ -d "$HOME" ] && [ ! -w "$HOME" ]; }; then
+  export HOME=/tmp
 fi
 
 # Ensure PATH includes all tool locations

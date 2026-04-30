@@ -40,7 +40,7 @@ debux exec distroless
 
 ```bash
 # Debug a running pod (ephemeral container)
-debux exec k8s://my-pod
+debux exec k8s://my-pod                         # current kube-context namespace
 debux exec k8s://my-namespace/my-pod
 debux exec k8s://my-namespace/my-pod/my-container
 
@@ -68,7 +68,7 @@ debux exec k8s://       # Pick from Kubernetes pods
 | Format | Runtime |
 |---|---|
 | `<container>` or `docker://<container>` | Docker |
-| `k8s://<pod>` | Kubernetes (default namespace) |
+| `k8s://<pod>` | Kubernetes (current kube-context namespace) |
 | `k8s://<namespace>/<pod>` | Kubernetes |
 | `k8s://<namespace>/<pod>/<container>` | Kubernetes (specific container) |
 
@@ -82,6 +82,7 @@ debux exec k8s://       # Pick from Kubernetes pods
 | `--fresh` | Force a new Kubernetes debug container |
 | `--copy` | For Kubernetes, debug a copied pod instead of an ephemeral container |
 | `--kubeconfig <path>` | Override kubeconfig path |
+| `--pull-policy <policy>` | Kubernetes image pull policy (default: Kubernetes default; `Always` for `:latest`) |
 
 ### `debux pod [flags]`
 
@@ -141,6 +142,12 @@ ps aux                  # Target's processes (shared PID namespace)
 curl localhost:8080     # Target's network (shared network namespace)
 strace -p 1            # Trace PID 1 (may need --privileged)
 ```
+
+## Troubleshooting
+
+### Kubernetes `openat etc/passwd: path escapes from parent`
+
+This means the debug image has NixOS-style `/etc/passwd` or `/etc/group` symlinks that your cluster runtime refuses during container creation. Rebuild/pull the latest debux debug image, then retry with `--pull-policy=Always` or `--image <your-fixed-image>`.
 
 ## License
 

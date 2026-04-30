@@ -7,8 +7,10 @@ RUN echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf && \
 # Remove git-minimal that ships with the base image (conflicts with full git)
 RUN nix-env -e git-minimal 2>/dev/null || true
 
-# Install base packages into a profile
-RUN nix-channel --update && \
+# Install base packages into a profile. Keep the cleanup in this same layer:
+# otherwise Docker retains the removed Nix channels/derivations in lower layers.
+RUN set -eux; \
+    nix-channel --update; \
     nix-env -iA \
       nixpkgs.zsh \
       nixpkgs.curl \
@@ -34,16 +36,34 @@ RUN nix-channel --update && \
       nixpkgs.openssh \
       nixpkgs.git \
       nixpkgs.zsh-autosuggestions \
-      nixpkgs.zsh-syntax-highlighting
+      nixpkgs.zsh-syntax-highlighting; \
+    nix-channel --remove nixpkgs 2>/dev/null || true; \
+    nix-channel --remove nixos 2>/dev/null || true; \
+    nix-env --delete-generations old || true; \
+    nix-collect-garbage -d || true; \
+    rm -rf /root/.cache /tmp/*
 
-FROM nixos/nix:latest
+# Reuse the built image instead of starting from nixos/nix again and copying the
+# whole store. The previous approach duplicated ~500 MB of base Nix store data.
+FROM builder
 
-# Enable flakes
-RUN echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf
-
-COPY --from=builder /nix/store /nix/store
-COPY --from=builder /nix/var /nix/var
-COPY --from=builder /root/.nix-profile /root/.nix-profile
+# nixos/nix ships /etc/passwd and /etc/group as absolute symlinks into
+# /nix/store. Kubernetes/containerd opens those files through a constrained
+# rootfs mount while creating the container, and absolute symlinks fail with:
+#   openat etc/passwd: path escapes from parent
+# Materialize both files in /etc so the debug image starts reliably on EKS,
+# containerd, and CRI-O based clusters.
+RUN set -eux; \
+    passwd_src="$(readlink -f /etc/passwd)"; \
+    group_src="$(readlink -f /etc/group)"; \
+    { echo 'root:x:0:0:root:/root:/bin/sh'; grep -v '^root:' "$passwd_src" || true; } > /tmp/passwd; \
+    { echo 'root:x:0:'; grep -v '^root:' "$group_src" || true; } > /tmp/group; \
+    rm -f /etc/passwd /etc/group; \
+    install -m 0644 /tmp/passwd /etc/passwd; \
+    install -m 0644 /tmp/group /etc/group; \
+    rm -f /tmp/passwd /tmp/group; \
+    test ! -L /etc/passwd; \
+    test ! -L /etc/group
 
 COPY images/debug/dctl /usr/local/bin/dctl
 COPY images/debug/zshrc /root/.zshrc
@@ -52,6 +72,6 @@ COPY images/debug/entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /usr/local/bin/dctl /entrypoint.sh
 
-ENV PATH="/root/.nix-profile/bin:$PATH"
+ENV PATH="/nix/var/debux-profile/bin:/usr/local/bin:/root/.nix-profile/bin:$PATH"
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -64,7 +64,7 @@ var ValidProfiles = []string{
 type Target struct {
 	Runtime   string // "docker", "containerd", "kubernetes"
 	Name      string // container name/id or pod name
-	Namespace string // k8s namespace (default: "default")
+	Namespace string // k8s namespace (empty means current kube-context namespace)
 	Container string // k8s container within pod (optional)
 }
 
@@ -111,7 +111,7 @@ type ImageOpts struct {
 //	docker://<name>                 → docker
 //	containerd://<name>             → containerd
 //	nerdctl://<name>                → containerd
-//	k8s://<pod>                     → kubernetes (default namespace)
+//	k8s://<pod>                     → kubernetes (current kube-context namespace)
 //	k8s://<namespace>/<pod>         → kubernetes
 //	k8s://<namespace>/<pod>/<ctr>   → kubernetes (specific container)
 func ParseTarget(raw string) (*Target, error) {
@@ -144,9 +144,9 @@ func ParseTarget(raw string) (*Target, error) {
 }
 
 func parseK8sTarget(rest string) (*Target, error) {
-	t := &Target{Runtime: "kubernetes", Namespace: "default"}
+	t := &Target{Runtime: "kubernetes"}
 
-	// Empty rest means k8s:// — list all pods
+	// Empty rest means k8s:// — list pods in the current kube-context namespace.
 	if rest == "" {
 		return t, nil
 	}
@@ -159,10 +159,16 @@ func parseK8sTarget(rest string) (*Target, error) {
 		t.Name = parts[0]
 	case 2:
 		// k8s://<namespace>/<pod> or k8s://<namespace>/
+		if parts[0] == "" {
+			return nil, fmt.Errorf("invalid k8s target format: %s", rest)
+		}
 		t.Namespace = parts[0]
 		t.Name = parts[1]
 	case 3:
 		// k8s://<namespace>/<pod>/<container>
+		if parts[0] == "" || parts[1] == "" || parts[2] == "" {
+			return nil, fmt.Errorf("invalid k8s target format: %s", rest)
+		}
 		t.Namespace = parts[0]
 		t.Name = parts[1]
 		t.Container = parts[2]

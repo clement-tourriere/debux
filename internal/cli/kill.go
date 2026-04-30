@@ -27,8 +27,9 @@ Use --all to kill all running debux sessions across the runtime.
 Target formats:
   <container>                     Docker container (default runtime)
   docker://<container>            Docker container
-  k8s://<pod>                     Kubernetes pod (default namespace)
-  k8s://<namespace>/<pod>         Kubernetes pod (specific namespace)`,
+  k8s://<pod>                     Kubernetes pod (current kube-context namespace)
+  k8s://<namespace>/<pod>         Kubernetes pod (specific namespace)
+  k8s://<namespace>/              Kubernetes namespace (for --all)`,
 		Args:          cobra.MaximumNArgs(1),
 		RunE:          runKill,
 		SilenceUsage:  true,
@@ -54,7 +55,7 @@ func runKill(cmd *cobra.Command, args []string) error {
 		rt = target.Runtime
 
 		if flagKillAll {
-			return killAll(ctx, cmd, rt)
+			return killAll(ctx, cmd, rt, target.Namespace)
 		}
 
 		// Kill specific target
@@ -70,20 +71,20 @@ func runKill(cmd *cobra.Command, args []string) error {
 	}
 
 	if flagKillAll {
-		return killAll(ctx, cmd, rt)
+		return killAll(ctx, cmd, rt, "")
 	}
 
 	// No target, no --all: show interactive picker
 	return killInteractive(ctx, cmd)
 }
 
-func killAll(ctx context.Context, cmd *cobra.Command, rt string) error {
+func killAll(ctx context.Context, cmd *cobra.Command, rt string, namespace string) error {
 	switch rt {
 	case "docker":
 		return runtime.DockerKillAll(ctx)
 	case "kubernetes":
 		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
-		return runtime.KubernetesKillAll(ctx, kubeconfig, "default")
+		return runtime.KubernetesKillAll(ctx, kubeconfig, namespace)
 	default:
 		return fmt.Errorf("kill --all is not supported for runtime %q", rt)
 	}
@@ -124,7 +125,7 @@ func killInteractive(ctx context.Context, cmd *cobra.Command) error {
 
 	// Try K8s
 	kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
-	pods, k8sErr := runtime.KubernetesList(ctx, kubeconfig, "default")
+	pods, k8sErr := runtime.KubernetesList(ctx, kubeconfig, "")
 	if k8sErr == nil {
 		var active []runtime.PodInfo
 		for _, p := range pods {
@@ -147,9 +148,8 @@ func killInteractive(ctx context.Context, cmd *cobra.Command) error {
 				return err
 			}
 			target := &runtime.Target{
-				Runtime:   "kubernetes",
-				Name:      name,
-				Namespace: "default",
+				Runtime: "kubernetes",
+				Name:    name,
 			}
 			return runtime.KubernetesKill(ctx, target, kubeconfig)
 		}

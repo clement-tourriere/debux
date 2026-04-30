@@ -482,6 +482,7 @@ func targetMounts(info types.ContainerJSON) []mount.Mount {
 	}
 	// Paths used by the debug container itself — skip conflicts
 	reserved := map[string]bool{
+		"/nix":       true,
 		"/nix/store": true,
 		"/nix/var":   true,
 	}

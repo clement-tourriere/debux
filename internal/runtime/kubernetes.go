@@ -92,11 +92,7 @@ func KubernetesList(ctx context.Context, kubeconfig string, namespace string) ([
 		return nil, err
 	}
 
-	// Resolve namespace from kubeconfig context when using the default placeholder
-	listNs := namespace
-	if listNs == "default" {
-		listNs = resolveNamespace(kubeconfig)
-	}
+	listNs := resolveTargetNamespace(namespace, kubeconfig)
 
 	pods, err := clientset.CoreV1().Pods(listNs).List(ctx, metav1.ListOptions{
 		FieldSelector: "status.phase=Running",
@@ -107,15 +103,16 @@ func KubernetesList(ctx context.Context, kubeconfig string, namespace string) ([
 
 	var result []PodInfo
 	for _, pod := range pods.Items {
-		// Skip pods with no ready containers
-		hasReady := false
+		// Skip pods with no running containers. A failing readiness probe is often
+		// exactly why the user wants a debugger, so do not require Ready=true.
+		hasRunning := false
 		for _, cs := range pod.Status.ContainerStatuses {
-			if cs.Ready {
-				hasReady = true
+			if cs.State.Running != nil {
+				hasRunning = true
 				break
 			}
 		}
-		if !hasReady {
+		if !hasRunning {
 			continue
 		}
 
@@ -152,10 +149,7 @@ func KubernetesKill(ctx context.Context, target *Target, kubeconfig string) erro
 		return err
 	}
 
-	namespace := target.Namespace
-	if namespace == "default" {
-		namespace = resolveNamespace(kubeconfig)
-	}
+	namespace := resolveTargetNamespace(target.Namespace, kubeconfig)
 
 	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, target.Name, metav1.GetOptions{})
 	if err != nil {
@@ -183,9 +177,7 @@ func KubernetesKillAll(ctx context.Context, kubeconfig string, namespace string)
 		return err
 	}
 
-	if namespace == "default" {
-		namespace = resolveNamespace(kubeconfig)
-	}
+	namespace = resolveTargetNamespace(namespace, kubeconfig)
 
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		FieldSelector: "status.phase=Running",
@@ -279,10 +271,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		return err
 	}
 
-	namespace := target.Namespace
-	if namespace == "default" {
-		namespace = resolveNamespace(opts.Kubeconfig)
-	}
+	namespace := resolveTargetNamespace(target.Namespace, opts.Kubeconfig)
 	podName := target.Name
 
 	// Get the target pod
@@ -291,27 +280,31 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		return fmt.Errorf("getting pod %s/%s: %w", namespace, podName, err)
 	}
 
-	// Determine the target container name
-	targetContainer := target.Container
-	if targetContainer == "" && len(pod.Spec.Containers) > 0 {
-		targetContainer = pod.Spec.Containers[0].Name
+	// Determine the target container name. Prefer a running container so PID/root
+	// namespace targeting works even when the first spec container is not ready.
+	targetContainer, err := selectKubernetesTargetContainer(pod, target.Container)
+	if err != nil {
+		return err
 	}
 
 	if opts.Copy {
 		return kubernetesExecWithPodCopy(ctx, config, clientset, namespace, pod, targetContainer, opts)
 	}
 
-	// Try to reuse an existing running debux container
+	// Try to reuse an existing running debux container for the same target container.
 	if !opts.Fresh {
-		if existing := findRunningDebuxContainer(pod); existing != "" {
+		if existing := findRunningDebuxContainerForTarget(pod, targetContainer); existing != "" {
 			fmt.Printf("Reusing debug container %q\n", existing)
 			fmt.Printf("Debugging %s/%s (container: %s)\n", namespace, podName, existing)
 			return execInPod(ctx, config, clientset, namespace, podName, existing)
 		}
 	}
 
-	// Create a new ephemeral container in daemon mode
-	debugContainerName := fmt.Sprintf("debux-%d", time.Now().Unix())
+	// Create a new ephemeral container in daemon mode.
+	// Use nanoseconds to avoid name collisions when retrying after a fast failure;
+	// ephemeral containers cannot be removed from the pod spec.
+	debugContainerName := fmt.Sprintf("debux-%d", time.Now().UnixNano())
+	debuxTarget := fmt.Sprintf("%s/%s/%s", namespace, podName, targetContainer)
 
 	ephemeralContainer := corev1.EphemeralContainer{
 		EphemeralContainerCommon: corev1.EphemeralContainerCommon{
@@ -322,7 +315,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 			Stdin:           true,
 			TTY:             true,
 			Env: []corev1.EnvVar{
-				{Name: "DEBUX_TARGET", Value: target.Name},
+				{Name: "DEBUX_TARGET", Value: debuxTarget},
 				{Name: "DEBUX_TARGET_ROOT", Value: "/proc/1/root"},
 				{Name: "DEBUX_DAEMON", Value: "1"},
 				{Name: "HOME", Value: "/root"},
@@ -337,7 +330,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		for _, c := range pod.Spec.Containers {
 			if c.Name == targetContainer {
 				for _, vm := range c.VolumeMounts {
-					if vm.SubPath == "" && vm.SubPathExpr == "" {
+					if vm.SubPath == "" && vm.SubPathExpr == "" && !isReservedDebugMountPath(vm.MountPath) {
 						ephemeralContainer.VolumeMounts = append(ephemeralContainer.VolumeMounts, vm)
 					}
 				}
@@ -349,6 +342,12 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	sc, err := SecurityContextForProfile(opts.Profile)
 	if err != nil {
 		return err
+	}
+	if opts.User != "" {
+		sc, err = applyKubernetesUser(sc, opts.User)
+		if err != nil {
+			return err
+		}
 	}
 	if sc != nil {
 		ephemeralContainer.SecurityContext = sc
@@ -434,7 +433,7 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 		Stdin:           true,
 		TTY:             true,
 		Env: []corev1.EnvVar{
-			{Name: "DEBUX_TARGET", Value: fmt.Sprintf("%s/%s", namespace, sourcePod.Name)},
+			{Name: "DEBUX_TARGET", Value: fmt.Sprintf("%s/%s/%s", namespace, sourcePod.Name, targetContainer)},
 			{Name: "DEBUX_DAEMON", Value: "1"},
 			{Name: "HOME", Value: "/root"},
 			{Name: "ZDOTDIR", Value: "/tmp"},
@@ -444,7 +443,11 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 	if opts.ShareVolumes {
 		for _, c := range sourcePod.Spec.Containers {
 			if c.Name == targetContainer {
-				debugContainer.VolumeMounts = append(debugContainer.VolumeMounts, c.VolumeMounts...)
+				for _, vm := range c.VolumeMounts {
+					if !isReservedDebugMountPath(vm.MountPath) {
+						debugContainer.VolumeMounts = append(debugContainer.VolumeMounts, vm)
+					}
+				}
 				break
 			}
 		}
@@ -454,12 +457,14 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 	if err != nil {
 		return err
 	}
+	if opts.User != "" {
+		sc, err = applyKubernetesUser(sc, opts.User)
+		if err != nil {
+			return err
+		}
+	}
 	if sc != nil {
 		debugContainer.SecurityContext = sc
-	}
-
-	if opts.User != "" {
-		debugContainer.Env = append(debugContainer.Env, corev1.EnvVar{Name: "DEBUX_USER", Value: opts.User})
 	}
 
 	spec.Containers = append(spec.Containers, debugContainer)
@@ -509,6 +514,101 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 	return execInPodWithCommand(ctx, config, clientset, namespace, created.Name, debugContainerName, copyPodShellCommand(targetContainerID))
 }
 
+func applyKubernetesUser(sc *corev1.SecurityContext, user string) (*corev1.SecurityContext, error) {
+	parts := strings.Split(user, ":")
+	if len(parts) > 2 || parts[0] == "" {
+		return nil, fmt.Errorf("invalid --user %q: expected uid or uid:gid", user)
+	}
+
+	uid, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || uid < 0 {
+		return nil, fmt.Errorf("invalid --user %q: uid must be a non-negative integer", user)
+	}
+
+	var out *corev1.SecurityContext
+	if sc != nil {
+		out = sc.DeepCopy()
+	} else {
+		out = &corev1.SecurityContext{}
+	}
+
+	out.RunAsUser = &uid
+	runAsNonRoot := uid != 0
+	out.RunAsNonRoot = &runAsNonRoot
+
+	if len(parts) == 2 && parts[1] != "" {
+		gid, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || gid < 0 {
+			return nil, fmt.Errorf("invalid --user %q: gid must be a non-negative integer", user)
+		}
+		out.RunAsGroup = &gid
+	}
+
+	return out, nil
+}
+
+func isReservedDebugMountPath(mountPath string) bool {
+	switch mountPath {
+	case "/nix", "/nix/store", "/nix/var":
+		return true
+	default:
+		return false
+	}
+}
+
+func selectKubernetesTargetContainer(pod *corev1.Pod, requested string) (string, error) {
+	if len(pod.Spec.Containers) == 0 {
+		return "", fmt.Errorf("pod %s/%s has no regular containers to target", pod.Namespace, pod.Name)
+	}
+
+	if requested != "" {
+		if !podHasContainer(pod, requested) {
+			return "", fmt.Errorf("pod %s/%s has no container %q (available: %s)",
+				pod.Namespace, pod.Name, requested, strings.Join(podContainerNames(pod), ", "))
+		}
+		if !podContainerRunning(pod, requested) {
+			return "", fmt.Errorf("container %q in pod %s/%s is not running; debux needs a running target container",
+				requested, pod.Namespace, pod.Name)
+		}
+		return requested, nil
+	}
+
+	for _, c := range pod.Spec.Containers {
+		if podContainerRunning(pod, c.Name) {
+			return c.Name, nil
+		}
+	}
+
+	return "", fmt.Errorf("pod %s/%s has no running regular containers to target (available: %s)",
+		pod.Namespace, pod.Name, strings.Join(podContainerNames(pod), ", "))
+}
+
+func podHasContainer(pod *corev1.Pod, name string) bool {
+	for _, c := range pod.Spec.Containers {
+		if c.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func podContainerRunning(pod *corev1.Pod, name string) bool {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name == name {
+			return cs.State.Running != nil
+		}
+	}
+	return false
+}
+
+func podContainerNames(pod *corev1.Pod) []string {
+	names := make([]string, 0, len(pod.Spec.Containers))
+	for _, c := range pod.Spec.Containers {
+		names = append(names, c.Name)
+	}
+	return names
+}
+
 func findContainerID(pod *corev1.Pod, containerName string) string {
 	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.Name != containerName {
@@ -543,6 +643,30 @@ func findRunningDebuxContainer(pod *corev1.Pod) string {
 			return cs.Name
 		}
 	}
+	return ""
+}
+
+// findRunningDebuxContainerForTarget returns a running debux ephemeral container
+// that targets the same Kubernetes container. Reusing a session created for a
+// different target container would put the shell in the wrong PID/root namespace.
+func findRunningDebuxContainerForTarget(pod *corev1.Pod, targetContainer string) string {
+	if targetContainer == "" {
+		return findRunningDebuxContainer(pod)
+	}
+
+	running := make(map[string]struct{})
+	for _, cs := range pod.Status.EphemeralContainerStatuses {
+		if strings.HasPrefix(cs.Name, "debux-") && cs.State.Running != nil {
+			running[cs.Name] = struct{}{}
+		}
+	}
+
+	for _, ec := range pod.Spec.EphemeralContainers {
+		if _, ok := running[ec.Name]; ok && ec.TargetContainerName == targetContainer {
+			return ec.Name
+		}
+	}
+
 	return ""
 }
 
@@ -641,15 +765,14 @@ func KubernetesPod(ctx context.Context, opts PodOpts) error {
 	if err != nil {
 		return err
 	}
+	if opts.User != "" {
+		sc, err = applyKubernetesUser(sc, opts.User)
+		if err != nil {
+			return err
+		}
+	}
 	if sc != nil {
 		pod.Spec.Containers[0].SecurityContext = sc
-	}
-
-	if opts.User != "" {
-		pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
-			Name:  "DEBUX_USER",
-			Value: opts.User,
-		})
 	}
 
 	// Create the pod
@@ -695,6 +818,13 @@ func resolveNamespace(kubeconfig string) string {
 	return ns
 }
 
+func resolveTargetNamespace(namespace, kubeconfig string) string {
+	if namespace != "" {
+		return namespace
+	}
+	return resolveNamespace(kubeconfig)
+}
+
 func getK8sClient(kubeconfig string) (*rest.Config, *kubernetes.Clientset, error) {
 	var config *rest.Config
 	var err error
@@ -738,7 +868,11 @@ func waitForEphemeralContainer(ctx context.Context, clientset *kubernetes.Client
 	timeout := time.After(2 * time.Minute)
 	for {
 		select {
-		case event := <-watcher.ResultChan():
+		case event, ok := <-watcher.ResultChan():
+			if !ok {
+				return fmt.Errorf("watch closed while waiting for ephemeral container %q to start\n%s",
+					containerName, describeContainerFailure(ctx, clientset, namespace, podName, containerName))
+			}
 			if event.Type == watch.Modified {
 				pod, ok := event.Object.(*corev1.Pod)
 				if !ok {
@@ -760,8 +894,7 @@ func waitForEphemeralContainer(ctx context.Context, clientset *kubernetes.Client
 						case "ImagePullBackOff", "ErrImagePull", "InvalidImageName",
 							"CrashLoopBackOff", "RunContainerError", "CreateContainerError",
 							"CreateContainerConfigError":
-							return fmt.Errorf("ephemeral container %q failed to start: %s: %s",
-								containerName, w.Reason, w.Message)
+							return containerStartFailureError(fmt.Sprintf("ephemeral container %q", containerName), w.Reason, w.Message)
 						}
 						// Print intermediate waiting status so the user can see progress
 						if w.Reason != "" && w.Reason != lastReason {
@@ -798,7 +931,10 @@ func waitForContainerRunning(ctx context.Context, clientset *kubernetes.Clientse
 	timeout := time.After(2 * time.Minute)
 	for {
 		select {
-		case event := <-watcher.ResultChan():
+		case event, ok := <-watcher.ResultChan():
+			if !ok {
+				return fmt.Errorf("watch closed while waiting for debug container %q in copy pod %q to start", containerName, podName)
+			}
 			if event.Type != watch.Modified && event.Type != watch.Added {
 				continue
 			}
@@ -825,8 +961,7 @@ func waitForContainerRunning(ctx context.Context, clientset *kubernetes.Clientse
 					case "ImagePullBackOff", "ErrImagePull", "InvalidImageName",
 						"CrashLoopBackOff", "RunContainerError", "CreateContainerError",
 						"CreateContainerConfigError":
-						return fmt.Errorf("debug container %q in copy pod %q failed to start: %s: %s",
-							containerName, podName, w.Reason, w.Message)
+						return containerStartFailureError(fmt.Sprintf("debug container %q in copy pod %q", containerName, podName), w.Reason, w.Message)
 					}
 					if w.Reason != "" && w.Reason != lastReason {
 						fmt.Printf("  Container status: %s", w.Reason)
@@ -843,6 +978,29 @@ func waitForContainerRunning(ctx context.Context, clientset *kubernetes.Clientse
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+	}
+}
+
+func containerStartFailureError(subject, reason, message string) error {
+	msg := fmt.Sprintf("%s failed to start: %s", subject, reason)
+	if message != "" {
+		msg += ": " + message
+	}
+	if hint := kubernetesStartFailureHint(reason, message); hint != "" {
+		msg += "\n\n" + hint
+	}
+	return fmt.Errorf("%s", msg)
+}
+
+func kubernetesStartFailureHint(reason, message string) string {
+	text := strings.ToLower(reason + " " + message)
+	switch {
+	case strings.Contains(text, "openat etc/passwd") && strings.Contains(text, "path escapes from parent"):
+		return "Hint: containerd cannot start images whose /etc/passwd is an absolute Nix store symlink. Rebuild or pull a debux image that materializes /etc/passwd and /etc/group as regular files, then retry (for example with --pull-policy=Always or --image <fixed-image>)."
+	case strings.Contains(text, "imagepullbackoff") || strings.Contains(text, "errimagepull"):
+		return "Hint: the node could not pull the debug image. Check the image name, registry access, imagePullSecrets, and --pull-policy."
+	default:
+		return ""
 	}
 }
 
@@ -911,7 +1069,10 @@ func waitForPodRunning(ctx context.Context, clientset *kubernetes.Clientset, nam
 	timeout := time.After(2 * time.Minute)
 	for {
 		select {
-		case event := <-watcher.ResultChan():
+		case event, ok := <-watcher.ResultChan():
+			if !ok {
+				return fmt.Errorf("watch closed while waiting for pod %q to start", podName)
+			}
 			if event.Type == watch.Modified || event.Type == watch.Added {
 				pod, ok := event.Object.(*corev1.Pod)
 				if !ok {
