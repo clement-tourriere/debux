@@ -29,6 +29,16 @@ fi
 target="${DEBUX_TARGET:-unknown}"
 PS1="%F{cyan}[debux]%f %F{yellow}${target}%f %F{blue}%~%f %# "
 
+if [[ -o interactive && -z "${DEBUX_BANNER_SHOWN:-}" ]]; then
+  export DEBUX_BANNER_SHOWN=1
+  profile="${DEBUX_SECURITY_PROFILE:-general}"
+  print -P "%F{cyan}debux%f profile: %F{yellow}${profile}%f · target: %F{yellow}${target}%f"
+  echo "  target    cd into target filesystem (${DEBUX_TARGET_ROOT:-/proc/1/root})"
+  echo "  dctl      install/list/remove Nix tools"
+  echo ""
+  unset profile
+fi
+
 # History — stored on persistent path so it survives exec sessions
 if [[ -d /nix/var/debux-data ]] && [[ -w /nix/var/debux-data ]]; then
   HISTFILE=/nix/var/debux-data/.zsh_history

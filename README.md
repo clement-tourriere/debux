@@ -270,6 +270,14 @@ debux kill k8s://my-namespace/ --all
 debux store info
 debux store clean
 
+# Diagnose local Docker/Kubernetes readiness
+debux doctor
+debux doctor k8s://my-namespace/my-pod --profile=restricted
+
+# Version and release metadata
+debux version
+debux version --json
+
 # Open the documentation
 debux docs
 debux docs --open
@@ -328,6 +336,20 @@ mount your local Docker toolbox/history into arbitrary pods. Reusing the same
 debug container on the same pod keeps its installed tools/history; across pods,
 bake common tools into a custom debug image and pass it with `--image`.
 
+Example custom team toolbox:
+
+```Dockerfile
+FROM ghcr.io/clement-tourriere/debux:latest
+RUN nix-env -iA nixpkgs.postgresql nixpkgs.redis nixpkgs.kubectl nixpkgs.ripgrep
+```
+
+```bash
+docker build -t ghcr.io/my-org/debux-toolbox:latest -f Dockerfile.debux .
+docker push ghcr.io/my-org/debux-toolbox:latest
+
+debux k8s://prod/api --image ghcr.io/my-org/debux-toolbox:latest
+```
+
 ## Development
 
 ```bash
@@ -354,7 +376,7 @@ The repository uses [hk](https://hk.jdx.dev/) for git hooks, [pkl](https://pkl-l
 
 ## Releases and distribution
 
-GitHub Releases publish prebuilt `debux` binaries for Linux and macOS on amd64/arm64 using GoReleaser. The one-line installer downloads those release assets and verifies `checksums.txt` when available.
+GitHub Releases publish prebuilt `debux` binaries for Linux and macOS on amd64/arm64 using GoReleaser. The one-line installer downloads those release assets and verifies `checksums.txt` when available. `debux update` requires checksums and refuses to update if they are missing.
 
 Release flow:
 
@@ -365,7 +387,9 @@ mise run release:push      # git push origin main --follow-tags
 
 If there are no commits since the latest version tag, `mise run release:bump` exits successfully and tells you no bump is needed. If Commitizen already bumped the version but tag creation was interrupted, the task recreates the missing `vX.Y.Z` tag without GPG signing.
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which creates the GitHub Release, uploads checksummed CLI archives, and publishes the debug image to GHCR as `X.Y.Z`, `X.Y`, `X`, and `latest`. You can also run the **Release** workflow manually with a version input from GitHub Actions.
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which creates the GitHub Release, uploads checksummed CLI archives, and publishes the debug image to GHCR as `X.Y.Z`, `X.Y`, `X`, and `latest`. Release binaries pin their default debug image to the matching `X.Y.Z` image tag; development builds keep using `latest`. You can also run the **Release** workflow manually with a version input from GitHub Actions.
+
+If `HOMEBREW_TAP_GITHUB_TOKEN` is configured, GoReleaser also publishes a Homebrew formula to `clement-tourriere/homebrew-tap`.
 
 After installation, keep the CLI current with:
 

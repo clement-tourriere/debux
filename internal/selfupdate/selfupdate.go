@@ -166,10 +166,11 @@ func downloadReleaseBinary(ctx context.Context, repo, tag, archive string) (stri
 	}
 
 	checksumsPath := filepath.Join(tmp, "checksums.txt")
-	if err := downloadFile(ctx, baseURL+"/checksums.txt", checksumsPath); err == nil {
-		if err := verifyChecksum(archivePath, checksumsPath, archive); err != nil {
-			return "", err
-		}
+	if err := downloadFile(ctx, baseURL+"/checksums.txt", checksumsPath); err != nil {
+		return "", fmt.Errorf("downloading checksums: %w", err)
+	}
+	if err := verifyChecksum(archivePath, checksumsPath, archive); err != nil {
+		return "", err
 	}
 
 	binaryPath := filepath.Join(tmp, "debux")

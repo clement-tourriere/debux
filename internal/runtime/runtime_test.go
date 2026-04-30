@@ -1,6 +1,10 @@
 package runtime
 
-import "testing"
+import (
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+)
 
 func TestParseK8sTargetNamespaceSemantics(t *testing.T) {
 	tests := []struct {
@@ -46,5 +50,41 @@ func TestParseK8sTargetNamespaceSemantics(t *testing.T) {
 				t.Fatalf("target = %#v, want context=%q namespace=%q name=%q container=%q", target, tt.wantCtx, tt.wantNS, tt.wantName, tt.wantCtr)
 			}
 		})
+	}
+}
+
+func TestFindRunningDebuxContainerForTargetHonorsProfile(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			EphemeralContainers: []corev1.EphemeralContainer{
+				{
+					EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+						Name: "debux-general",
+						Env:  []corev1.EnvVar{{Name: "DEBUX_SECURITY_PROFILE", Value: ProfileGeneral}},
+					},
+					TargetContainerName: "app",
+				},
+				{
+					EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+						Name: "debux-restricted",
+						Env:  []corev1.EnvVar{{Name: "DEBUX_SECURITY_PROFILE", Value: ProfileRestricted}},
+					},
+					TargetContainerName: "app",
+				},
+			},
+		},
+		Status: corev1.PodStatus{
+			EphemeralContainerStatuses: []corev1.ContainerStatus{
+				{Name: "debux-general", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+				{Name: "debux-restricted", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			},
+		},
+	}
+
+	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileRestricted); got != "debux-restricted" {
+		t.Fatalf("restricted container = %q", got)
+	}
+	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileGeneral); got != "debux-general" {
+		t.Fatalf("general container = %q", got)
 	}
 }

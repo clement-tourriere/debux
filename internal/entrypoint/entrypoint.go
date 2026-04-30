@@ -150,6 +150,22 @@ command_not_found_handler() {
 target="${DEBUX_TARGET:-unknown}"
 PS1="%F{cyan}[debux]%f %F{yellow}${target}%f %F{blue}%~%f %# "
 
+# Session banner
+if [[ -o interactive && -z "${DEBUX_BANNER_SHOWN:-}" ]]; then
+  export DEBUX_BANNER_SHOWN=1
+  profile="${DEBUX_SECURITY_PROFILE:-general}"
+  print -P "%F{cyan}debux%f profile: %F{yellow}${profile}%f · target: %F{yellow}${target}%f"
+  echo "  target    cd into target filesystem (${DEBUX_TARGET_ROOT:-/proc/1/root})"
+  echo "  dctl      install/list/remove Nix tools"
+  if [[ "$profile" == "restricted" ]]; then
+    echo "  restricted mode: non-root/no extra caps; target chroot integration may be limited"
+  elif [[ "$profile" == "general" ]]; then
+    echo "  general mode: root inside the pod/container with debugging capabilities"
+  fi
+  echo ""
+  unset profile
+fi
+
 # History — stored on persistent volume so it survives container restarts
 if [[ -d /nix/var/debux-data ]]; then
   HISTFILE=/nix/var/debux-data/.zsh_history
@@ -444,6 +460,14 @@ fi
 # Prompt
 target="${DEBUX_TARGET:-unknown}"
 PS1="%F{cyan}[debux]%f %F{magenta}image:${target}%f %F{blue}%~%f %# "
+
+if [[ -o interactive && -z "${DEBUX_BANNER_SHOWN:-}" ]]; then
+  export DEBUX_BANNER_SHOWN=1
+  print -P "%F{cyan}debux%f image debug · target filesystem: %F{yellow}/target%f"
+  echo "  target    cd into image filesystem"
+  echo "  dctl      install/list/remove Nix tools"
+  echo ""
+fi
 
 # History — stored on persistent volume so it survives container restarts
 if [[ -d /nix/var/debux-data ]]; then

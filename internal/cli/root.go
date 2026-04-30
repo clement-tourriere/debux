@@ -109,7 +109,9 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newKillCmd())
 	cmd.AddCommand(newStoreCmd())
 	cmd.AddCommand(newDocsCmd())
+	cmd.AddCommand(newDoctorCmd())
 	cmd.AddCommand(newUpdateCmd())
+	cmd.AddCommand(newVersionCmd())
 
 	return cmd
 }
@@ -118,7 +120,7 @@ func addExecFlags(cmd *cobra.Command) {
 	cmd.Flags().SortFlags = false
 	cmd.Flags().StringVar(&flagImage, "image", "", fmt.Sprintf("Debug image (default %s)", runtime.DefaultImage))
 	cmd.Flags().BoolVar(&flagFresh, "fresh", false, "Create a fresh debug container instead of reusing an existing debux session")
-	cmd.Flags().BoolVar(&flagNoVolumes, "no-volumes", false, "Do not mount target volumes into the debug container")
+	cmd.Flags().BoolVar(&flagNoVolumes, "no-volumes", false, "Do not directly mount target volumes (not a security boundary if /proc/1/root is accessible)")
 	cmd.Flags().StringVar(&flagUser, "user", "", "Run debug container as uid[:gid]")
 	cmd.Flags().BoolVar(&flagPrivileged, "privileged", false, "Run privileged (Docker); Kubernetes alias for --profile=sysadmin")
 	cmd.Flags().BoolVar(&flagCopy, "copy", false, "Kubernetes: use a temporary copied pod instead of an ephemeral container")

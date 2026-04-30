@@ -41,7 +41,10 @@ func watchSIGWINCH() (<-chan os.Signal, func()) {
 	return sigCh, func() { signal.Stop(sigCh) }
 }
 
-const DefaultImage = "ghcr.io/clement-tourriere/debux:latest"
+// DefaultImage is the debug toolbox image used when --image is not set.
+// Release builds pin this to the matching image tag via GoReleaser ldflags;
+// development builds keep using latest for convenience.
+var DefaultImage = "ghcr.io/clement-tourriere/debux:latest"
 
 // Security profile constants matching kubectl debug --profile behavior.
 const (

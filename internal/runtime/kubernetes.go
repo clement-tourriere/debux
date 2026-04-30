@@ -96,12 +96,13 @@ func KubernetesList(ctx context.Context, kubeconfig string, kubeContext string, 
 const (
 	kubernetesPodListLimit       int64 = 50
 	kubernetesPodListResultLimit int   = 500
+	kubernetesPodListEnrichLimit int   = 100
 )
 
 var podsResource = schema.GroupVersionResource{Version: "v1", Resource: "pods"}
 
 func kubernetesListPods(ctx context.Context, kubeconfig, kubeContext, namespace, query string) ([]PodInfo, error) {
-	config, _, err := getK8sClient(kubeconfig, kubeContext)
+	config, clientset, err := getK8sClient(kubeconfig, kubeContext)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +147,26 @@ func kubernetesListPods(ctx context.Context, kubeconfig, kubeContext, namespace,
 		listOptions.Continue = pods.Continue
 	}
 
+	enrichPodInfos(ctx, clientset, result, kubernetesPodListEnrichLimit)
 	return result, nil
+}
+
+func enrichPodInfos(ctx context.Context, clientset *kubernetes.Clientset, pods []PodInfo, limit int) {
+	if limit <= 0 {
+		return
+	}
+	if len(pods) < limit {
+		limit = len(pods)
+	}
+	for i := 0; i < limit; i++ {
+		pod, err := clientset.CoreV1().Pods(pods[i].Namespace).Get(ctx, pods[i].Name, metav1.GetOptions{})
+		if err != nil {
+			continue
+		}
+		pods[i].Status = string(pod.Status.Phase)
+		pods[i].Containers = podContainerNames(pod)
+		pods[i].HasDebuxSession = findRunningDebuxContainer(pod) != ""
+	}
 }
 
 func matchesPodQuery(namespace, name, query string) bool {
@@ -217,25 +237,34 @@ func KubernetesKillAll(ctx context.Context, kubeconfig string, kubeContext strin
 
 	namespace = resolveTargetNamespace(namespace, kubeconfig, kubeContext)
 
-	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		FieldSelector: "status.phase=Running",
-	})
-	if err != nil {
-		return fmt.Errorf("listing pods: %w", err)
-	}
-
 	killed := 0
-	for _, pod := range pods.Items {
-		for _, cs := range pod.Status.EphemeralContainerStatuses {
-			if strings.HasPrefix(cs.Name, "debux-") && cs.State.Running != nil {
-				if err := killInContainer(ctx, config, clientset, namespace, pod.Name, cs.Name); err != nil {
-					fmt.Printf("Warning: failed to kill %s on %s/%s: %v\n", cs.Name, namespace, pod.Name, err)
-					continue
+	listOptions := metav1.ListOptions{
+		FieldSelector: "status.phase=Running",
+		Limit:         kubernetesPodListLimit,
+	}
+	for {
+		pods, err := clientset.CoreV1().Pods(namespace).List(ctx, listOptions)
+		if err != nil {
+			return fmt.Errorf("listing pods: %w", err)
+		}
+
+		for _, pod := range pods.Items {
+			for _, cs := range pod.Status.EphemeralContainerStatuses {
+				if strings.HasPrefix(cs.Name, "debux-") && cs.State.Running != nil {
+					if err := killInContainer(ctx, config, clientset, namespace, pod.Name, cs.Name); err != nil {
+						fmt.Printf("Warning: failed to kill %s on %s/%s: %v\n", cs.Name, namespace, pod.Name, err)
+						continue
+					}
+					fmt.Printf("Killed %s on %s/%s\n", cs.Name, namespace, pod.Name)
+					killed++
 				}
-				fmt.Printf("Killed %s on %s/%s\n", cs.Name, namespace, pod.Name)
-				killed++
 			}
 		}
+
+		if pods.Continue == "" {
+			break
+		}
+		listOptions.Continue = pods.Continue
 	}
 
 	if killed == 0 {

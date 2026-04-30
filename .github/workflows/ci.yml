@@ -37,3 +37,18 @@ jobs:
         with:
           go-version-file: go.mod
       - run: CGO_ENABLED=0 go build -o bin/debux ./cmd/debux
+
+  release-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          args: check
+      - run: sh -n install.sh
+      - run: |
+          python3 - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          HTMLParser().feed(Path('docs/index.html').read_text())
+          PY

@@ -12,7 +12,7 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X github.com/clement-tourriere/debux/internal/version.Version={{ .Version }} -X github.com/clement-tourriere/debux/internal/version.Commit={{ .Commit }} -X github.com/clement-tourriere/debux/internal/version.Date={{ .Date }}
+      - -s -w -X github.com/clement-tourriere/debux/internal/version.Version={{ .Version }} -X github.com/clement-tourriere/debux/internal/version.Commit={{ .Commit }} -X github.com/clement-tourriere/debux/internal/version.Date={{ .Date }} -X github.com/clement-tourriere/debux/internal/runtime.DefaultImage=ghcr.io/clement-tourriere/debux:{{ .Version }}
 
 archives:
   - formats: [tar.gz]
@@ -20,6 +20,20 @@ archives:
 
 checksum:
   name_template: "checksums.txt"
+
+brews:
+  - name: debux
+    skip_upload: "{{ if index .Env \"HOMEBREW_TAP_GITHUB_TOKEN\" }}false{{ else }}true{{ end }}"
+    repository:
+      owner: clement-tourriere
+      name: homebrew-tap
+      token: "{{ index .Env \"HOMEBREW_TAP_GITHUB_TOKEN\" }}"
+    directory: Formula
+    homepage: "https://clement-tourriere.github.io/debux/"
+    description: "Debug Docker and Kubernetes containers with a Nix-powered toolbox"
+    license: MIT
+    test: |
+      system "#{bin}/debux", "--version"
 
 changelog:
   sort: asc
