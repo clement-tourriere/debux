@@ -18,6 +18,19 @@ fi
 if [ -z "${HOME:-}" ] || { [ -d "$HOME" ] && [ ! -w "$HOME" ]; }; then
   export HOME=/tmp
 fi
+export ZDOTDIR=/tmp
+
+# Ensure zsh never falls into zsh-newuser-install in non-root/restricted mode.
+cat > /tmp/.zshenv << 'ZSHENV_EOF'
+export ZDOTDIR=/tmp
+ZSHENV_EOF
+if [ ! -s /tmp/.zshrc ]; then
+  if [ -r /etc/debux/zshrc ]; then
+    cp /etc/debux/zshrc /tmp/.zshrc 2>/dev/null || touch /tmp/.zshrc
+  else
+    touch /tmp/.zshrc
+  fi
+fi
 
 # Ensure PATH includes all tool locations
 # /nix/var/debux-profile/bin = user-installed packages via dctl

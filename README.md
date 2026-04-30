@@ -250,7 +250,7 @@ debux docs --open
 |---|---|
 | `general` | Default. Adds practical debugging capabilities such as ptrace/chroot. |
 | `baseline` | No extra security context. Useful for stricter clusters. |
-| `restricted` | Non-root, drops capabilities, runtime default seccomp. |
+| `restricted` | Non-root, drops capabilities, runtime default seccomp. Shell startup works, but deep target integration such as chrooting into the target filesystem may be limited by Kubernetes/Linux permissions. |
 | `netadmin` | Adds network capabilities for tools like `tcpdump`. |
 | `sysadmin` | Privileged debug container. Last resort for deep debugging. |
 

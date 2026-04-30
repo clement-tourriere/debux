@@ -1,5 +1,7 @@
 package entrypoint
 
+import "strings"
+
 // Script is the entrypoint script injected into the debug container.
 // It waits for the target's PID namespace to be visible, sets up
 // convenience symlinks, writes the shell configuration, and launches zsh.
@@ -343,6 +345,47 @@ if [ "${DEBUX_DAEMON:-}" = "1" ]; then
 fi
 exec zsh
 `
+
+// ShellBootstrapScript recreates the debux zsh startup files inside an already
+// running debug container before opening an exec session. This makes reused
+// Kubernetes ephemeral containers self-healing, including containers created by
+// older debux versions or by the image ENTRYPOINT instead of the injected
+// command.
+func ShellBootstrapScript() string {
+	return `# If the container runs as a non-root UID, /root is often not writable.
+if [ -z "${HOME:-}" ] || { [ -d "$HOME" ] && [ ! -w "$HOME" ]; }; then
+  export HOME=/tmp
+fi
+export ZDOTDIR=/tmp
+export PATH="/nix/var/debux-profile/bin:/usr/local/bin:${HOME:-/tmp}/.nix-profile/bin:$PATH"
+: "${DEBUX_TARGET_ROOT:=/proc/1/root}"
+: "${DEBUX_TARGET_ENVIRON:=/proc/1/environ}"
+: "${DEBUX_TARGET_CWD_LINK:=/proc/1/cwd}"
+export DEBUX_TARGET_ROOT DEBUX_TARGET_ENVIRON DEBUX_TARGET_CWD_LINK
+mkdir -p /nix/var/debux-data 2>/dev/null || mkdir -p /tmp/debux-data
+mkdir -p "${HOME:-/tmp}/.config" 2>/dev/null || true
+cat > /tmp/.zshenv << 'ZSHENV_EOF'
+` + heredocContent(Script, "ZSHENV_EOF") + `
+ZSHENV_EOF
+cat > /tmp/.zshrc << 'ZSHRC_EOF'
+` + heredocContent(Script, "ZSHRC_EOF") + `
+ZSHRC_EOF`
+}
+
+func heredocContent(script, marker string) string {
+	startMarker := "<< '" + marker + "'\n"
+	start := strings.Index(script, startMarker)
+	if start == -1 {
+		return ""
+	}
+	start += len(startMarker)
+
+	end := strings.Index(script[start:], "\n"+marker)
+	if end == -1 {
+		return ""
+	}
+	return script[start : start+end]
+}
 
 // ImageScript is the entrypoint script for image debugging.
 // Unlike Script, it does NOT wait for PID namespace sharing (there is no

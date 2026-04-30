@@ -1,10 +1,14 @@
 # debux shell configuration
 
-# Source runtime-generated config if available (for K8s exec sessions)
-if [[ -f /tmp/.zshrc ]]; then
+# Source runtime-generated config if this baked config is loaded from somewhere
+# else (for example /root/.zshrc). When copied to /tmp/.zshrc, avoid sourcing
+# ourselves recursively.
+_debux_current_zshrc="${(%):-%N}"
+if [[ "$_debux_current_zshrc" != "/tmp/.zshrc" && -f /tmp/.zshrc ]]; then
   source /tmp/.zshrc
   return 0
 fi
+unset _debux_current_zshrc
 
 # Enable syntax highlighting
 if [[ -f /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]]; then

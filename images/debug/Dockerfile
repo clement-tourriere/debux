@@ -65,12 +65,15 @@ RUN set -eux; \
     test ! -L /etc/passwd; \
     test ! -L /etc/group
 
+RUN mkdir -p /etc/debux
+
 COPY images/debug/dctl /usr/local/bin/dctl
 COPY images/debug/zshrc /root/.zshrc
+COPY images/debug/zshrc /etc/debux/zshrc
 COPY images/debug/command-not-found-handler /etc/zsh/command-not-found-handler
 COPY images/debug/entrypoint.sh /entrypoint.sh
 
-RUN chmod +x /usr/local/bin/dctl /entrypoint.sh
+RUN chmod +x /usr/local/bin/dctl /entrypoint.sh && chmod 1777 /tmp
 
 ENV PATH="/nix/var/debux-profile/bin:/usr/local/bin:/root/.nix-profile/bin:$PATH"
 

@@ -331,7 +331,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 
 	// Try to reuse an existing running debux container for the same target container.
 	if !opts.Fresh {
-		if existing := findRunningDebuxContainerForTarget(pod, targetContainer); existing != "" {
+		if existing := findRunningDebuxContainerForTarget(pod, targetContainer, opts.Profile); existing != "" {
 			fmt.Printf("Reusing debug container %q\n", existing)
 			fmt.Printf("Debugging %s/%s (container: %s)\n", namespace, podName, existing)
 			return execInPod(ctx, config, clientset, namespace, podName, existing)
@@ -356,6 +356,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 				{Name: "DEBUX_TARGET", Value: debuxTarget},
 				{Name: "DEBUX_TARGET_ROOT", Value: "/proc/1/root"},
 				{Name: "DEBUX_DAEMON", Value: "1"},
+				{Name: "DEBUX_SECURITY_PROFILE", Value: opts.Profile},
 				{Name: "HOME", Value: "/root"},
 				{Name: "ZDOTDIR", Value: "/tmp"},
 			},
@@ -473,6 +474,7 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 		Env: []corev1.EnvVar{
 			{Name: "DEBUX_TARGET", Value: kubernetesDebugTargetLabel(opts.KubeContext, namespace, sourcePod.Name, targetContainer)},
 			{Name: "DEBUX_DAEMON", Value: "1"},
+			{Name: "DEBUX_SECURITY_PROFILE", Value: opts.Profile},
 			{Name: "HOME", Value: "/root"},
 			{Name: "ZDOTDIR", Value: "/tmp"},
 		},
@@ -670,13 +672,13 @@ func findContainerID(pod *corev1.Pod, containerName string) string {
 }
 
 func copyPodShellCommand(targetContainerID string) []string {
-	cmd := "ZDOTDIR=/tmp exec zsh"
+	cmd := debuxZshExecCommand
 	if targetContainerID != "" {
 		shortID := targetContainerID
 		if len(shortID) > 12 {
 			shortID = shortID[:12]
 		}
-		cmd = fmt.Sprintf("target_cid=%q; target_cid_short=%q; target_pid=''; if [ -n \"$target_cid\" ]; then for p in /proc/[0-9]*; do [ -r \"$p/cgroup\" ] || continue; if grep -q \"$target_cid\" \"$p/cgroup\" 2>/dev/null || grep -q \"$target_cid_short\" \"$p/cgroup\" 2>/dev/null; then target_pid=\"${p##*/}\"; break; fi; done; fi; if [ -n \"$target_pid\" ] && [ -d \"/proc/$target_pid/root\" ]; then export DEBUX_TARGET_ROOT=\"/proc/$target_pid/root\"; export DEBUX_TARGET_ENVIRON=\"/proc/$target_pid/environ\"; export DEBUX_TARGET_CWD_LINK=\"/proc/$target_pid/cwd\"; fi; ZDOTDIR=/tmp exec zsh", targetContainerID, shortID)
+		cmd = fmt.Sprintf("target_cid=%q; target_cid_short=%q; target_pid=''; if [ -n \"$target_cid\" ]; then for p in /proc/[0-9]*; do [ -r \"$p/cgroup\" ] || continue; if grep -q \"$target_cid\" \"$p/cgroup\" 2>/dev/null || grep -q \"$target_cid_short\" \"$p/cgroup\" 2>/dev/null; then target_pid=\"${p##*/}\"; break; fi; done; fi; if [ -n \"$target_pid\" ] && [ -d \"/proc/$target_pid/root\" ]; then export DEBUX_TARGET_ROOT=\"/proc/$target_pid/root\"; export DEBUX_TARGET_ENVIRON=\"/proc/$target_pid/environ\"; export DEBUX_TARGET_CWD_LINK=\"/proc/$target_pid/cwd\"; fi; %s", targetContainerID, shortID, debuxZshExecCommand)
 	}
 	return []string{"sh", "-c", cmd}
 }
@@ -693,13 +695,11 @@ func findRunningDebuxContainer(pod *corev1.Pod) string {
 }
 
 // findRunningDebuxContainerForTarget returns a running debux ephemeral container
-// that targets the same Kubernetes container. Reusing a session created for a
-// different target container would put the shell in the wrong PID/root namespace.
-func findRunningDebuxContainerForTarget(pod *corev1.Pod, targetContainer string) string {
-	if targetContainer == "" {
-		return findRunningDebuxContainer(pod)
-	}
-
+// that targets the same Kubernetes container and security profile. Reusing a
+// session created for a different target container would put the shell in the
+// wrong PID/root namespace; reusing a different profile would silently ignore
+// the user's requested security posture.
+func findRunningDebuxContainerForTarget(pod *corev1.Pod, targetContainer, profile string) string {
 	running := make(map[string]struct{})
 	for _, cs := range pod.Status.EphemeralContainerStatuses {
 		if strings.HasPrefix(cs.Name, "debux-") && cs.State.Running != nil {
@@ -708,18 +708,81 @@ func findRunningDebuxContainerForTarget(pod *corev1.Pod, targetContainer string)
 	}
 
 	for _, ec := range pod.Spec.EphemeralContainers {
-		if _, ok := running[ec.Name]; ok && ec.TargetContainerName == targetContainer {
-			return ec.Name
+		if _, ok := running[ec.Name]; !ok {
+			continue
 		}
+		if targetContainer != "" && ec.TargetContainerName != targetContainer {
+			continue
+		}
+		if !debuxEphemeralContainerProfileMatches(ec, profile) {
+			continue
+		}
+		return ec.Name
 	}
 
 	return ""
 }
 
+func debuxEphemeralContainerProfileMatches(ec corev1.EphemeralContainer, requested string) bool {
+	if requested == "" {
+		requested = ProfileGeneral
+	}
+	for _, env := range ec.Env {
+		if env.Name == "DEBUX_SECURITY_PROFILE" {
+			return env.Value == requested
+		}
+	}
+	// Legacy debux containers did not record their profile. Treat them as the
+	// historical default only; never satisfy an explicit lower-privilege request.
+	return requested == ProfileGeneral
+}
+
+const debuxZshExecCommand = `if [ -z "${HOME:-}" ] || { [ -d "$HOME" ] && [ ! -w "$HOME" ]; }; then export HOME=/tmp; fi; export ZDOTDIR=/tmp; exec zsh`
+
 // execInPod starts a new interactive zsh session inside a running container
 // using the /exec subresource (unlike attachToPod which uses /attach).
 func execInPod(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string) error {
-	return execInPodWithCommand(ctx, config, clientset, namespace, podName, containerName, []string{"zsh"})
+	if err := bootstrapPodShell(ctx, config, clientset, namespace, podName, containerName); err != nil {
+		return fmt.Errorf("preparing debux shell config: %w", err)
+	}
+	return execInPodWithCommand(ctx, config, clientset, namespace, podName, containerName, []string{"sh", "-c", debuxZshExecCommand})
+}
+
+func bootstrapPodShell(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string) error {
+	req := clientset.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(namespace).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: containerName,
+			Command:   []string{"/bin/sh"},
+			Stdin:     true,
+			Stdout:    true,
+			Stderr:    true,
+			TTY:       false,
+		}, scheme.ParameterCodec)
+
+	exec, err := newRemoteExecutor(config, req.URL())
+	if err != nil {
+		return fmt.Errorf("creating bootstrap executor: %w", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdin:  strings.NewReader(entrypoint.ShellBootstrapScript() + "\n"),
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Tty:    false,
+	})
+	if err != nil {
+		details := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
+		if details != "" {
+			return fmt.Errorf("running bootstrap: %w: %s", err, details)
+		}
+		return fmt.Errorf("running bootstrap: %w", err)
+	}
+	return nil
 }
 
 func execInPodWithCommand(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string, command []string) error {
@@ -797,9 +860,15 @@ func KubernetesPod(ctx context.Context, opts PodOpts) error {
 					Name:            "debug",
 					Image:           opts.Image,
 					ImagePullPolicy: corev1.PullPolicy(opts.PullPolicy),
-					Command:         []string{"/bin/sh", "-c", "exec zsh"},
+					Command:         []string{"/bin/sh", "-c", entrypoint.Script},
 					Stdin:           true,
 					TTY:             true,
+					Env: []corev1.EnvVar{
+						{Name: "DEBUX_TARGET", Value: fmt.Sprintf("pod/%s", podName)},
+						{Name: "DEBUX_SECURITY_PROFILE", Value: opts.Profile},
+						{Name: "HOME", Value: "/root"},
+						{Name: "ZDOTDIR", Value: "/tmp"},
+					},
 				},
 			},
 			RestartPolicy: corev1.RestartPolicyNever,
