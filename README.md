@@ -48,6 +48,8 @@ cd debux
 
 mise run install         # Build and copy debux to ~/.local/bin
 mise run image-build     # Build ghcr.io/clement-tourriere/debux:latest locally
+# For Kubernetes after image changes:
+# docker push ghcr.io/clement-tourriere/debux:latest
 ```
 
 ### Docker
@@ -168,7 +170,14 @@ python3: command not found
   Install now? [y/N]
 ```
 
-Packages are backed by [nixpkgs](https://search.nixos.org/packages). Docker mode uses image-specific persistent Nix volumes so tools can survive across sessions without breaking rebuilt debug images.
+Packages are backed by [nixpkgs](https://search.nixos.org/packages).
+
+Persistence model:
+
+- **Docker:** installed tools and shell history live in image-specific Nix volumes, so they survive across Docker sessions without breaking rebuilt debug images.
+- **Kubernetes:** ephemeral containers cannot add arbitrary new volumes, so debux cannot mount your local Docker toolbox/history into pods. Reusing the same debug container on the same pod keeps its tools and history; a fresh debug container starts from the debug image.
+- **Cross-pod Kubernetes toolbox:** bake common tools into a custom debug image and pass it with `--image`, or rebuild/push the default debug image and use `--pull-policy=Always`.
+- **Restricted Kubernetes profile:** `dctl install` works with the current debug image. If you see Nix lock-file permission errors, rebuild/push the image and start a fresh session.
 
 ## Usage
 
@@ -266,8 +275,8 @@ debux k8s://prod/api/app --profile=sysadmin
 
 Kubernetes note: ephemeral containers cannot add new volumes, so debux cannot
 mount your local Docker toolbox/history into arbitrary pods. Reusing the same
-debug container on the same pod keeps its installed tools; across pods, bake
-common tools into a custom debug image and pass it with `--image`.
+debug container on the same pod keeps its installed tools/history; across pods,
+bake common tools into a custom debug image and pass it with `--image`.
 
 ## Development
 
@@ -340,6 +349,20 @@ Try:
 debux k8s://my-namespace/my-pod --copy
 # or
 debux k8s://my-namespace/my-pod --profile=baseline
+```
+
+### Kubernetes restricted: `dctl install` says permission denied
+
+The pod likely pulled an older debug image whose Nix store was root-only. Rebuild and push the current image, then force Kubernetes to pull it and create a fresh debug container:
+
+```bash
+mise run image-build
+docker push ghcr.io/clement-tourriere/debux:latest
+
+debux k8s://my-namespace/my-pod \
+  --profile=restricted \
+  --fresh \
+  --pull-policy=Always
 ```
 
 ### File permissions look broad inside debux

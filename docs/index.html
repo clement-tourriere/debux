@@ -829,7 +829,7 @@
             <article class="card">
               <div class="feature-icon">✦</div>
               <h3>Nix-powered toolbox</h3>
-              <p>Start with a curated set of tools, then install more with <code>dctl install</code>. Installed tools persist in Docker debug stores.</p>
+              <p>Start with a curated set of tools, then install more with <code>dctl install</code>. Docker stores persist globally; Kubernetes keeps tools when you reuse the same debug container.</p>
             </article>
           </div>
         </section>
@@ -845,7 +845,9 @@
               <pre><code>git clone https://github.com/clement-tourriere/debux.git
 cd debux
 mise run install
-mise run image-build</code></pre>
+mise run image-build
+# For Kubernetes after image changes:
+# docker push ghcr.io/clement-tourriere/debux:latest</code></pre>
             </div>
             <div class="card code-card">
               <button class="copy" data-copy>Copy</button>
@@ -995,6 +997,12 @@ debux pod -n prod
 debux pod -n prod --keep</code></pre>
             </div>
           </div>
+          <div class="callout info" style="margin-top: 1rem;">
+            <strong>Pod name shortcut:</strong> if an exact pod name is not found, debux treats it as a substring and opens the searchable picker with matching running pods.
+          </div>
+          <div class="callout" style="margin-top: 1rem;">
+            <strong>Kubernetes toolbox persistence:</strong> ephemeral containers cannot add new volumes, so debux cannot mount your local Docker toolbox/history into pods. Reuse the same debug container on the same pod to keep installed tools/history, or bake common tools into a custom debug image and pass it with <code>--image</code>.
+          </div>
           <div class="table-wrap" style="margin-top: 1rem;">
             <table>
               <thead><tr><th>Mode</th><th>Best for</th><th>Notes</th></tr></thead>
@@ -1061,7 +1069,7 @@ tcpdump -i any</code></pre>
             </article>
           </div>
           <div class="callout" style="margin-top: 1rem;">
-            Some low-level tools need more privileges. In Kubernetes, use <code>--profile=sysadmin</code> for a fully privileged session or <code>--profile=netadmin</code> for network capabilities.
+            Some low-level tools need more privileges. In Kubernetes, use <code>--profile=sysadmin</code> for a fully privileged session or <code>--profile=netadmin</code> for network capabilities. <code>--profile=restricted</code> supports shell startup and <code>dctl install</code> with the current debug image, but deep chroot/target-root integration can be limited by Linux permissions.
           </div>
         </section>
 
@@ -1101,10 +1109,11 @@ debux image my-app:broken --rm=false</code></pre>
           <div class="grid two" style="margin-top: 1rem;">
             <div class="card code-card">
               <button class="copy" data-copy>Copy</button>
-              <pre><code># Run a Kubernetes debug container as nobody
+              <pre><code># Non-root restricted Kubernetes debug shell
 debux k8s://prod/api/app \
-  --profile=baseline \
-  --user 65534:65534</code></pre>
+  --profile=restricted \
+  --fresh \
+  --pull-policy=Always</code></pre>
             </div>
             <div class="card code-card">
               <button class="copy" data-copy>Copy</button>
@@ -1118,7 +1127,7 @@ debux k8s://prod/api/app \
         <section id="store" class="doc-section" data-search data-title="Persistent store volumes cleanup">
           <div class="section-heading">
             <h2>Store management</h2>
-            <p>Installed packages and shell history can persist between sessions. Use the store commands to inspect or clean them.</p>
+            <p>Docker installed packages and shell history persist in image-specific Nix volumes. Use the store commands to inspect or clean those Docker stores.</p>
           </div>
           <div class="grid two">
             <div class="card code-card">
@@ -1129,7 +1138,7 @@ debux store clean</code></pre>
             </div>
             <div class="card">
               <h3>When to clean?</h3>
-              <p>Clean the store if you want to reclaim disk space, reset installed tools, or remove old image-specific Docker Nix volumes after frequent debug image rebuilds.</p>
+              <p>Clean the store if you want to reclaim disk space, reset installed tools, or remove old image-specific Docker Nix volumes after frequent debug image rebuilds. Kubernetes does not use these local Docker volumes.</p>
             </div>
           </div>
         </section>
@@ -1196,6 +1205,17 @@ debux k8s://prod/api/app --profile=baseline</code></pre>
   --image ghcr.io/clement-tourriere/debux:latest \
   --pull-policy=Always</code></pre>
             </article>
+            <article class="card">
+              <h3><code>dctl install</code> permission denied in restricted mode</h3>
+              <p>The pod likely pulled an older debug image whose Nix store is root-only. Rebuild and push the current image, then start a fresh restricted session and force a pull.</p>
+              <pre><code>mise run image-build
+docker push ghcr.io/clement-tourriere/debux:latest
+
+debux k8s://prod/api/app \
+  --profile=restricted \
+  --fresh \
+  --pull-policy=Always</code></pre>
+            </article>
           </div>
         </section>
 
@@ -1219,7 +1239,7 @@ debux k8s://prod/api/app --profile=baseline</code></pre>
             </article>
             <article class="card">
               <h3>Can I use it in restricted clusters?</h3>
-              <p>Try <code>--profile=baseline</code> or <code>--profile=restricted</code>. If ephemeral containers are blocked by RBAC, use <code>--copy</code>.</p>
+              <p>Yes. Try <code>--profile=restricted</code> for non-root/no-capability sessions, or <code>--profile=baseline</code> for clusters that set defaults via policy. If ephemeral containers are blocked by RBAC, use <code>--copy</code>.</p>
             </article>
           </div>
         </section>

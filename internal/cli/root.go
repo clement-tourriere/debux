@@ -42,7 +42,11 @@ Target formats:
   k8s://<namespace>/<pod>/<ctr>   Specific container in a pod
   k8s://@<context>                Pod picker in a specific kube context
   k8s://@<context>/<pod>          Pod in that context's namespace
-  k8s://@<context>/<ns>/<pod>     Pod in a specific kube context`
+  k8s://@<context>/<ns>/<pod>     Pod in a specific kube context
+  k8s://@<context>/<ns>/<pod>/<ctr> Specific container in a specific context
+
+If a Kubernetes pod name is not found exactly, debux treats it as a substring
+and opens the searchable picker with matching running pods.`
 
 const rootExample = `  # Pick a Docker container interactively
   debux
@@ -63,6 +67,12 @@ const rootExample = `  # Pick a Docker container interactively
   debux k8s://prod/api-pod
   debux k8s://prod/api-pod/app
   debux k8s://@eks-preprod-01/prod/api-pod/app
+
+  # Partial pod names open the searchable matching-pod picker
+  debux k8s://prod/webapp-internal-api
+
+  # Restricted/non-root Kubernetes debug shell
+  debux k8s://prod/api-pod/app --profile=restricted
 
   # If ephemeral containers are blocked by RBAC or policy
   debux k8s://prod/api-pod/app --copy

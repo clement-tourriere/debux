@@ -26,7 +26,9 @@ the runtime explicit and to open runtime-specific pickers.`,
   debux exec docker://my-app
   debux exec k8s://
   debux exec k8s://@eks-preprod-01/prod/api-pod/app
+  debux exec k8s://prod/webapp-internal-api
   debux exec k8s://prod/api-pod/app --context eks-preprod-01
+  debux exec k8s://prod/api-pod/app --profile=restricted
   debux exec k8s://prod/api-pod/app --fresh --pull-policy=Always
   debux exec k8s://prod/api-pod/app --copy`,
 		Args: cobra.MaximumNArgs(1),

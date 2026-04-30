@@ -120,6 +120,7 @@ type ImageOpts struct {
 //	k8s://<namespace>/<pod>/<ctr>   → kubernetes (specific container)
 //	k8s://@<context>/<pod>          → kubernetes (specific context, current namespace)
 //	k8s://@<context>/<ns>/<pod>     → kubernetes (specific context and namespace)
+//	k8s://@<context>/<ns>/<pod>/<ctr> → kubernetes (specific context, namespace, container)
 func ParseTarget(raw string) (*Target, error) {
 	if raw == "" {
 		return nil, fmt.Errorf("empty target")
