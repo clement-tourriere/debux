@@ -837,17 +837,14 @@
         <section id="quickstart" class="doc-section" data-search data-title="Quick start">
           <div class="section-heading">
             <h2>Quick start</h2>
-            <p>Install the binary, build the debug image, then point debux at a Docker container or Kubernetes pod.</p>
+            <p>Install the release binary with one command, then point debux at a Docker container or Kubernetes pod. Docker pulls the debug image automatically; Kubernetes pulls it in-cluster.</p>
           </div>
           <div class="grid two">
             <div class="card code-card">
               <button class="copy" data-copy>Copy</button>
-              <pre><code>git clone https://github.com/clement-tourriere/debux.git
-cd debux
-mise run install
-mise run image-build
-# For Kubernetes after image changes:
-# docker push ghcr.io/clement-tourriere/debux:latest</code></pre>
+              <pre><code>curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh
+
+debux docker://</code></pre>
             </div>
             <div class="card code-card">
               <button class="copy" data-copy>Copy</button>
@@ -869,31 +866,35 @@ debux k8s://prod/api-pod/app --fresh</code></pre>
         <section id="install" class="doc-section" data-search data-title="Installation and development setup">
           <div class="section-heading">
             <h2>Install</h2>
-            <p>debux uses <a class="link" href="https://mise.jdx.dev">mise</a> to manage Go, hk, pkl and build tooling. Clone, build, install. No language runtime guessing.</p>
+            <p>The recommended install path downloads a GitHub Release binary for Linux/macOS on amd64/arm64. Source builds still use <a class="link" href="https://mise.jdx.dev">mise</a> for Go, hk, pkl and build tooling.</p>
           </div>
           <div class="timeline">
             <div class="timeline-item card">
               <div class="timeline-num">1</div>
               <div>
-                <h3>Clone</h3>
-                <pre><code>git clone https://github.com/clement-tourriere/debux.git
-cd debux</code></pre>
+                <h3>One-command install</h3>
+                <pre><code>curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh</code></pre>
+                <p>Installs to <code>~/.local/bin</code> by default and verifies release checksums when available.</p>
               </div>
             </div>
             <div class="timeline-item card">
               <div class="timeline-num">2</div>
               <div>
-                <h3>Build the CLI and debug image</h3>
-                <pre><code>mise run install
-mise run image-build</code></pre>
+                <h3>Pin a version or install directory</h3>
+                <pre><code>curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh -s -- --version v1.2.3
+curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh -s -- --bin-dir /usr/local/bin</code></pre>
               </div>
             </div>
             <div class="timeline-item card">
               <div class="timeline-num">3</div>
               <div>
-                <h3>Optional: install git hooks with hk</h3>
-                <pre><code>mise run hooks-install
-mise run check</code></pre>
+                <h3>Build from source</h3>
+                <pre><code>git clone https://github.com/clement-tourriere/debux.git
+cd debux
+mise run install
+mise run image-build
+# For Kubernetes after image changes:
+# docker push ghcr.io/clement-tourriere/debux:latest</code></pre>
               </div>
             </div>
           </div>

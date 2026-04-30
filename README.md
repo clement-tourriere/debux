@@ -40,7 +40,25 @@ It starts a temporary debug toolbox next to your target container, shares useful
 
 ## Quick start
 
-Requires [mise](https://mise.jdx.dev) for Go and developer tooling.
+Install the latest release binary:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh
+
+debux docker://
+```
+
+The installer supports Linux/macOS on amd64/arm64 and installs to `~/.local/bin` by default.
+
+```bash
+# Pin a version
+curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh -s -- --version v1.2.3
+
+# Choose another install directory
+curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh -s -- --bin-dir /usr/local/bin
+```
+
+For development from source, use [mise](https://mise.jdx.dev):
 
 ```bash
 git clone https://github.com/clement-tourriere/debux.git
@@ -324,6 +342,18 @@ debux docs --open       # open documentation in your browser
 ```
 
 The repository uses [hk](https://hk.jdx.dev/) for git hooks and [pkl](https://pkl-lang.org/) for hk configuration.
+
+## Releases and distribution
+
+GitHub Releases publish prebuilt `debux` binaries for Linux and macOS on amd64/arm64 using GoReleaser. The one-line installer downloads those release assets and verifies `checksums.txt` when available.
+
+The debug toolbox image is published separately to GHCR:
+
+```text
+ghcr.io/clement-tourriere/debux:latest
+```
+
+Docker mode pulls it automatically when needed. Kubernetes pulls it from inside the cluster; after changing the image, push it and run with `--fresh --pull-policy=Always`.
 
 ## Documentation site
 
