@@ -14,7 +14,6 @@ import (
 	"github.com/clement-tourriere/debux/internal/entrypoint"
 	dbximage "github.com/clement-tourriere/debux/internal/image"
 	"github.com/clement-tourriere/debux/internal/store"
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
@@ -155,7 +154,7 @@ func DockerKillAll(ctx context.Context) error {
 	return nil
 }
 
-func dockerContainerPrimaryName(c types.Container) string {
+func dockerContainerPrimaryName(c container.Summary) string {
 	if len(c.Names) > 0 {
 		return strings.TrimPrefix(c.Names[0], "/")
 	}
@@ -169,7 +168,7 @@ func shortContainerID(id string) string {
 	return id
 }
 
-func isDebuxDockerSidecar(c types.Container) bool {
+func isDebuxDockerSidecar(c container.Summary) bool {
 	if c.Labels[dockerLabelManagedBy] == dockerLabelManagedByVal && c.Labels[dockerLabelKind] == dockerLabelKindSidecar {
 		return true
 	}
@@ -371,7 +370,7 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 }
 
 func debugImageVolumes(ctx context.Context, cli *client.Client, imageRef string) (store.VolumeSet, error) {
-	info, _, err := cli.ImageInspectWithRaw(ctx, imageRef)
+	info, err := cli.ImageInspect(ctx, imageRef)
 	if err != nil {
 		return store.VolumeSet{}, fmt.Errorf("inspecting debug image %q: %w", imageRef, err)
 	}
@@ -463,7 +462,7 @@ func DockerImage(ctx context.Context, imageRef string, opts ImageOpts) error {
 	// Check if the target image exists locally; if not, try pulling it.
 	// Unlike the debug image, the target may be a local-only build that
 	// should never be pulled from a registry.
-	_, _, inspectErr := cli.ImageInspectWithRaw(ctx, imageRef)
+	_, inspectErr := cli.ImageInspect(ctx, imageRef)
 	if inspectErr != nil {
 		// Image not found locally — attempt a pull (works for remote images)
 		if pullErr := dbximage.EnsureImage(ctx, cli, imageRef); pullErr != nil {
@@ -615,7 +614,7 @@ func sanitizeImageRef(ref string) string {
 
 // targetMounts extracts the target container's mounts and converts them to
 // mount.Mount entries for the debug container, skipping paths reserved by debux.
-func targetMounts(info types.ContainerJSON) []mount.Mount {
+func targetMounts(info container.InspectResponse) []mount.Mount {
 	if info.Mounts == nil {
 		return nil
 	}

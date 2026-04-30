@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -105,7 +105,7 @@ func TestDebuxExecCommandQuotesOneShotCommand(t *testing.T) {
 }
 
 func TestIsDebuxDockerSidecarRequiresLabelOrDebuxImage(t *testing.T) {
-	managed := types.Container{
+	managed := container.Summary{
 		ID:    "123456789abcdef",
 		Names: []string{"/not-prefixed"},
 		Labels: map[string]string{
@@ -117,12 +117,12 @@ func TestIsDebuxDockerSidecarRequiresLabelOrDebuxImage(t *testing.T) {
 		t.Fatalf("label-managed sidecar was not recognized")
 	}
 
-	unrelated := types.Container{ID: "abcdef123456", Names: []string{"/debux-important-db"}, Image: "postgres:latest"}
+	unrelated := container.Summary{ID: "abcdef123456", Names: []string{"/debux-important-db"}, Image: "postgres:latest"}
 	if isDebuxDockerSidecar(unrelated) {
 		t.Fatalf("unrelated debux-* container should not be treated as a debux sidecar")
 	}
 
-	legacy := types.Container{ID: "abcdef123456", Names: []string{"/debux-api"}, Image: "ghcr.io/clement-tourriere/debux:latest"}
+	legacy := container.Summary{ID: "abcdef123456", Names: []string{"/debux-api"}, Image: "ghcr.io/clement-tourriere/debux:latest"}
 	if !isDebuxDockerSidecar(legacy) {
 		t.Fatalf("legacy debux sidecar should be recognized")
 	}
