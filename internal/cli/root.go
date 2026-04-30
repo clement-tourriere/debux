@@ -9,6 +9,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const docsURL = "https://clement-tourriere.github.io/debux/"
+
 var (
 	flagImage      string
 	flagPrivileged bool
@@ -21,62 +23,126 @@ var (
 	flagProfile    string
 )
 
-func NewRootCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "debux [target]",
-		Short: "Universal container debugging tool",
-		Long: `Debug any container — even distroless/scratch — with a rich NixOS-powered shell.
+const rootLong = `debux starts a rich Nix-powered debug container next to your target.
 
-If no target is specified, an interactive picker lists running Docker containers.
-Using a schema without a name (e.g. docker://, k8s://) shows a picker for that runtime.
+It is built for production-style images that do not contain a useful shell:
+distroless, scratch, Alpine, minimal images, and locked-down Kubernetes pods.
+
+With Docker, debux creates a reusable debug sidecar. With Kubernetes, debux uses
+an ephemeral container by default, or a temporary copied pod with --copy.
 
 Target formats:
   <container>                     Docker container (default runtime)
   docker://<container>            Docker container
-  containerd://<container>        containerd container
-  nerdctl://<container>           containerd container (alias)
-  k8s://<pod>                     Kubernetes pod (current kube-context namespace)
-  k8s://<namespace>/<pod>         Kubernetes pod (specific namespace)
-  k8s://<ns>/<pod>/<container>    Kubernetes pod (specific container)`,
+  docker://                       Docker picker
+  k8s://                          Kubernetes pod picker
+  k8s://<pod>                     Pod in the current kube-context namespace
+  k8s://<namespace>/<pod>         Pod in an explicit namespace
+  k8s://<namespace>/<pod>/<ctr>   Specific container in a pod`
+
+const rootExample = `  # Pick a Docker container interactively
+  debux
+  debux docker://
+
+  # Debug a Docker container by name or ID
+  debux my-app
+  debux docker://my-app
+
+  # Pick a Kubernetes pod in the current kube-context namespace
+  debux k8s://
+
+  # Debug a Kubernetes pod or a specific container
+  debux k8s://api-pod
+  debux k8s://prod/api-pod
+  debux k8s://prod/api-pod/app
+
+  # If ephemeral containers are blocked by RBAC or policy
+  debux k8s://prod/api-pod/app --copy
+
+  # Pull the latest debug image and force a fresh session
+  debux k8s://prod/api-pod/app --fresh --pull-policy=Always`
+
+func NewRootCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:           "debux [target]",
+		Short:         "Debug any Docker or Kubernetes container",
+		Long:          rootLong,
+		Example:       rootExample,
 		Args:          cobra.MaximumNArgs(1),
 		RunE:          runExec,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	cmd.Flags().SortFlags = false
+	cmd.InheritedFlags().SortFlags = false
+	cmd.CompletionOptions.DisableDefaultCmd = true
 
-	cmd.PersistentFlags().StringVar(&flagImage, "image", "", "Override debug image (default: ghcr.io/clement-tourriere/debux:latest)")
-	cmd.PersistentFlags().BoolVar(&flagPrivileged, "privileged", false, "Run debug container in privileged mode")
-	cmd.PersistentFlags().StringVar(&flagUser, "user", "", "Run as specific user (uid:gid)")
-	cmd.PersistentFlags().BoolVar(&flagRemove, "rm", true, "Auto-remove debug container on exit")
-	cmd.PersistentFlags().BoolVar(&flagNoVolumes, "no-volumes", false, "Don't share target container's volumes")
-	cmd.PersistentFlags().StringVar(&flagPullPolicy, "pull-policy", "", "Image pull policy for Kubernetes (default: Kubernetes default; Always for :latest)")
-	cmd.PersistentFlags().BoolVar(&flagFresh, "fresh", false, "Force a new debug container instead of reusing an existing one (Kubernetes)")
-	cmd.PersistentFlags().BoolVar(&flagCopy, "copy", false, "For Kubernetes, create a copied debug pod instead of an ephemeral container")
-	cmd.PersistentFlags().String("kubeconfig", "", "Override kubeconfig path")
-	cmd.PersistentFlags().StringVar(&flagProfile, "profile", "general",
-		fmt.Sprintf("Security profile for Kubernetes (%s)", strings.Join(runtime.ValidProfiles, ", ")))
-	_ = cmd.PersistentFlags().MarkDeprecated("privileged", "use --profile=sysadmin instead")
+	addExecFlags(cmd)
 
 	cmd.AddCommand(newExecCmd())
-	cmd.AddCommand(newKillCmd())
-	cmd.AddCommand(newPodCmd())
 	cmd.AddCommand(newImageCmd())
+	cmd.AddCommand(newPodCmd())
+	cmd.AddCommand(newKillCmd())
 	cmd.AddCommand(newStoreCmd())
+	cmd.AddCommand(newDocsCmd())
 
 	return cmd
 }
 
+func addExecFlags(cmd *cobra.Command) {
+	cmd.Flags().SortFlags = false
+	cmd.Flags().StringVar(&flagImage, "image", "", fmt.Sprintf("Debug image (default %s)", runtime.DefaultImage))
+	cmd.Flags().BoolVar(&flagFresh, "fresh", false, "Create a fresh debug container instead of reusing an existing debux session")
+	cmd.Flags().BoolVar(&flagNoVolumes, "no-volumes", false, "Do not mount target volumes into the debug container")
+	cmd.Flags().StringVar(&flagUser, "user", "", "Run debug container as uid[:gid]")
+	cmd.Flags().BoolVar(&flagPrivileged, "privileged", false, "Run privileged (Docker); Kubernetes alias for --profile=sysadmin")
+	cmd.Flags().BoolVar(&flagCopy, "copy", false, "Kubernetes: use a temporary copied pod instead of an ephemeral container")
+	cmd.Flags().StringVar(&flagPullPolicy, "pull-policy", "", "Kubernetes: image pull policy (Always, IfNotPresent, Never)")
+	cmd.Flags().StringVar(&flagProfile, "profile", runtime.ProfileGeneral,
+		fmt.Sprintf("Kubernetes: security profile (%s)", strings.Join(runtime.ValidProfiles, ", ")))
+	cmd.Flags().String("kubeconfig", "", "Kubernetes: kubeconfig path")
+}
+
+func addImageFlags(cmd *cobra.Command) {
+	cmd.Flags().SortFlags = false
+	cmd.Flags().StringVar(&flagImage, "image", "", fmt.Sprintf("Debug image (default %s)", runtime.DefaultImage))
+	cmd.Flags().BoolVar(&flagRemove, "rm", true, "Remove the debug container after exit")
+	cmd.Flags().BoolVar(&flagPrivileged, "privileged", false, "Run debug container privileged")
+	cmd.Flags().StringVar(&flagUser, "user", "", "Run debug container as uid[:gid]")
+}
+
+func addPodDebugFlags(cmd *cobra.Command) {
+	cmd.Flags().SortFlags = false
+	cmd.Flags().StringVar(&flagImage, "image", "", fmt.Sprintf("Debug image (default %s)", runtime.DefaultImage))
+	cmd.Flags().StringVar(&flagUser, "user", "", "Run debug container as uid[:gid]")
+	cmd.Flags().BoolVar(&flagPrivileged, "privileged", false, "Alias for --profile=sysadmin")
+	cmd.Flags().StringVar(&flagPullPolicy, "pull-policy", "", "Image pull policy (Always, IfNotPresent, Never)")
+	cmd.Flags().StringVar(&flagProfile, "profile", runtime.ProfileGeneral,
+		fmt.Sprintf("Security profile (%s)", strings.Join(runtime.ValidProfiles, ", ")))
+	cmd.Flags().String("kubeconfig", "", "Kubeconfig path")
+}
+
+func addKubeconfigFlag(cmd *cobra.Command) {
+	cmd.Flags().SortFlags = false
+	cmd.Flags().String("kubeconfig", "", "Kubeconfig path")
+}
+
+func flagChanged(cmd *cobra.Command, name string) bool {
+	flag := cmd.Flags().Lookup(name)
+	return flag != nil && flag.Changed
+}
+
 // resolveProfile resolves the security profile from --profile and --privileged flags.
 func resolveProfile(cmd *cobra.Command) (string, error) {
-	privilegedSet := cmd.Flags().Changed("privileged") && flagPrivileged
-	profileSet := cmd.Flags().Changed("profile")
+	privilegedSet := flagChanged(cmd, "privileged") && flagPrivileged
+	profileSet := flagChanged(cmd, "profile")
 
 	if privilegedSet && profileSet && flagProfile != runtime.ProfileSysadmin {
 		return "", fmt.Errorf("conflicting flags: --privileged and --profile=%s (use --profile=sysadmin or remove --privileged)", flagProfile)
 	}
 
 	if privilegedSet {
-		fmt.Fprintln(os.Stderr, "Warning: --privileged is deprecated, use --profile=sysadmin instead")
+		fmt.Fprintln(os.Stderr, "Warning: --privileged is deprecated for Kubernetes, use --profile=sysadmin instead")
 		return runtime.ProfileSysadmin, nil
 	}
 

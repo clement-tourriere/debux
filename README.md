@@ -223,6 +223,10 @@ debux kill k8s://my-namespace/ --all
 # Inspect or clean persistent Docker Nix stores
 debux store info
 debux store clean
+
+# Open the documentation
+debux docs
+debux docs --open
 ```
 
 ## Kubernetes security profiles
@@ -256,6 +260,9 @@ mise run fix            # hk fixes on all files
 mise run hooks-install  # install hk git hooks with mise integration
 mise run image-build    # build debug image
 mise run docs           # serve docs at http://localhost:8000
+
+debux docs              # print documentation URL
+debux docs --open       # open documentation in your browser
 ```
 
 The repository uses [hk](https://hk.jdx.dev/) for git hooks and [pkl](https://pkl-lang.org/) for hk configuration.

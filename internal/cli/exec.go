@@ -14,12 +14,24 @@ import (
 )
 
 func newExecCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "exec [target]",
-		Short: "Debug a running container",
-		Args:  cobra.MaximumNArgs(1),
-		RunE:  runExec,
+	cmd := &cobra.Command{
+		Use:     "exec [target]",
+		Aliases: []string{"debug", "shell"},
+		Short:   "Debug a running Docker container or Kubernetes pod",
+		Long: `Start an interactive debux shell attached to a running target.
+
+With no target, debux opens the Docker picker. Use docker:// or k8s:// to make
+the runtime explicit and to open runtime-specific pickers.`,
+		Example: `  debux exec
+  debux exec docker://my-app
+  debux exec k8s://
+  debux exec k8s://prod/api-pod/app --fresh --pull-policy=Always
+  debux exec k8s://prod/api-pod/app --copy`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: runExec,
 	}
+	addExecFlags(cmd)
+	return cmd
 }
 
 func runExec(cmd *cobra.Command, args []string) error {
@@ -39,6 +51,10 @@ func runExec(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if err := validateExecFlags(cmd, target.Runtime); err != nil {
+		return err
+	}
+
 	// If name is empty, show interactive picker for the runtime
 	if target.Name == "" {
 		name, err := pickTarget(ctx, cmd, target)
@@ -48,9 +64,13 @@ func runExec(cmd *cobra.Command, args []string) error {
 		target.Name = name
 	}
 
-	profile, err := resolveProfile(cmd)
-	if err != nil {
-		return err
+	profile := runtime.ProfileGeneral
+	if target.Runtime == "kubernetes" {
+		var err error
+		profile, err = resolveProfile(cmd)
+		if err != nil {
+			return err
+		}
 	}
 
 	image := flagImage
@@ -82,6 +102,26 @@ func runExec(cmd *cobra.Command, args []string) error {
 	default:
 		return fmt.Errorf("unsupported runtime: %s", target.Runtime)
 	}
+}
+
+func validateExecFlags(cmd *cobra.Command, targetRuntime string) error {
+	if targetRuntime == "kubernetes" {
+		return nil
+	}
+
+	var invalid []string
+	for _, name := range []string{"copy", "pull-policy", "kubeconfig", "profile"} {
+		if flagChanged(cmd, name) {
+			invalid = append(invalid, "--"+name)
+		}
+	}
+	if len(invalid) == 1 {
+		return fmt.Errorf("%s is only supported for Kubernetes targets; use k8s://... or remove the flag", invalid[0])
+	}
+	if len(invalid) > 1 {
+		return fmt.Errorf("%s are only supported for Kubernetes targets; use k8s://... or remove the flags", strings.Join(invalid, ", "))
+	}
+	return nil
 }
 
 func pickTarget(ctx context.Context, cmd *cobra.Command, target *runtime.Target) (string, error) {

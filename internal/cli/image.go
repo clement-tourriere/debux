@@ -10,16 +10,21 @@ import (
 )
 
 func newImageCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "image <image-ref>",
-		Short: "Debug a Docker image directly",
+		Short: "Debug a Docker image without starting it",
 		Long: `Debug a Docker image by copying its filesystem into a debug container.
 
-Works with ALL images including scratch and distroless — the target image
-is never started. The image filesystem is available at /target.`,
+This works with scratch and distroless images because the target image is never
+started. Its filesystem is copied into the debug container and exposed at /target.`,
+		Example: `  debux image gcr.io/distroless/static-debian12
+  debux image my-app:broken
+  debux image my-app:broken --rm=false`,
 		Args: cobra.ExactArgs(1),
 		RunE: runImage,
 	}
+	addImageFlags(cmd)
+	return cmd
 }
 
 func runImage(cmd *cobra.Command, args []string) error {

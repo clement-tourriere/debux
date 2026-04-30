@@ -1127,10 +1127,11 @@ debux store clean</code></pre>
               <thead><tr><th>Command / flag</th><th>Description</th></tr></thead>
               <tbody>
                 <tr><td><code>debux [target]</code></td><td>Debug a running Docker container or Kubernetes pod.</td></tr>
-                <tr><td><code>debux exec [target]</code></td><td>Explicit form of the default debug command.</td></tr>
+                <tr><td><code>debux exec [target]</code></td><td>Explicit form of the default debug command. Aliases: <code>debug</code>, <code>shell</code>.</td></tr>
                 <tr><td><code>debux image &lt;image&gt;</code></td><td>Debug a Docker image filesystem without starting it.</td></tr>
                 <tr><td><code>debux pod</code></td><td>Create a standalone Kubernetes debug pod.</td></tr>
                 <tr><td><code>debux kill [target]</code></td><td>Stop a running debux debug session.</td></tr>
+                <tr><td><code>debux docs</code></td><td>Print the documentation URL. Use <code>--open</code> to open it in a browser.</td></tr>
                 <tr><td><code>--image &lt;image&gt;</code></td><td>Override the debug image.</td></tr>
                 <tr><td><code>--fresh</code></td><td>Force a new debug container instead of reusing an existing one.</td></tr>
                 <tr><td><code>--copy</code></td><td>Kubernetes: create a copied debug pod instead of an ephemeral container.</td></tr>

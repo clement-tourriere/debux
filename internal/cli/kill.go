@@ -18,25 +18,30 @@ var flagKillAll bool
 func newKillCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "kill [target]",
-		Short: "Kill running debux debug sessions",
-		Long: `Kill debux debug sessions (sidecar containers).
+		Short: "Stop running debux debug sessions",
+		Long: `Stop debux debug sessions.
 
-If no target is specified, an interactive picker lists active sessions.
-Use --all to kill all running debux sessions across the runtime.
+Docker debug sessions are sidecar containers. Kubernetes ephemeral containers
+cannot be removed from the pod spec, so debux terminates their process instead.`,
+		Example: `  # Pick an active session to stop
+  debux kill
 
-Target formats:
-  <container>                     Docker container (default runtime)
-  docker://<container>            Docker container
-  k8s://<pod>                     Kubernetes pod (current kube-context namespace)
-  k8s://<namespace>/<pod>         Kubernetes pod (specific namespace)
-  k8s://<namespace>/              Kubernetes namespace (for --all)`,
+  # Stop a Docker debug sidecar
+  debux kill docker://my-app
+
+  # Stop the debux ephemeral container on a pod
+  debux kill k8s://prod/api-pod
+
+  # Stop all sessions in a namespace
+  debux kill k8s://prod/ --all`,
 		Args:          cobra.MaximumNArgs(1),
 		RunE:          runKill,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 
-	cmd.Flags().BoolVar(&flagKillAll, "all", false, "Kill all running debux sessions")
+	addKubeconfigFlag(cmd)
+	cmd.Flags().BoolVar(&flagKillAll, "all", false, "Kill all running debux sessions for the selected runtime")
 
 	return cmd
 }

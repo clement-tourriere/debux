@@ -12,14 +12,21 @@ import (
 func newPodCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pod",
-		Short: "Create a standalone debug pod in Kubernetes",
-		Long:  "Create a standalone debug pod with the NixOS debug image in a Kubernetes cluster.",
-		RunE:  runPod,
+		Short: "Create a standalone Kubernetes debug pod",
+		Long: `Create a standalone debux toolbox pod in a Kubernetes cluster.
+
+This is useful for cluster-level network or DNS debugging when you do not need
+to attach to a specific application pod.`,
+		Example: `  debux pod -n prod
+  debux pod -n prod --host-network
+  debux pod -n prod --keep
+  debux pod -n prod --profile=netadmin`,
+		RunE: runPod,
 	}
 
+	addPodDebugFlags(cmd)
 	cmd.Flags().StringP("namespace", "n", "default", "Kubernetes namespace")
-	cmd.Flags().String("kubeconfig", "", "Override kubeconfig path")
-	cmd.Flags().Bool("keep", false, "Keep the debug pod after exit (default: delete on exit)")
+	cmd.Flags().Bool("keep", false, "Keep the debug pod after exit")
 	cmd.Flags().Bool("host-network", false, "Use host network for the debug pod")
 
 	return cmd
