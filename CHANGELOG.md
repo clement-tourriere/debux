@@ -1,3 +1,9 @@
+## v0.2.2 (2026-04-30)
+
+### Fix
+
+- support updated go dependencies
+
 ## v0.2.1 (2026-04-30)
 
 ### Fix
