@@ -88,6 +88,12 @@ type PodInfo struct {
 
 // KubernetesList returns running pods, optionally filtered by namespace.
 func KubernetesList(ctx context.Context, kubeconfig string, kubeContext string, namespace string) ([]PodInfo, error) {
+	return kubernetesListPods(ctx, kubeconfig, kubeContext, namespace, "")
+}
+
+const kubernetesPodListLimit int64 = 200
+
+func kubernetesListPods(ctx context.Context, kubeconfig, kubeContext, namespace, query string) ([]PodInfo, error) {
 	_, clientset, err := getK8sClient(kubeconfig, kubeContext)
 	if err != nil {
 		return nil, err
@@ -95,52 +101,74 @@ func KubernetesList(ctx context.Context, kubeconfig string, kubeContext string, 
 
 	listNs := resolveTargetNamespace(namespace, kubeconfig, kubeContext)
 	resolvedContext := kubeContext
-
-	pods, err := clientset.CoreV1().Pods(listNs).List(ctx, metav1.ListOptions{
-		FieldSelector: "status.phase=Running",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("listing pods: %w", err)
-	}
+	query = strings.ToLower(strings.TrimSpace(query))
 
 	var result []PodInfo
-	for _, pod := range pods.Items {
-		// Skip pods with no running containers. A failing readiness probe is often
-		// exactly why the user wants a debugger, so do not require Ready=true.
-		hasRunning := false
-		for _, cs := range pod.Status.ContainerStatuses {
-			if cs.State.Running != nil {
-				hasRunning = true
-				break
-			}
-		}
-		if !hasRunning {
-			continue
-		}
-
-		var containers []string
-		for _, c := range pod.Spec.Containers {
-			containers = append(containers, c.Name)
-		}
-
-		hasSession := false
-		for _, cs := range pod.Status.EphemeralContainerStatuses {
-			if strings.HasPrefix(cs.Name, "debux-") && cs.State.Running != nil {
-				hasSession = true
-				break
-			}
-		}
-
-		result = append(result, PodInfo{
-			Name:            pod.Name,
-			Namespace:       pod.Namespace,
-			Context:         resolvedContext,
-			Status:          string(pod.Status.Phase),
-			Containers:      containers,
-			HasDebuxSession: hasSession,
-		})
+	listOptions := metav1.ListOptions{
+		FieldSelector: "status.phase=Running",
+		Limit:         kubernetesPodListLimit,
 	}
+
+	for {
+		pods, err := clientset.CoreV1().Pods(listNs).List(ctx, listOptions)
+		if err != nil {
+			return nil, fmt.Errorf("listing pods: %w", err)
+		}
+
+		for _, pod := range pods.Items {
+			if query != "" && !matchesPodQuery(pod.Namespace, pod.Name, query) {
+				continue
+			}
+
+			// Skip pods with no running containers. A failing readiness probe is often
+			// exactly why the user wants a debugger, so do not require Ready=true.
+			hasRunning := false
+			for _, cs := range pod.Status.ContainerStatuses {
+				if cs.State.Running != nil {
+					hasRunning = true
+					break
+				}
+			}
+			if !hasRunning {
+				continue
+			}
+
+			var containers []string
+			for _, c := range pod.Spec.Containers {
+				containers = append(containers, c.Name)
+			}
+
+			hasSession := false
+			for _, cs := range pod.Status.EphemeralContainerStatuses {
+				if strings.HasPrefix(cs.Name, "debux-") && cs.State.Running != nil {
+					hasSession = true
+					break
+				}
+			}
+
+			result = append(result, PodInfo{
+				Name:            pod.Name,
+				Namespace:       pod.Namespace,
+				Context:         resolvedContext,
+				Status:          string(pod.Status.Phase),
+				Containers:      containers,
+				HasDebuxSession: hasSession,
+			})
+		}
+
+		if pods.Continue == "" {
+			break
+		}
+		listOptions.Continue = pods.Continue
+	}
+
 	return result, nil
+}
+
+func matchesPodQuery(namespace, name, query string) bool {
+	name = strings.ToLower(name)
+	namespacedName := strings.ToLower(namespace + "/" + name)
+	return strings.Contains(name, query) || strings.Contains(namespacedName, query)
 }
 
 // KubernetesPodExists reports whether a pod exists in the resolved namespace.
@@ -163,23 +191,7 @@ func KubernetesPodExists(ctx context.Context, kubeconfig, kubeContext, namespace
 
 // KubernetesFindPods returns running pods whose name contains query.
 func KubernetesFindPods(ctx context.Context, kubeconfig, kubeContext, namespace, query string) ([]PodInfo, error) {
-	pods, err := KubernetesList(ctx, kubeconfig, kubeContext, namespace)
-	if err != nil {
-		return nil, err
-	}
-
-	query = strings.ToLower(strings.TrimSpace(query))
-	if query == "" {
-		return pods, nil
-	}
-
-	var matches []PodInfo
-	for _, pod := range pods {
-		if strings.Contains(strings.ToLower(pod.Name), query) || strings.Contains(strings.ToLower(pod.Namespace+"/"+pod.Name), query) {
-			matches = append(matches, pod)
-		}
-	}
-	return matches, nil
+	return kubernetesListPods(ctx, kubeconfig, kubeContext, namespace, query)
 }
 
 // KubernetesKill terminates the debux ephemeral container on a specific pod by
