@@ -1,3 +1,10 @@
+## v0.2.0 (2026-04-30)
+
+### Feat
+
+- polish release safety and debug UX
+- add diagnostics and release hardening
+
 ## v0.1.0 (2026-04-30)
 
 ### Feat
