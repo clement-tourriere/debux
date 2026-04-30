@@ -855,6 +855,9 @@ debux docker://
 # Kubernetes picker, current kube-context namespace
 debux k8s://
 
+# Kubernetes picker in another kube context
+debux k8s://@eks-preprod-01
+
 # Force a brand-new debug container
 debux k8s://prod/api-pod/app --fresh</code></pre>
             </div>
@@ -968,6 +971,12 @@ debux k8s://api-pod
 # Explicit namespace and container
 debux k8s://prod/api-pod/app
 
+# Explicit kube context in the target
+debux k8s://@eks-preprod-01/prod/api-pod/app
+
+# Or use --context for complex context names
+debux k8s://prod/api-pod/app --context eks-preprod-01
+
 # Pull a fresh debug image and force a new container
 debux k8s://prod/api-pod/app --fresh --pull-policy=Always</code></pre>
             </div>
@@ -1011,6 +1020,10 @@ debux pod -n prod --keep</code></pre>
                 <tr><td><code>k8s://pod</code></td><td>Kubernetes</td><td>Debug a pod in the current kube-context namespace.</td></tr>
                 <tr><td><code>k8s://namespace/pod</code></td><td>Kubernetes</td><td>Debug a pod in an explicit namespace.</td></tr>
                 <tr><td><code>k8s://namespace/pod/container</code></td><td>Kubernetes</td><td>Debug a specific container in a multi-container pod.</td></tr>
+                <tr><td><code>k8s://@context</code></td><td>Kubernetes</td><td>Open the pod picker in a specific kube context.</td></tr>
+                <tr><td><code>k8s://@context/pod</code></td><td>Kubernetes</td><td>Debug a pod in a specific context and that context's namespace.</td></tr>
+                <tr><td><code>k8s://@context/namespace/pod</code></td><td>Kubernetes</td><td>Debug a pod in a specific context and namespace.</td></tr>
+                <tr><td><code>k8s://@context/namespace/pod/container</code></td><td>Kubernetes</td><td>Debug a specific container in a specific context.</td></tr>
               </tbody>
             </table>
           </div>
@@ -1137,6 +1150,7 @@ debux store clean</code></pre>
                 <tr><td><code>--copy</code></td><td>Kubernetes: create a copied debug pod instead of an ephemeral container.</td></tr>
                 <tr><td><code>--no-volumes</code></td><td>Do not share target volumes with the debug container.</td></tr>
                 <tr><td><code>--pull-policy</code></td><td>Kubernetes image pull policy: <code>Always</code>, <code>IfNotPresent</code>, <code>Never</code>.</td></tr>
+                <tr><td><code>--context</code></td><td>Kubernetes kube context name. Prefer this for context names containing slashes.</td></tr>
                 <tr><td><code>--profile</code></td><td>Kubernetes security profile: <code>general</code>, <code>baseline</code>, <code>restricted</code>, <code>netadmin</code>, <code>sysadmin</code>.</td></tr>
                 <tr><td><code>--user uid[:gid]</code></td><td>Run the debug container as a specific user.</td></tr>
               </tbody>

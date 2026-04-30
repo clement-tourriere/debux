@@ -80,19 +80,21 @@ func SecurityContextForProfile(profile string) (*corev1.SecurityContext, error) 
 type PodInfo struct {
 	Name            string
 	Namespace       string
+	Context         string
 	Status          string
 	Containers      []string
 	HasDebuxSession bool // true if pod has a running debux ephemeral container
 }
 
 // KubernetesList returns running pods, optionally filtered by namespace.
-func KubernetesList(ctx context.Context, kubeconfig string, namespace string) ([]PodInfo, error) {
-	_, clientset, err := getK8sClient(kubeconfig)
+func KubernetesList(ctx context.Context, kubeconfig string, kubeContext string, namespace string) ([]PodInfo, error) {
+	_, clientset, err := getK8sClient(kubeconfig, kubeContext)
 	if err != nil {
 		return nil, err
 	}
 
-	listNs := resolveTargetNamespace(namespace, kubeconfig)
+	listNs := resolveTargetNamespace(namespace, kubeconfig, kubeContext)
+	resolvedContext := resolveContextName(kubeconfig, kubeContext)
 
 	pods, err := clientset.CoreV1().Pods(listNs).List(ctx, metav1.ListOptions{
 		FieldSelector: "status.phase=Running",
@@ -132,6 +134,7 @@ func KubernetesList(ctx context.Context, kubeconfig string, namespace string) ([
 		result = append(result, PodInfo{
 			Name:            pod.Name,
 			Namespace:       pod.Namespace,
+			Context:         resolvedContext,
 			Status:          string(pod.Status.Phase),
 			Containers:      containers,
 			HasDebuxSession: hasSession,
@@ -143,13 +146,13 @@ func KubernetesList(ctx context.Context, kubeconfig string, namespace string) ([
 // KubernetesKill terminates the debux ephemeral container on a specific pod by
 // killing PID 1 inside it. K8s ephemeral containers cannot be removed from the
 // pod spec, but killing their init process terminates them.
-func KubernetesKill(ctx context.Context, target *Target, kubeconfig string) error {
-	config, clientset, err := getK8sClient(kubeconfig)
+func KubernetesKill(ctx context.Context, target *Target, kubeconfig string, kubeContext string) error {
+	config, clientset, err := getK8sClient(kubeconfig, kubeContext)
 	if err != nil {
 		return err
 	}
 
-	namespace := resolveTargetNamespace(target.Namespace, kubeconfig)
+	namespace := resolveTargetNamespace(target.Namespace, kubeconfig, kubeContext)
 
 	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, target.Name, metav1.GetOptions{})
 	if err != nil {
@@ -171,13 +174,13 @@ func KubernetesKill(ctx context.Context, target *Target, kubeconfig string) erro
 
 // KubernetesKillAll terminates all running debux ephemeral containers across
 // all pods in the resolved namespace.
-func KubernetesKillAll(ctx context.Context, kubeconfig string, namespace string) error {
-	config, clientset, err := getK8sClient(kubeconfig)
+func KubernetesKillAll(ctx context.Context, kubeconfig string, kubeContext string, namespace string) error {
+	config, clientset, err := getK8sClient(kubeconfig, kubeContext)
 	if err != nil {
 		return err
 	}
 
-	namespace = resolveTargetNamespace(namespace, kubeconfig)
+	namespace = resolveTargetNamespace(namespace, kubeconfig, kubeContext)
 
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		FieldSelector: "status.phase=Running",
@@ -266,12 +269,12 @@ func newRemoteExecutor(config *rest.Config, reqURL *url.URL) (remotecommand.Exec
 // It reuses an existing running debux container when possible, or creates a new
 // one in daemon mode (DEBUX_DAEMON=1) so it stays alive between sessions.
 func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
-	config, clientset, err := getK8sClient(opts.Kubeconfig)
+	config, clientset, err := getK8sClient(opts.Kubeconfig, opts.KubeContext)
 	if err != nil {
 		return err
 	}
 
-	namespace := resolveTargetNamespace(target.Namespace, opts.Kubeconfig)
+	namespace := resolveTargetNamespace(target.Namespace, opts.Kubeconfig, opts.KubeContext)
 	podName := target.Name
 
 	// Get the target pod
@@ -304,7 +307,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	// Use nanoseconds to avoid name collisions when retrying after a fast failure;
 	// ephemeral containers cannot be removed from the pod spec.
 	debugContainerName := fmt.Sprintf("debux-%d", time.Now().UnixNano())
-	debuxTarget := fmt.Sprintf("%s/%s/%s", namespace, podName, targetContainer)
+	debuxTarget := kubernetesDebugTargetLabel(opts.KubeContext, namespace, podName, targetContainer)
 
 	ephemeralContainer := corev1.EphemeralContainer{
 		EphemeralContainerCommon: corev1.EphemeralContainerCommon{
@@ -433,7 +436,7 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 		Stdin:           true,
 		TTY:             true,
 		Env: []corev1.EnvVar{
-			{Name: "DEBUX_TARGET", Value: fmt.Sprintf("%s/%s/%s", namespace, sourcePod.Name, targetContainer)},
+			{Name: "DEBUX_TARGET", Value: kubernetesDebugTargetLabel(opts.KubeContext, namespace, sourcePod.Name, targetContainer)},
 			{Name: "DEBUX_DAEMON", Value: "1"},
 			{Name: "HOME", Value: "/root"},
 			{Name: "ZDOTDIR", Value: "/tmp"},
@@ -512,6 +515,14 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 	fmt.Printf("Debugging copy %s/%s (container: %s, source: %s)\n", namespace, created.Name, debugContainerName, sourcePod.Name)
 
 	return execInPodWithCommand(ctx, config, clientset, namespace, created.Name, debugContainerName, copyPodShellCommand(targetContainerID))
+}
+
+func kubernetesDebugTargetLabel(kubeContext, namespace, podName, containerName string) string {
+	label := fmt.Sprintf("%s/%s/%s", namespace, podName, containerName)
+	if kubeContext != "" {
+		return fmt.Sprintf("%s:%s", kubeContext, label)
+	}
+	return label
 }
 
 func applyKubernetesUser(sc *corev1.SecurityContext, user string) (*corev1.SecurityContext, error) {
@@ -726,13 +737,13 @@ func execInPodWithCommand(ctx context.Context, config *rest.Config, clientset *k
 
 // KubernetesPod creates a standalone debug pod.
 func KubernetesPod(ctx context.Context, opts PodOpts) error {
-	config, clientset, err := getK8sClient(opts.Kubeconfig)
+	config, clientset, err := getK8sClient(opts.Kubeconfig, opts.KubeContext)
 	if err != nil {
 		return err
 	}
 
 	if opts.Namespace == "default" {
-		opts.Namespace = resolveNamespace(opts.Kubeconfig)
+		opts.Namespace = resolveNamespace(opts.Kubeconfig, opts.KubeContext)
 	}
 
 	podName := fmt.Sprintf("debux-%d", time.Now().Unix())
@@ -804,13 +815,13 @@ func KubernetesPod(ctx context.Context, opts PodOpts) error {
 
 // resolveNamespace returns the namespace from the current kubeconfig context,
 // falling back to "default" if it cannot be determined.
-func resolveNamespace(kubeconfig string) string {
+func resolveNamespace(kubeconfig, kubeContext string) string {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if kubeconfig != "" {
 		loadingRules.ExplicitPath = kubeconfig
 	}
 	ns, _, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		loadingRules, &clientcmd.ConfigOverrides{},
+		loadingRules, &clientcmd.ConfigOverrides{CurrentContext: kubeContext},
 	).Namespace()
 	if err != nil || ns == "" {
 		return "default"
@@ -818,19 +829,40 @@ func resolveNamespace(kubeconfig string) string {
 	return ns
 }
 
-func resolveTargetNamespace(namespace, kubeconfig string) string {
+func resolveContextName(kubeconfig, kubeContext string) string {
+	if kubeContext != "" {
+		return kubeContext
+	}
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if kubeconfig != "" {
+		loadingRules.ExplicitPath = kubeconfig
+	}
+	rawConfig, err := loadingRules.Load()
+	if err != nil {
+		return ""
+	}
+	return rawConfig.CurrentContext
+}
+
+func resolveTargetNamespace(namespace, kubeconfig, kubeContext string) string {
 	if namespace != "" {
 		return namespace
 	}
-	return resolveNamespace(kubeconfig)
+	return resolveNamespace(kubeconfig, kubeContext)
 }
 
-func getK8sClient(kubeconfig string) (*rest.Config, *kubernetes.Clientset, error) {
+func getK8sClient(kubeconfig, kubeContext string) (*rest.Config, *kubernetes.Clientset, error) {
 	var config *rest.Config
 	var err error
 
-	if kubeconfig != "" {
-		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+	if kubeconfig != "" || kubeContext != "" {
+		loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+		if kubeconfig != "" {
+			loadingRules.ExplicitPath = kubeconfig
+		}
+		config, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+			loadingRules, &clientcmd.ConfigOverrides{CurrentContext: kubeContext},
+		).ClientConfig()
 	} else {
 		// Try in-cluster first, then default kubeconfig
 		config, err = rest.InClusterConfig()

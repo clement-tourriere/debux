@@ -25,6 +25,8 @@ the runtime explicit and to open runtime-specific pickers.`,
 		Example: `  debux exec
   debux exec docker://my-app
   debux exec k8s://
+  debux exec k8s://@eks-preprod-01/prod/api-pod/app
+  debux exec k8s://prod/api-pod/app --context eks-preprod-01
   debux exec k8s://prod/api-pod/app --fresh --pull-policy=Always
   debux exec k8s://prod/api-pod/app --copy`,
 		Args: cobra.MaximumNArgs(1),
@@ -54,6 +56,12 @@ func runExec(cmd *cobra.Command, args []string) error {
 	if err := validateExecFlags(cmd, target.Runtime); err != nil {
 		return err
 	}
+
+	kubeContext, err := resolveKubeContext(cmd, target.Context)
+	if err != nil {
+		return err
+	}
+	target.Context = kubeContext
 
 	// If name is empty, show interactive picker for the runtime
 	if target.Name == "" {
@@ -98,10 +106,21 @@ func runExec(cmd *cobra.Command, args []string) error {
 	case "kubernetes":
 		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
 		opts.Kubeconfig = kubeconfig
+		opts.KubeContext = kubeContext
 		return runtime.KubernetesExec(ctx, target, opts)
 	default:
 		return fmt.Errorf("unsupported runtime: %s", target.Runtime)
 	}
+}
+
+func resolveKubeContext(cmd *cobra.Command, targetContext string) (string, error) {
+	if !flagChanged(cmd, "context") {
+		return targetContext, nil
+	}
+	if targetContext != "" && targetContext != flagKubeContext {
+		return "", fmt.Errorf("conflicting Kubernetes contexts: target uses %q but --context=%q", targetContext, flagKubeContext)
+	}
+	return flagKubeContext, nil
 }
 
 func validateExecFlags(cmd *cobra.Command, targetRuntime string) error {
@@ -110,7 +129,7 @@ func validateExecFlags(cmd *cobra.Command, targetRuntime string) error {
 	}
 
 	var invalid []string
-	for _, name := range []string{"copy", "pull-policy", "kubeconfig", "profile"} {
+	for _, name := range []string{"copy", "pull-policy", "kubeconfig", "context", "profile"} {
 		if flagChanged(cmd, name) {
 			invalid = append(invalid, "--"+name)
 		}
@@ -130,7 +149,7 @@ func pickTarget(ctx context.Context, cmd *cobra.Command, target *runtime.Target)
 		return pickDockerContainer(ctx)
 	case "kubernetes":
 		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
-		return pickK8sPod(ctx, kubeconfig, target.Namespace)
+		return pickK8sPod(ctx, kubeconfig, target.Context, target.Namespace)
 	default:
 		return "", fmt.Errorf("interactive selection is not supported for runtime %q", target.Runtime)
 	}
@@ -165,8 +184,8 @@ func pickDockerContainer(ctx context.Context) (string, error) {
 	return picker.Pick("Select a container", items)
 }
 
-func pickK8sPod(ctx context.Context, kubeconfig, namespace string) (string, error) {
-	pods, err := runtime.KubernetesList(ctx, kubeconfig, namespace)
+func pickK8sPod(ctx context.Context, kubeconfig, kubeContext, namespace string) (string, error) {
+	pods, err := runtime.KubernetesList(ctx, kubeconfig, kubeContext, namespace)
 	if err != nil {
 		return "", err
 	}
@@ -182,6 +201,9 @@ func pickK8sPod(ctx context.Context, kubeconfig, namespace string) (string, erro
 	items := make([]picker.Item, len(pods))
 	for i, p := range pods {
 		label := fmt.Sprintf("%s/%s [%s]", p.Namespace, p.Name, strings.Join(p.Containers, ", "))
+		if p.Context != "" {
+			label = fmt.Sprintf("%s:%s", p.Context, label)
+		}
 		if p.HasDebuxSession {
 			label = "● " + label
 		}

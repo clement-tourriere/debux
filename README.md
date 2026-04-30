@@ -86,8 +86,15 @@ debux k8s://my-namespace/my-pod
 # Specific container in a multi-container pod
 debux k8s://my-namespace/my-pod/my-container
 
+# Explicit kube context in the target
+debux k8s://@eks-preprod-01/my-namespace/my-pod/my-container
+
+# Or use --context, useful for context names containing slashes
+debux k8s://my-namespace/my-pod --context arn:aws:eks:us-west-2:123:cluster/preprod
+
 # Interactive pod picker
 debux k8s://
+debux k8s://@eks-preprod-01
 ```
 
 If ephemeral containers are blocked by RBAC or admission policy:
@@ -173,6 +180,10 @@ Packages are backed by [nixpkgs](https://search.nixos.org/packages). Docker mode
 | `k8s://<pod>` | Kubernetes | Debug a pod in the current kube-context namespace. |
 | `k8s://<namespace>/<pod>` | Kubernetes | Debug a pod in an explicit namespace. |
 | `k8s://<namespace>/<pod>/<container>` | Kubernetes | Debug a specific container. |
+| `k8s://@<context>` | Kubernetes | Open the pod picker in a specific kube context. |
+| `k8s://@<context>/<pod>` | Kubernetes | Debug a pod in a specific context and that context's namespace. |
+| `k8s://@<context>/<namespace>/<pod>` | Kubernetes | Debug a pod in a specific context and namespace. |
+| `k8s://@<context>/<namespace>/<pod>/<container>` | Kubernetes | Debug a specific container in a specific context. |
 
 ### Common flags
 
@@ -186,6 +197,7 @@ Packages are backed by [nixpkgs](https://search.nixos.org/packages). Docker mode
 | `--profile <profile>` | Kubernetes security profile: `general`, `baseline`, `restricted`, `netadmin`, `sysadmin`. |
 | `--user <uid[:gid]>` | Run the debug container as a specific user. |
 | `--kubeconfig <path>` | Override kubeconfig path. |
+| `--context <name>` | Kubernetes kube context name. |
 
 ### Standalone Kubernetes debug pod
 

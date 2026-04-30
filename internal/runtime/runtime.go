@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -64,6 +65,7 @@ var ValidProfiles = []string{
 type Target struct {
 	Runtime   string // "docker", "containerd", "kubernetes"
 	Name      string // container name/id or pod name
+	Context   string // k8s context (empty means current kube-context)
 	Namespace string // k8s namespace (empty means current kube-context namespace)
 	Container string // k8s container within pod (optional)
 }
@@ -75,6 +77,7 @@ type DebugOpts struct {
 	User         string
 	AutoRemove   bool
 	Kubeconfig   string
+	KubeContext  string
 	ShareVolumes bool   // share target container's volumes (default: true)
 	PullPolicy   string // Kubernetes image pull policy (Always, IfNotPresent, Never)
 	Fresh        bool   // force a new ephemeral container instead of reusing an existing one
@@ -87,6 +90,7 @@ type PodOpts struct {
 	Image       string
 	Namespace   string
 	Kubeconfig  string
+	KubeContext string
 	Keep        bool
 	HostNetwork bool
 	Privileged  bool
@@ -114,6 +118,8 @@ type ImageOpts struct {
 //	k8s://<pod>                     → kubernetes (current kube-context namespace)
 //	k8s://<namespace>/<pod>         → kubernetes
 //	k8s://<namespace>/<pod>/<ctr>   → kubernetes (specific container)
+//	k8s://@<context>/<pod>          → kubernetes (specific context, current namespace)
+//	k8s://@<context>/<ns>/<pod>     → kubernetes (specific context and namespace)
 func ParseTarget(raw string) (*Target, error) {
 	if raw == "" {
 		return nil, fmt.Errorf("empty target")
@@ -146,16 +152,37 @@ func ParseTarget(raw string) (*Target, error) {
 func parseK8sTarget(rest string) (*Target, error) {
 	t := &Target{Runtime: "kubernetes"}
 
-	// Empty rest means k8s:// — list pods in the current kube-context namespace.
+	// Optional kube-context prefix. The @ marker keeps this unambiguous with the
+	// existing k8s://<namespace>/<pod>/<container> format.
+	// Examples:
+	//   k8s://@eks-preprod-01
+	//   k8s://@eks-preprod-01/gim/api-pod/app
+	if strings.HasPrefix(rest, "@") {
+		contextPart, remaining, _ := strings.Cut(rest[1:], "/")
+		if contextPart == "" {
+			return nil, fmt.Errorf("invalid k8s target format: missing context in %q", rest)
+		}
+		contextName, err := unescapeK8sTargetPart(contextPart)
+		if err != nil {
+			return nil, fmt.Errorf("invalid k8s context %q: %w", contextPart, err)
+		}
+		t.Context = contextName
+		rest = remaining
+	}
+
+	// Empty rest means k8s:// or k8s://@<context> — list pods in the resolved namespace.
 	if rest == "" {
 		return t, nil
 	}
 
-	parts := strings.Split(rest, "/")
+	parts, err := splitK8sTargetParts(rest)
+	if err != nil {
+		return nil, err
+	}
 
 	switch len(parts) {
 	case 1:
-		// k8s://<pod>
+		// k8s://<pod> or k8s://@<context>/<pod>
 		t.Name = parts[0]
 	case 2:
 		// k8s://<namespace>/<pod> or k8s://<namespace>/
@@ -177,4 +204,21 @@ func parseK8sTarget(rest string) (*Target, error) {
 	}
 
 	return t, nil
+}
+
+func splitK8sTargetParts(rest string) ([]string, error) {
+	rawParts := strings.Split(rest, "/")
+	parts := make([]string, len(rawParts))
+	for i, part := range rawParts {
+		unescaped, err := unescapeK8sTargetPart(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid k8s target segment %q: %w", part, err)
+		}
+		parts[i] = unescaped
+	}
+	return parts, nil
+}
+
+func unescapeK8sTargetPart(part string) (string, error) {
+	return url.PathUnescape(part)
 }

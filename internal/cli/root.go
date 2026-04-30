@@ -12,15 +12,16 @@ import (
 const docsURL = "https://clement-tourriere.github.io/debux/"
 
 var (
-	flagImage      string
-	flagPrivileged bool
-	flagUser       string
-	flagRemove     bool
-	flagNoVolumes  bool
-	flagPullPolicy string
-	flagFresh      bool
-	flagCopy       bool
-	flagProfile    string
+	flagImage       string
+	flagPrivileged  bool
+	flagUser        string
+	flagRemove      bool
+	flagNoVolumes   bool
+	flagPullPolicy  string
+	flagKubeContext string
+	flagFresh       bool
+	flagCopy        bool
+	flagProfile     string
 )
 
 const rootLong = `debux starts a rich Nix-powered debug container next to your target.
@@ -38,7 +39,10 @@ Target formats:
   k8s://                          Kubernetes pod picker
   k8s://<pod>                     Pod in the current kube-context namespace
   k8s://<namespace>/<pod>         Pod in an explicit namespace
-  k8s://<namespace>/<pod>/<ctr>   Specific container in a pod`
+  k8s://<namespace>/<pod>/<ctr>   Specific container in a pod
+  k8s://@<context>                Pod picker in a specific kube context
+  k8s://@<context>/<pod>          Pod in that context's namespace
+  k8s://@<context>/<ns>/<pod>     Pod in a specific kube context`
 
 const rootExample = `  # Pick a Docker container interactively
   debux
@@ -51,10 +55,14 @@ const rootExample = `  # Pick a Docker container interactively
   # Pick a Kubernetes pod in the current kube-context namespace
   debux k8s://
 
+  # Pick a Kubernetes pod in another context
+  debux k8s://@eks-preprod-01
+
   # Debug a Kubernetes pod or a specific container
   debux k8s://api-pod
   debux k8s://prod/api-pod
   debux k8s://prod/api-pod/app
+  debux k8s://@eks-preprod-01/prod/api-pod/app
 
   # If ephemeral containers are blocked by RBAC or policy
   debux k8s://prod/api-pod/app --copy
@@ -101,6 +109,7 @@ func addExecFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&flagProfile, "profile", runtime.ProfileGeneral,
 		fmt.Sprintf("Kubernetes: security profile (%s)", strings.Join(runtime.ValidProfiles, ", ")))
 	cmd.Flags().String("kubeconfig", "", "Kubernetes: kubeconfig path")
+	cmd.Flags().StringVar(&flagKubeContext, "context", "", "Kubernetes: kube context name")
 }
 
 func addImageFlags(cmd *cobra.Command) {
@@ -120,11 +129,13 @@ func addPodDebugFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&flagProfile, "profile", runtime.ProfileGeneral,
 		fmt.Sprintf("Security profile (%s)", strings.Join(runtime.ValidProfiles, ", ")))
 	cmd.Flags().String("kubeconfig", "", "Kubeconfig path")
+	cmd.Flags().StringVar(&flagKubeContext, "context", "", "Kube context name")
 }
 
 func addKubeconfigFlag(cmd *cobra.Command) {
 	cmd.Flags().SortFlags = false
 	cmd.Flags().String("kubeconfig", "", "Kubeconfig path")
+	cmd.Flags().StringVar(&flagKubeContext, "context", "", "Kube context name")
 }
 
 func flagChanged(cmd *cobra.Command, name string) bool {
