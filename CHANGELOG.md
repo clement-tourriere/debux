@@ -1,3 +1,9 @@
+## v0.2.3 (2026-04-30)
+
+### Fix
+
+- ignore malformed target environments
+
 ## v0.2.2 (2026-04-30)
 
 ### Fix
