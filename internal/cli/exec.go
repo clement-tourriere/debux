@@ -63,9 +63,15 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}
 	target.Context = kubeContext
 
-	// If name is empty, show interactive picker for the runtime
+	// If name is empty, show interactive picker for the runtime.
 	if target.Name == "" {
 		name, err := pickTarget(ctx, cmd, target)
+		if err != nil {
+			return err
+		}
+		target.Name = name
+	} else if target.Runtime == "kubernetes" {
+		name, err := resolveK8sPodName(ctx, cmd, target, kubeContext)
 		if err != nil {
 			return err
 		}
@@ -111,6 +117,32 @@ func runExec(cmd *cobra.Command, args []string) error {
 	default:
 		return fmt.Errorf("unsupported runtime: %s", target.Runtime)
 	}
+}
+
+func resolveK8sPodName(ctx context.Context, cmd *cobra.Command, target *runtime.Target, kubeContext string) (string, error) {
+	kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
+
+	exists, err := runtime.KubernetesPodExists(ctx, kubeconfig, kubeContext, target.Namespace, target.Name)
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		return target.Name, nil
+	}
+
+	matches, err := runtime.KubernetesFindPods(ctx, kubeconfig, kubeContext, target.Namespace, target.Name)
+	if err != nil {
+		return "", fmt.Errorf("pod %q was not found and listing similar pods failed: %w", target.Name, err)
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("pod %q was not found and no running pods matched that substring", target.Name)
+	}
+
+	name, err := pickK8sPodFromList(fmt.Sprintf("Pod %q not found. Select a matching pod", target.Name), matches)
+	if err != nil {
+		return "", err
+	}
+	return name, nil
 }
 
 func resolveKubeContext(cmd *cobra.Command, targetContext string) (string, error) {
@@ -193,6 +225,10 @@ func pickK8sPod(ctx context.Context, kubeconfig, kubeContext, namespace string) 
 		return "", fmt.Errorf("no running pods found")
 	}
 
+	return pickK8sPodFromList("Select a pod", pods)
+}
+
+func pickK8sPodFromList(title string, pods []runtime.PodInfo) (string, error) {
 	// Sort: active debux sessions first
 	sort.SliceStable(pods, func(i, j int) bool {
 		return pods[i].HasDebuxSession && !pods[j].HasDebuxSession
@@ -206,7 +242,7 @@ func pickK8sPod(ctx context.Context, kubeconfig, kubeContext, namespace string) 
 		}
 	}
 
-	return picker.Pick("Select a pod", items)
+	return picker.Pick(title, items)
 }
 
 func formatK8sPodLabel(p runtime.PodInfo, active bool) string {

@@ -95,6 +95,9 @@ debux k8s://my-namespace/my-pod --context arn:aws:eks:us-west-2:123:cluster/prep
 # Interactive pod picker
 debux k8s://
 debux k8s://@eks-preprod-01
+
+# If the pod name is not exact, debux proposes running pods matching the substring
+debux k8s://my-namespace/webapp-internal-api
 ```
 
 If ephemeral containers are blocked by RBAC or admission policy:

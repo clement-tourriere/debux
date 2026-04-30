@@ -143,6 +143,45 @@ func KubernetesList(ctx context.Context, kubeconfig string, kubeContext string, 
 	return result, nil
 }
 
+// KubernetesPodExists reports whether a pod exists in the resolved namespace.
+func KubernetesPodExists(ctx context.Context, kubeconfig, kubeContext, namespace, podName string) (bool, error) {
+	_, clientset, err := getK8sClient(kubeconfig, kubeContext)
+	if err != nil {
+		return false, err
+	}
+
+	namespace = resolveTargetNamespace(namespace, kubeconfig, kubeContext)
+	_, err = clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err == nil {
+		return true, nil
+	}
+	if k8serrors.IsNotFound(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("getting pod %s/%s: %w", namespace, podName, err)
+}
+
+// KubernetesFindPods returns running pods whose name contains query.
+func KubernetesFindPods(ctx context.Context, kubeconfig, kubeContext, namespace, query string) ([]PodInfo, error) {
+	pods, err := KubernetesList(ctx, kubeconfig, kubeContext, namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return pods, nil
+	}
+
+	var matches []PodInfo
+	for _, pod := range pods {
+		if strings.Contains(strings.ToLower(pod.Name), query) || strings.Contains(strings.ToLower(pod.Namespace+"/"+pod.Name), query) {
+			matches = append(matches, pod)
+		}
+	}
+	return matches, nil
+}
+
 // KubernetesKill terminates the debux ephemeral container on a specific pod by
 // killing PID 1 inside it. K8s ephemeral containers cannot be removed from the
 // pod spec, but killing their init process terminates them.

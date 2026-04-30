@@ -977,6 +977,9 @@ debux k8s://@eks-preprod-01/prod/api-pod/app
 # Or use --context for complex context names
 debux k8s://prod/api-pod/app --context eks-preprod-01
 
+# Not exact? debux proposes matching running pods
+debux k8s://prod/webapp-internal-api
+
 # Pull a fresh debug image and force a new container
 debux k8s://prod/api-pod/app --fresh --pull-policy=Always</code></pre>
             </div>
