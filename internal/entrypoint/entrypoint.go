@@ -224,6 +224,7 @@ _debux_import_target_env() {
     key="${entry%%=*}"
     val="${entry#*=}"
     [[ -z "$key" || "$key" == "$entry" ]] && continue
+    [[ "$key" =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]] || continue
 
     # Skip blocklist: exact matches
     if (( ${skip_exact[(Ie)$key]} )); then

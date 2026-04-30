@@ -88,7 +88,7 @@ func buildDoctorReport(ctx context.Context, cmd *cobra.Command, args []string, p
 	if len(args) == 0 {
 		report.Sections = append(report.Sections, doctorReportSection{Name: "Docker", Checks: runtime.DockerDoctor(ctx)})
 		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
-		report.Sections = append(report.Sections, doctorReportSection{Name: "Kubernetes", Checks: runtime.KubernetesDoctor(ctx, kubeconfig, flagKubeContext, "", "", profile)})
+		report.Sections = append(report.Sections, doctorReportSection{Name: "Kubernetes", Checks: runtime.KubernetesDoctor(ctx, kubeconfig, flagKubeContext, "", "", "", profile)})
 		return report, nil
 	}
 
@@ -105,7 +105,7 @@ func buildDoctorReport(ctx context.Context, cmd *cobra.Command, args []string, p
 			return doctorReport{}, err
 		}
 		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
-		report.Sections = append(report.Sections, doctorReportSection{Name: "Kubernetes", Checks: runtime.KubernetesDoctor(ctx, kubeconfig, kubeContext, target.Namespace, target.Name, profile)})
+		report.Sections = append(report.Sections, doctorReportSection{Name: "Kubernetes", Checks: runtime.KubernetesDoctor(ctx, kubeconfig, kubeContext, target.Namespace, target.Name, target.Container, profile)})
 	default:
 		report.Sections = append(report.Sections, doctorReportSection{Name: target.Runtime, Checks: []runtime.DoctorCheck{{Name: "Runtime", Status: runtime.CheckWarn, Detail: "doctor does not support this runtime yet"}}})
 	}

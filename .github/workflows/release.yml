@@ -44,7 +44,7 @@ jobs:
             fi
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag "$tag"
+            git tag -a "$tag" -m "$tag"
             git push origin "$tag"
           else
             tag="${GITHUB_REF_NAME}"
@@ -55,8 +55,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   binaries:
-    needs: prepare
-    if: github.event_name == 'push'
+    needs: [prepare, image]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,7 +76,6 @@ jobs:
 
   image:
     needs: prepare
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -97,14 +95,17 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ needs.prepare.outputs.version }}"
-          major="${version%%.*}"
-          minor="${version%.*}"
+          base="${version%%-*}"
+          major="${base%%.*}"
+          minor="${base%.*}"
           {
             echo "tags<<EOF"
             echo "ghcr.io/clement-tourriere/debux:${version}"
-            echo "ghcr.io/clement-tourriere/debux:${minor}"
-            echo "ghcr.io/clement-tourriere/debux:${major}"
-            echo "ghcr.io/clement-tourriere/debux:latest"
+            if [[ "$version" != *-* ]]; then
+              echo "ghcr.io/clement-tourriere/debux:${minor}"
+              echo "ghcr.io/clement-tourriere/debux:${major}"
+              echo "ghcr.io/clement-tourriere/debux:latest"
+            fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 

@@ -83,16 +83,20 @@ const rootExample = `  # Pick a Docker container interactively
   debux k8s://prod/api-pod/app --copy
 
   # Pull the latest debug image and force a fresh session
-  debux k8s://prod/api-pod/app --fresh --pull-policy=Always`
+  debux k8s://prod/api-pod/app --fresh --pull-policy=Always
+
+  # Run a one-shot command inside the debug toolbox
+  debux docker://my-app -- curl -I localhost
+  debux k8s://prod/api-pod/app -- ps aux`
 
 func NewRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:           "debux [target]",
+		Use:           "debux [target] [-- command...]",
 		Short:         "Debug any Docker or Kubernetes container",
 		Long:          rootLong,
 		Example:       rootExample,
 		Version:       version.Details(),
-		Args:          cobra.MaximumNArgs(1),
+		Args:          cobra.ArbitraryArgs,
 		RunE:          runExec,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -108,6 +112,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newPodCmd())
 	cmd.AddCommand(newKillCmd())
 	cmd.AddCommand(newStoreCmd())
+	cmd.AddCommand(newCompletionCmd(cmd))
 	cmd.AddCommand(newDocsCmd())
 	cmd.AddCommand(newDoctorCmd())
 	cmd.AddCommand(newUpdateCmd())
@@ -124,7 +129,7 @@ func addExecFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&flagUser, "user", "", "Run debug container as uid[:gid]")
 	cmd.Flags().BoolVar(&flagPrivileged, "privileged", false, "Run privileged (Docker); Kubernetes alias for --profile=sysadmin")
 	cmd.Flags().BoolVar(&flagCopy, "copy", false, "Kubernetes: use a temporary copied pod instead of an ephemeral container")
-	cmd.Flags().StringVar(&flagPullPolicy, "pull-policy", "", "Kubernetes: image pull policy (Always, IfNotPresent, Never)")
+	cmd.Flags().StringVar(&flagPullPolicy, "pull-policy", "", "Image pull policy for the debug image (Always, IfNotPresent, Never)")
 	cmd.Flags().StringVar(&flagProfile, "profile", runtime.ProfileGeneral,
 		fmt.Sprintf("Kubernetes: security profile (%s)", strings.Join(runtime.ValidProfiles, ", ")))
 	cmd.Flags().String("kubeconfig", "", "Kubernetes: kubeconfig path")
@@ -192,6 +197,22 @@ func resolveProfile(cmd *cobra.Command) (string, error) {
 	}
 
 	return runtime.ProfileGeneral, nil
+}
+
+func resolvePullPolicy(policy string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "", "ifnotpresent":
+		if strings.TrimSpace(policy) == "" {
+			return "", nil
+		}
+		return "IfNotPresent", nil
+	case "always":
+		return "Always", nil
+	case "never":
+		return "Never", nil
+	default:
+		return "", fmt.Errorf("invalid --pull-policy %q: must be one of Always, IfNotPresent, Never", policy)
+	}
 }
 
 func Execute() error {

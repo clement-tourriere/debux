@@ -130,6 +130,9 @@ If ephemeral containers are blocked by RBAC or admission policy:
 debux k8s://my-namespace/my-pod --copy
 ```
 
+Copy mode creates a temporary duplicate pod for debugging and deletes it on exit.
+Use it carefully for workloads with side effects or non-idempotent startup logic.
+
 Force a fresh debug container and pull the newest debug image:
 
 ```bash
@@ -227,7 +230,7 @@ Persistence model:
 | `--fresh` | Force a new debug container instead of reusing an existing session. |
 | `--copy` | Kubernetes: create a copied debug pod instead of an ephemeral container. |
 | `--no-volumes` | Do not mount target volumes directly. This is not an isolation boundary if the debug container can access `/proc/1/root`. |
-| `--pull-policy <policy>` | Kubernetes image pull policy: `Always`, `IfNotPresent`, `Never`. |
+| `--pull-policy <policy>` | Debug image pull policy for Docker/Kubernetes: `Always`, `IfNotPresent`, `Never`. |
 | `--profile <profile>` | Kubernetes security profile: `general`, `baseline`, `restricted`, `netadmin`, `sysadmin`. |
 | `--user <uid[:gid]>` | Run the debug container as a specific user. |
 | `--kubeconfig <path>` | Override kubeconfig path. |
@@ -270,6 +273,10 @@ debux kill k8s://my-namespace/ --all
 debux store info
 debux store clean
 
+# Run a one-shot command through the debug toolbox
+debux docker://my-app -- curl -I localhost
+debux k8s://my-namespace/my-pod/app -- ps aux
+
 # Diagnose local Docker/Kubernetes readiness
 debux doctor
 debux doctor k8s://my-namespace/my-pod --profile=restricted
@@ -277,6 +284,9 @@ debux doctor k8s://my-namespace/my-pod --profile=restricted
 # Version and release metadata
 debux version
 debux version --json
+
+# Generate shell completions
+debux completion zsh
 
 # Open the documentation
 debux docs
@@ -311,6 +321,26 @@ It does **not** automatically grant:
 
 RBAC implication: granting a user the ability to update `pods/ephemeralcontainers` and create `pods/exec` is effectively granting the ability to run code inside selected pods. Treat it like production shell access.
 
+Minimal namespace-scoped RBAC for ephemeral-container debugging:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: debux-debugger
+  namespace: prod
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/ephemeralcontainers"]
+    verbs: ["update"]
+```
+
 ## Kubernetes security profiles
 
 | Profile | Purpose |
@@ -340,7 +370,9 @@ Example custom team toolbox:
 
 ```Dockerfile
 FROM ghcr.io/clement-tourriere/debux:latest
-RUN nix-env -iA nixpkgs.postgresql nixpkgs.redis nixpkgs.kubectl nixpkgs.ripgrep
+RUN NIX_CONFIG="experimental-features = nix-command flakes" \
+    nix profile add --profile /nix/var/debux-profile \
+      nixpkgs#postgresql nixpkgs#redis nixpkgs#kubectl nixpkgs#ripgrep
 ```
 
 ```bash
@@ -376,7 +408,7 @@ The repository uses [hk](https://hk.jdx.dev/) for git hooks, [pkl](https://pkl-l
 
 ## Releases and distribution
 
-GitHub Releases publish prebuilt `debux` binaries for Linux and macOS on amd64/arm64 using GoReleaser. The one-line installer downloads those release assets and verifies `checksums.txt` when available. `debux update` requires checksums and refuses to update if they are missing.
+GitHub Releases publish prebuilt `debux` binaries for Linux and macOS on amd64/arm64 using GoReleaser. The one-line installer and `debux update` require `checksums.txt` and refuse to install unverifiable release assets.
 
 Release flow:
 

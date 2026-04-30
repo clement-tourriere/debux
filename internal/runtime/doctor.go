@@ -73,11 +73,8 @@ func DockerDoctor(ctx context.Context, targetName ...string) []DoctorCheck {
 		if c.State == "running" {
 			running++
 		}
-		for _, name := range c.Names {
-			if strings.HasPrefix(name, "/debux-") && c.State == "running" {
-				debug++
-				break
-			}
+		if isDebuxDockerSidecar(c) && c.State == "running" {
+			debug++
 		}
 	}
 	checks = append(checks, pass("Docker containers", fmt.Sprintf("%d running container(s), %d active debux session(s)", running, debug)))
@@ -85,7 +82,7 @@ func DockerDoctor(ctx context.Context, targetName ...string) []DoctorCheck {
 }
 
 // KubernetesDoctor checks Kubernetes connectivity, target existence, and common RBAC permissions.
-func KubernetesDoctor(ctx context.Context, kubeconfig, kubeContext, namespace, podName, profile string) []DoctorCheck {
+func KubernetesDoctor(ctx context.Context, kubeconfig, kubeContext, namespace, podName, containerName, profile string) []DoctorCheck {
 	_, clientset, err := getK8sClient(kubeconfig, kubeContext)
 	if err != nil {
 		return []DoctorCheck{fail("Kubernetes client", err.Error())}
@@ -106,7 +103,7 @@ func KubernetesDoctor(ctx context.Context, kubeconfig, kubeContext, namespace, p
 			checks = append(checks, fail("Target pod", fmt.Sprintf("getting %s/%s: %v", resolvedNamespace, podName, err)))
 		} else {
 			checks = append(checks, pass("Target pod", fmt.Sprintf("%s/%s is %s", resolvedNamespace, podName, pod.Status.Phase)))
-			if container, err := selectKubernetesTargetContainer(pod, ""); err == nil {
+			if container, err := selectKubernetesTargetContainer(pod, containerName); err == nil {
 				checks = append(checks, pass("Target container", container))
 			} else {
 				checks = append(checks, warn("Target container", err.Error()))

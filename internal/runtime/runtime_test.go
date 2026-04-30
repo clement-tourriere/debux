@@ -1,8 +1,10 @@
 package runtime
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/docker/docker/api/types"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -86,5 +88,42 @@ func TestFindRunningDebuxContainerForTargetHonorsProfile(t *testing.T) {
 	}
 	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileGeneral); got != "debux-general" {
 		t.Fatalf("general container = %q", got)
+	}
+}
+
+func TestDebuxExecCommandQuotesOneShotCommand(t *testing.T) {
+	cmd := debuxExecCommand([]string{"sh", "-c", "echo 'hello world'"})
+	if len(cmd) != 3 || cmd[0] != "sh" || cmd[1] != "-c" {
+		t.Fatalf("unexpected command wrapper: %#v", cmd)
+	}
+	if !strings.Contains(cmd[2], "DEBUX_BANNER_SHOWN=1") {
+		t.Fatalf("one-shot command should suppress the interactive banner: %q", cmd[2])
+	}
+	if !strings.Contains(cmd[2], "hello world") || !strings.Contains(cmd[2], "\\''") {
+		t.Fatalf("command was not shell-quoted safely: %q", cmd[2])
+	}
+}
+
+func TestIsDebuxDockerSidecarRequiresLabelOrDebuxImage(t *testing.T) {
+	managed := types.Container{
+		ID:    "123456789abcdef",
+		Names: []string{"/not-prefixed"},
+		Labels: map[string]string{
+			dockerLabelManagedBy: dockerLabelManagedByVal,
+			dockerLabelKind:      dockerLabelKindSidecar,
+		},
+	}
+	if !isDebuxDockerSidecar(managed) {
+		t.Fatalf("label-managed sidecar was not recognized")
+	}
+
+	unrelated := types.Container{ID: "abcdef123456", Names: []string{"/debux-important-db"}, Image: "postgres:latest"}
+	if isDebuxDockerSidecar(unrelated) {
+		t.Fatalf("unrelated debux-* container should not be treated as a debux sidecar")
+	}
+
+	legacy := types.Container{ID: "abcdef123456", Names: []string{"/debux-api"}, Image: "ghcr.io/clement-tourriere/debux:latest"}
+	if !isDebuxDockerSidecar(legacy) {
+		t.Fatalf("legacy debux sidecar should be recognized")
 	}
 }

@@ -102,6 +102,10 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	}
 	defer func() { _ = os.RemoveAll(filepath.Dir(binaryPath)) }()
 
+	if err := smokeTestBinary(ctx, binaryPath); err != nil {
+		return Result{}, fmt.Errorf("downloaded binary failed smoke test: %w", err)
+	}
+
 	if err := replaceExecutable(binaryPath, opts.InstallPath); err != nil {
 		return Result{}, fmt.Errorf("installing %s: %w", opts.InstallPath, err)
 	}
@@ -287,6 +291,16 @@ func extractBinary(archivePath, binaryPath string) error {
 	}
 
 	return fmt.Errorf("archive did not contain debux")
+}
+
+func smokeTestBinary(ctx context.Context, path string) error {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "--help")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s --help: %w: %s", path, err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 func replaceExecutable(src, dst string) error {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
@@ -12,11 +13,39 @@ import (
 
 // EnsureImage pulls the image if it's not already present locally.
 func EnsureImage(ctx context.Context, cli *client.Client, ref string) error {
-	_, _, err := cli.ImageInspectWithRaw(ctx, ref)
-	if err == nil {
-		return nil // image already present
-	}
+	return EnsureImageWithPolicy(ctx, cli, ref, "")
+}
 
+// EnsureImageWithPolicy ensures a Docker image according to a Kubernetes-style
+// pull policy: Always, IfNotPresent (default), or Never.
+func EnsureImageWithPolicy(ctx context.Context, cli *client.Client, ref, pullPolicy string) error {
+	policy := strings.ToLower(strings.TrimSpace(pullPolicy))
+	switch policy {
+	case "", "ifnotpresent":
+		if ImageExists(ctx, cli, ref) {
+			return nil
+		}
+		return PullImage(ctx, cli, ref)
+	case "always":
+		return PullImage(ctx, cli, ref)
+	case "never":
+		if ImageExists(ctx, cli, ref) {
+			return nil
+		}
+		return fmt.Errorf("image %q is not present locally and pull policy is Never", ref)
+	default:
+		return fmt.Errorf("invalid pull policy %q: expected Always, IfNotPresent, or Never", pullPolicy)
+	}
+}
+
+// ImageExists reports whether ref is present locally.
+func ImageExists(ctx context.Context, cli *client.Client, ref string) bool {
+	_, _, err := cli.ImageInspectWithRaw(ctx, ref)
+	return err == nil
+}
+
+// PullImage pulls ref from a registry.
+func PullImage(ctx context.Context, cli *client.Client, ref string) error {
 	fmt.Printf("Pulling image %s...\n", ref)
 	reader, err := cli.ImagePull(ctx, ref, image.PullOptions{})
 	if err != nil {

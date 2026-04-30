@@ -43,6 +43,11 @@ func runPod(cmd *cobra.Command, args []string) error {
 	keep, _ := cmd.Flags().GetBool("keep")
 	hostNetwork, _ := cmd.Flags().GetBool("host-network")
 
+	pullPolicy, err := resolvePullPolicy(flagPullPolicy)
+	if err != nil {
+		return err
+	}
+
 	image := flagImage
 	if image == "" {
 		image = runtime.DefaultImage
@@ -57,7 +62,7 @@ func runPod(cmd *cobra.Command, args []string) error {
 		HostNetwork: hostNetwork,
 		Privileged:  flagPrivileged,
 		User:        flagUser,
-		PullPolicy:  flagPullPolicy,
+		PullPolicy:  pullPolicy,
 		Profile:     profile,
 	}
 

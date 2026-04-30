@@ -874,7 +874,7 @@ debux k8s://prod/api-pod/app --fresh</code></pre>
               <div>
                 <h3>One-command install</h3>
                 <pre><code>curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh</code></pre>
-                <p>Installs to <code>~/.local/bin</code> by default and verifies release checksums when available.</p>
+                <p>Installs to <code>~/.local/bin</code> by default and refuses unverifiable release assets without <code>checksums.txt</code>.</p>
               </div>
             </div>
             <div class="timeline-item card">
@@ -888,7 +888,9 @@ debux update --check
 debux update
 
 debux doctor
-debux version --json</code></pre>
+debux version --json
+
+debux completion zsh</code></pre>
               </div>
             </div>
             <div class="timeline-item card">
@@ -969,7 +971,7 @@ debux docker://my-nginx --no-volumes</code></pre>
         <section id="kubernetes" class="doc-section" data-search data-title="Kubernetes debugging ephemeral containers copy pods RBAC">
           <div class="section-heading">
             <h2>Kubernetes debugging</h2>
-            <p>Use ephemeral containers for in-place debugging. If RBAC or policy blocks them, use copy mode to create a temporary copied pod.</p>
+            <p>Use ephemeral containers for in-place debugging. If RBAC or policy blocks them, use copy mode to create a temporary duplicate pod; use copy mode carefully for workloads with side effects.</p>
           </div>
           <div class="grid two">
             <div class="card code-card">
@@ -1011,7 +1013,9 @@ debux pod -n prod --keep</code></pre>
           <div class="callout" style="margin-top: 1rem;">
             <strong>Kubernetes toolbox persistence:</strong> ephemeral containers cannot add new volumes, so debux cannot mount your local Docker toolbox/history into pods. Reuse the same debug container on the same pod to keep installed tools/history, or bake common tools into a custom debug image and pass it with <code>--image</code>.
             <pre><code>FROM ghcr.io/clement-tourriere/debux:latest
-RUN nix-env -iA nixpkgs.postgresql nixpkgs.redis nixpkgs.kubectl</code></pre>
+RUN NIX_CONFIG="experimental-features = nix-command flakes" \
+    nix profile add --profile /nix/var/debux-profile \
+      nixpkgs#postgresql nixpkgs#redis nixpkgs#kubectl</code></pre>
           </div>
           <div class="table-wrap" style="margin-top: 1rem;">
             <table>
@@ -1081,6 +1085,12 @@ tcpdump -i any</code></pre>
           <div class="callout" style="margin-top: 1rem;">
             Some low-level tools need more privileges. In Kubernetes, use <code>--profile=sysadmin</code> for a fully privileged session or <code>--profile=netadmin</code> for network capabilities. <code>--profile=restricted</code> supports shell startup and <code>dctl install</code> with the current debug image, but deep chroot/target-root integration can be limited by Linux permissions.
           </div>
+          <div class="card code-card" style="margin-top: 1rem;">
+            <button class="copy" data-copy>Copy</button>
+            <pre><code># Run a one-shot command through the debug toolbox
+debux docker://my-app -- curl -I localhost
+debux k8s://prod/api/app -- ps aux</code></pre>
+          </div>
         </section>
 
         <section id="image-debug" class="doc-section" data-search data-title="Debug Docker images without starting them">
@@ -1140,6 +1150,25 @@ debux image my-app:broken --rm=false</code></pre>
           </div>
           <p class="note"><code>--no-volumes</code> only disables direct volume mounts into the debug container. It is not a security boundary if the debug container can still access the target through <code>/proc/1/root</code>. Kubernetes ephemeral containers also cannot add new volumes, so debux cannot mount your local Docker toolbox/history into arbitrary pods. Reusing the same debug container on the same pod keeps its installed tools; across pods, bake common tools into a custom debug image and pass it with <code>--image</code>.</p>
           <p class="note">RBAC implication: granting a user permission to update <code>pods/ephemeralcontainers</code> and create <code>pods/exec</code> is effectively granting the ability to run code inside selected pods. Treat it like production shell access.</p>
+          <div class="card code-card" style="margin-top: 1rem;">
+            <button class="copy" data-copy>Copy</button>
+            <pre><code># Minimal namespace-scoped RBAC for ephemeral-container debugging
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: debux-debugger
+  namespace: prod
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/ephemeralcontainers"]
+    verbs: ["update"]</code></pre>
+          </div>
           <div class="grid two" style="margin-top: 1rem;">
             <div class="card code-card">
               <button class="copy" data-copy>Copy</button>
@@ -1191,6 +1220,7 @@ debux store clean</code></pre>
                 <tr><td><code>debux image &lt;image&gt;</code></td><td>Debug a Docker image filesystem without starting it.</td></tr>
                 <tr><td><code>debux pod</code></td><td>Create a standalone Kubernetes debug pod.</td></tr>
                 <tr><td><code>debux kill [target]</code></td><td>Stop a running debux debug session.</td></tr>
+                <tr><td><code>debux completion</code></td><td>Generate shell completions for bash, zsh, fish, or PowerShell.</td></tr>
                 <tr><td><code>debux docs</code></td><td>Print the documentation URL. Use <code>--open</code> to open it in a browser.</td></tr>
                 <tr><td><code>debux doctor</code></td><td>Diagnose Docker/Kubernetes connectivity, RBAC, target pod status, and selected security profile.</td></tr>
                 <tr><td><code>debux update</code></td><td>Check GitHub Releases and update the current debux binary in place.</td></tr>
@@ -1199,7 +1229,7 @@ debux store clean</code></pre>
                 <tr><td><code>--fresh</code></td><td>Force a new debug container instead of reusing an existing one.</td></tr>
                 <tr><td><code>--copy</code></td><td>Kubernetes: create a copied debug pod instead of an ephemeral container.</td></tr>
                 <tr><td><code>--no-volumes</code></td><td>Do not mount target volumes directly. This is not an isolation boundary if the debug container can access <code>/proc/1/root</code>.</td></tr>
-                <tr><td><code>--pull-policy</code></td><td>Kubernetes image pull policy: <code>Always</code>, <code>IfNotPresent</code>, <code>Never</code>.</td></tr>
+                <tr><td><code>--pull-policy</code></td><td>Debug image pull policy for Docker/Kubernetes: <code>Always</code>, <code>IfNotPresent</code>, <code>Never</code>.</td></tr>
                 <tr><td><code>--context</code></td><td>Kubernetes kube context name. Prefer this for context names containing slashes.</td></tr>
                 <tr><td><code>--profile</code></td><td>Kubernetes security profile: <code>general</code>, <code>baseline</code>, <code>restricted</code>, <code>netadmin</code>, <code>sysadmin</code>.</td></tr>
                 <tr><td><code>--user uid[:gid]</code></td><td>Run the debug container as a specific user.</td></tr>

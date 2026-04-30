@@ -10,8 +10,9 @@ usage() {
   cat <<EOF
 Install debux from GitHub Releases.
 
-If no release asset exists yet and Go is installed, the installer falls back to
-building from source with go install.
+Release assets are verified against checksums.txt. If no release asset exists
+yet and Go is installed, the installer falls back to building from source with
+go install.
 
 Usage:
   curl -fsSL https://raw.githubusercontent.com/${repo}/main/install.sh | sh
@@ -124,28 +125,28 @@ if ! download "${base_url}/${archive}" "$archive_path"; then
 fi
 
 if [ "$installed_from_source" -eq 0 ]; then
-  if download "${base_url}/checksums.txt" "$checksums_path" 2>/dev/null; then
-    expected="$(awk -v file="$archive" '$2 == file {print $1; exit}' "$checksums_path")"
-    if [ -n "$expected" ]; then
-      if command -v sha256sum >/dev/null 2>&1; then
-        actual="$(sha256sum "$archive_path" | awk '{print $1}')"
-      elif command -v shasum >/dev/null 2>&1; then
-        actual="$(shasum -a 256 "$archive_path" | awk '{print $1}')"
-      else
-        actual=""
-        echo "warning: sha256sum/shasum not found; skipping checksum verification" >&2
-      fi
-      if [ -n "$actual" ] && [ "$actual" != "$expected" ]; then
-        echo "error: checksum mismatch for ${archive}" >&2
-        echo "expected: $expected" >&2
-        echo "actual:   $actual" >&2
-        exit 1
-      fi
-    else
-      echo "warning: checksum for ${archive} not found; skipping verification" >&2
-    fi
+  if ! download "${base_url}/checksums.txt" "$checksums_path" 2>/dev/null; then
+    echo "error: checksums.txt not found for ${version}; refusing to install unverifiable release asset" >&2
+    exit 1
+  fi
+  expected="$(awk -v file="$archive" '$2 == file {print $1; exit}' "$checksums_path")"
+  if [ -z "$expected" ]; then
+    echo "error: checksum for ${archive} not found in checksums.txt" >&2
+    exit 1
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$archive_path" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "$archive_path" | awk '{print $1}')"
   else
-    echo "warning: checksums.txt not found; skipping verification" >&2
+    echo "error: sha256sum or shasum is required to verify release checksums" >&2
+    exit 1
+  fi
+  if [ "$actual" != "$expected" ]; then
+    echo "error: checksum mismatch for ${archive}" >&2
+    echo "expected: $expected" >&2
+    echo "actual:   $actual" >&2
+    exit 1
   fi
 fi
 

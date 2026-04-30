@@ -21,6 +21,18 @@ import (
 	"github.com/moby/term"
 )
 
+const (
+	dockerLabelManagedBy     = "app.kubernetes.io/managed-by"
+	dockerLabelKind          = "debux.clement-tourriere/kind"
+	dockerLabelTargetID      = "debux.clement-tourriere/target-id"
+	dockerLabelTargetName    = "debux.clement-tourriere/target-name"
+	dockerLabelTargetImage   = "debux.clement-tourriere/target-image"
+	dockerLabelDebugImage    = "debux.clement-tourriere/debug-image"
+	dockerLabelManagedByVal  = "debux"
+	dockerLabelKindSidecar   = "docker-sidecar"
+	dockerLabelKindImageMode = "docker-image"
+)
+
 // ContainerInfo holds metadata about a running Docker container.
 type ContainerInfo struct {
 	ID              string
@@ -43,37 +55,37 @@ func DockerList(ctx context.Context) ([]ContainerInfo, error) {
 		return nil, fmt.Errorf("listing containers: %w", err)
 	}
 
-	// Collect names of running debux sidecars to mark active sessions
-	debuxTargets := make(map[string]bool)
+	debuxTargetsByID := make(map[string]bool)
+	debuxTargetsByName := make(map[string]bool)
 	for _, c := range containers {
-		name := ""
-		if len(c.Names) > 0 {
-			name = strings.TrimPrefix(c.Names[0], "/")
+		if c.State != "running" || !isDebuxDockerSidecar(c) {
+			continue
 		}
-		if strings.HasPrefix(name, "debux-") && c.State == "running" {
-			debuxTargets[strings.TrimPrefix(name, "debux-")] = true
+		if targetID := c.Labels[dockerLabelTargetID]; targetID != "" {
+			debuxTargetsByID[targetID] = true
+		}
+		if targetName := c.Labels[dockerLabelTargetName]; targetName != "" {
+			debuxTargetsByName[targetName] = true
+		}
+		// Legacy debux sidecars did not have labels. Keep marking them so users
+		// still see active sessions after upgrading.
+		if name := dockerContainerPrimaryName(c); strings.HasPrefix(name, "debux-") {
+			debuxTargetsByName[strings.TrimPrefix(name, "debux-")] = true
 		}
 	}
 
 	var result []ContainerInfo
 	for _, c := range containers {
-		if c.State != "running" {
+		if c.State != "running" || isDebuxDockerSidecar(c) {
 			continue
 		}
-		name := c.ID[:12]
-		if len(c.Names) > 0 {
-			name = strings.TrimPrefix(c.Names[0], "/")
-		}
-		// Skip debux sidecars themselves
-		if strings.HasPrefix(name, "debux-") {
-			continue
-		}
+		name := dockerContainerPrimaryName(c)
 		result = append(result, ContainerInfo{
-			ID:              c.ID[:12],
+			ID:              shortContainerID(c.ID),
 			Name:            name,
 			Image:           c.Image,
 			Status:          c.Status,
-			HasDebuxSession: debuxTargets[name],
+			HasDebuxSession: debuxTargetsByID[c.ID] || debuxTargetsByName[name],
 		})
 	}
 	return result, nil
@@ -87,11 +99,24 @@ func DockerKill(ctx context.Context, targetName string) error {
 	}
 	defer func() { _ = cli.Close() }()
 
-	containerName := fmt.Sprintf("debux-%s", targetName)
-	if err := cli.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true}); err != nil {
-		return fmt.Errorf("removing container %q: %w", containerName, err)
+	containerID := ""
+	resolvedName := targetName
+	if targetInfo, err := cli.ContainerInspect(ctx, targetName); err == nil {
+		containerID = targetInfo.ID
+		resolvedName = strings.TrimPrefix(targetInfo.Name, "/")
 	}
-	fmt.Printf("Killed debug session for %s\n", targetName)
+
+	debugID, debugName, err := findDockerDebugContainer(ctx, cli, containerID, resolvedName)
+	if err != nil {
+		return err
+	}
+	if debugID == "" {
+		return fmt.Errorf("no running debux session found for %s", targetName)
+	}
+	if err := cli.ContainerRemove(ctx, debugID, container.RemoveOptions{Force: true}); err != nil {
+		return fmt.Errorf("removing container %q: %w", debugName, err)
+	}
+	fmt.Printf("Killed debug session for %s (%s)\n", targetName, debugName)
 	return nil
 }
 
@@ -110,18 +135,16 @@ func DockerKillAll(ctx context.Context) error {
 
 	killed := 0
 	for _, c := range containers {
-		name := ""
-		if len(c.Names) > 0 {
-			name = strings.TrimPrefix(c.Names[0], "/")
+		if c.State != "running" || !isDebuxDockerSidecar(c) {
+			continue
 		}
-		if strings.HasPrefix(name, "debux-") && c.State == "running" {
-			if err := cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
-				fmt.Printf("Warning: failed to kill %s: %v\n", name, err)
-				continue
-			}
-			fmt.Printf("Killed %s\n", name)
-			killed++
+		name := dockerContainerPrimaryName(c)
+		if err := cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
+			fmt.Printf("Warning: failed to kill %s: %v\n", name, err)
+			continue
 		}
+		fmt.Printf("Killed %s\n", name)
+		killed++
 	}
 
 	if killed == 0 {
@@ -130,6 +153,76 @@ func DockerKillAll(ctx context.Context) error {
 		fmt.Printf("Killed %d debug session(s)\n", killed)
 	}
 	return nil
+}
+
+func dockerContainerPrimaryName(c types.Container) string {
+	if len(c.Names) > 0 {
+		return strings.TrimPrefix(c.Names[0], "/")
+	}
+	return shortContainerID(c.ID)
+}
+
+func shortContainerID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+func isDebuxDockerSidecar(c types.Container) bool {
+	if c.Labels[dockerLabelManagedBy] == dockerLabelManagedByVal && c.Labels[dockerLabelKind] == dockerLabelKindSidecar {
+		return true
+	}
+	// Backward-compatible legacy detection: old debux sidecars were named
+	// debux-<target> but had no labels. Require the image reference to mention
+	// debux so an unrelated user container named debux-* is not removed/listed.
+	return strings.HasPrefix(dockerContainerPrimaryName(c), "debux-") && strings.Contains(strings.ToLower(c.Image), "debux")
+}
+
+func removeDockerContainerNameIfManaged(ctx context.Context, cli *client.Client, name string) error {
+	info, err := cli.ContainerInspect(ctx, name)
+	if err != nil {
+		return nil
+	}
+	managed := false
+	if info.Config != nil {
+		labels := info.Config.Labels
+		managed = labels[dockerLabelManagedBy] == dockerLabelManagedByVal && labels[dockerLabelKind] == dockerLabelKindSidecar
+		managed = managed || (strings.HasPrefix(strings.TrimPrefix(info.Name, "/"), "debux-") && strings.Contains(strings.ToLower(info.Config.Image), "debux"))
+	}
+	if !managed {
+		return fmt.Errorf("container name %q is already in use by a container not managed by debux", name)
+	}
+	return cli.ContainerRemove(ctx, info.ID, container.RemoveOptions{Force: true})
+}
+
+func findDockerDebugContainer(ctx context.Context, cli *client.Client, targetID, targetName string) (id, name string, err error) {
+	containers, err := cli.ContainerList(ctx, container.ListOptions{})
+	if err != nil {
+		return "", "", fmt.Errorf("listing containers: %w", err)
+	}
+	for _, c := range containers {
+		if c.State != "running" || !isDebuxDockerSidecar(c) {
+			continue
+		}
+		if targetID != "" && c.Labels[dockerLabelTargetID] == targetID {
+			return c.ID, dockerContainerPrimaryName(c), nil
+		}
+		if targetName != "" && c.Labels[dockerLabelTargetName] == targetName {
+			return c.ID, dockerContainerPrimaryName(c), nil
+		}
+	}
+
+	// Legacy fallback by container name for sessions created before labels.
+	if targetName != "" {
+		legacyName := "debux-" + targetName
+		if info, err := cli.ContainerInspect(ctx, legacyName); err == nil && info.State != nil && info.State.Running {
+			if info.Config == nil || strings.Contains(strings.ToLower(info.Config.Image), "debux") {
+				return info.ID, strings.TrimPrefix(info.Name, "/"), nil
+			}
+		}
+	}
+	return "", "", nil
 }
 
 // DockerExec launches a debug sidecar sharing namespaces with the target container.
@@ -153,19 +246,27 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 
 	targetID := targetInfo.ID
 	targetName := strings.TrimPrefix(targetInfo.Name, "/")
+	targetImage := ""
+	if targetInfo.Config != nil {
+		targetImage = targetInfo.Config.Image
+	}
 	containerName := fmt.Sprintf("debux-%s", targetName)
 
-	// Try to reuse an existing running debux sidecar
+	// Try to reuse an existing running debux sidecar for this exact target
+	// container. Labels avoid reusing stale sessions after a target container is
+	// recreated with the same name.
 	if !opts.Fresh {
-		if info, err := cli.ContainerInspect(ctx, containerName); err == nil && info.State.Running {
-			fmt.Printf("Reusing debug container %q\n", containerName)
-			fmt.Printf("Debugging %s (container: %s)\n", target.Name, containerName)
-			return execInContainer(ctx, cli, info.ID)
+		if existingID, existingName, err := findDockerDebugContainer(ctx, cli, targetID, targetName); err != nil {
+			return err
+		} else if existingID != "" {
+			fmt.Printf("Reusing debug container %q\n", existingName)
+			fmt.Printf("Debugging %s (container: %s)\n", target.Name, existingName)
+			return execInContainer(ctx, cli, existingID, opts.Command)
 		}
 	}
 
 	// Ensure debug image is available
-	if err := dbximage.EnsureImage(ctx, cli, opts.Image); err != nil {
+	if err := dbximage.EnsureImageWithPolicy(ctx, cli, opts.Image, opts.PullPolicy); err != nil {
 		return fmt.Errorf("ensuring debug image: %w", err)
 	}
 
@@ -184,6 +285,14 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		Image:      opts.Image,
 		Entrypoint: []string{"/bin/sh", "-c", entrypoint.Script},
 		Tty:        true,
+		Labels: map[string]string{
+			dockerLabelManagedBy:   dockerLabelManagedByVal,
+			dockerLabelKind:        dockerLabelKindSidecar,
+			dockerLabelTargetID:    targetID,
+			dockerLabelTargetName:  targetName,
+			dockerLabelTargetImage: targetImage,
+			dockerLabelDebugImage:  opts.Image,
+		},
 		Env: []string{
 			"HOME=/root",
 			"ZDOTDIR=/tmp",
@@ -233,8 +342,12 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		config.User = opts.User
 	}
 
-	// Remove any existing (stopped) debug container with the same name
-	_ = cli.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true})
+	// Remove any existing debux-managed container with the same name. If a user
+	// has an unrelated container named debux-<target>, leave it alone and fail
+	// with a clear conflict instead of deleting it.
+	if err := removeDockerContainerNameIfManaged(ctx, cli, containerName); err != nil {
+		return err
+	}
 
 	fmt.Printf("Creating debug container for %s...\n", target.Name)
 
@@ -254,7 +367,7 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 
 	fmt.Printf("Debugging %s (container: %s)\n", target.Name, containerName)
 
-	return execInContainer(ctx, cli, resp.ID)
+	return execInContainer(ctx, cli, resp.ID, opts.Command)
 }
 
 func debugImageVolumes(ctx context.Context, cli *client.Client, imageRef string) (store.VolumeSet, error) {
@@ -408,6 +521,12 @@ func DockerImage(ctx context.Context, imageRef string, opts ImageOpts) error {
 		AttachStdin:  true,
 		AttachStdout: true,
 		AttachStderr: true,
+		Labels: map[string]string{
+			dockerLabelManagedBy:  dockerLabelManagedByVal,
+			dockerLabelKind:       dockerLabelKindImageMode,
+			dockerLabelTargetName: imageRef,
+			dockerLabelDebugImage: opts.DebugImage,
+		},
 		Env: []string{
 			"HOME=/root",
 			fmt.Sprintf("DEBUX_TARGET=%s", imageRef),
@@ -441,8 +560,10 @@ func DockerImage(ctx context.Context, imageRef string, opts ImageOpts) error {
 	}
 	debugID := debugResp.ID
 
-	if !opts.AutoRemove {
+	if opts.AutoRemove {
 		defer func() {
+			// Docker removes the container automatically after it exits, but this
+			// also cleans up failures that happen before the container starts.
 			_ = cli.ContainerRemove(context.Background(), debugID, container.RemoveOptions{Force: true})
 		}()
 	}
@@ -564,9 +685,9 @@ func resizeTTY(ctx context.Context, cli *client.Client, containerID string, fd u
 
 // execInContainer starts an interactive zsh session inside a running container
 // using docker exec, similar to how K8s uses exec into daemon ephemeral containers.
-func execInContainer(ctx context.Context, cli *client.Client, containerID string) error {
+func execInContainer(ctx context.Context, cli *client.Client, containerID string, command []string) error {
 	resp, err := cli.ContainerExecCreate(ctx, containerID, container.ExecOptions{
-		Cmd:          []string{"zsh"},
+		Cmd:          debuxExecCommand(command),
 		AttachStdin:  true,
 		AttachStdout: true,
 		AttachStderr: true,
@@ -645,6 +766,13 @@ func execInContainer(ctx context.Context, cli *client.Client, containerID string
 		case <-time.After(2 * time.Second):
 		}
 		return ctx.Err()
+	}
+
+	if len(command) > 0 {
+		inspect, err := cli.ContainerExecInspect(ctx, resp.ID)
+		if err == nil && inspect.ExitCode != 0 {
+			return fmt.Errorf("command exited with status %d", inspect.ExitCode)
+		}
 	}
 
 	return nil

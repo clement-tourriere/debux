@@ -15,10 +15,11 @@ import (
 
 func newExecCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "exec [target]",
+		Use:     "exec [target] [-- command...]",
 		Aliases: []string{"debug", "shell"},
 		Short:   "Debug a running Docker container or Kubernetes pod",
-		Long: `Start an interactive debux shell attached to a running target.
+		Long: `Start an interactive debux shell attached to a running target, or run a one-shot
+command after --.
 
 With no target, debux opens the Docker picker. Use docker:// or k8s:// to make
 the runtime explicit and to open runtime-specific pickers.
@@ -33,8 +34,10 @@ Security: the default Kubernetes profile is root inside the pod. Use
   debux exec k8s://prod/api-pod/app --context eks-preprod-01
   debux exec k8s://prod/api-pod/app --profile=restricted
   debux exec k8s://prod/api-pod/app --fresh --pull-policy=Always
-  debux exec k8s://prod/api-pod/app --copy`,
-		Args: cobra.MaximumNArgs(1),
+  debux exec k8s://prod/api-pod/app --copy
+  debux exec docker://my-app -- curl -I localhost
+  debux exec k8s://prod/api-pod/app -- ps aux`,
+		Args: cobra.ArbitraryArgs,
 		RunE: runExec,
 	}
 	addExecFlags(cmd)
@@ -46,6 +49,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	var target *runtime.Target
+	var command []string
 
 	if len(args) == 0 {
 		// No args: default to Docker, show picker
@@ -55,6 +59,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 		target, err = runtime.ParseTarget(args[0])
 		if err != nil {
 			return fmt.Errorf("invalid target: %w", err)
+		}
+		if len(args) > 1 {
+			command = args[1:]
 		}
 	}
 
@@ -83,6 +90,14 @@ func runExec(cmd *cobra.Command, args []string) error {
 		target.Name = name
 	}
 
+	if target.Runtime == "kubernetes" && target.Container == "" {
+		containerName, err := resolveK8sContainerName(ctx, cmd, target, kubeContext)
+		if err != nil {
+			return err
+		}
+		target.Container = containerName
+	}
+
 	profile := runtime.ProfileGeneral
 	if target.Runtime == "kubernetes" {
 		var err error
@@ -90,6 +105,11 @@ func runExec(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	pullPolicy, err := resolvePullPolicy(flagPullPolicy)
+	if err != nil {
+		return err
 	}
 
 	image := flagImage
@@ -103,10 +123,11 @@ func runExec(cmd *cobra.Command, args []string) error {
 		User:         flagUser,
 		AutoRemove:   flagRemove,
 		ShareVolumes: !flagNoVolumes,
-		PullPolicy:   flagPullPolicy,
+		PullPolicy:   pullPolicy,
 		Fresh:        flagFresh,
 		Copy:         flagCopy,
 		Profile:      profile,
+		Command:      command,
 	}
 
 	switch target.Runtime {
@@ -122,6 +143,22 @@ func runExec(cmd *cobra.Command, args []string) error {
 	default:
 		return fmt.Errorf("unsupported runtime: %s", target.Runtime)
 	}
+}
+
+func resolveK8sContainerName(ctx context.Context, cmd *cobra.Command, target *runtime.Target, kubeContext string) (string, error) {
+	kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
+	containers, err := runtime.KubernetesRunningContainers(ctx, kubeconfig, kubeContext, target.Namespace, target.Name)
+	if err != nil {
+		return "", err
+	}
+	if len(containers) == 1 {
+		return containers[0], nil
+	}
+	items := make([]picker.Item, len(containers))
+	for i, name := range containers {
+		items[i] = picker.Item{Label: name, Value: name}
+	}
+	return picker.Pick(fmt.Sprintf("Select a container in %s", target.Name), items)
 }
 
 func resolveK8sPodName(ctx context.Context, cmd *cobra.Command, target *runtime.Target, kubeContext string) (string, error) {
@@ -166,7 +203,7 @@ func validateExecFlags(cmd *cobra.Command, targetRuntime string) error {
 	}
 
 	var invalid []string
-	for _, name := range []string{"copy", "pull-policy", "kubeconfig", "context", "profile"} {
+	for _, name := range []string{"copy", "kubeconfig", "context", "profile"} {
 		if flagChanged(cmd, name) {
 			invalid = append(invalid, "--"+name)
 		}

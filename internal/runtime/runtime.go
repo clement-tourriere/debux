@@ -41,6 +41,32 @@ func watchSIGWINCH() (<-chan os.Signal, func()) {
 	return sigCh, func() { signal.Stop(sigCh) }
 }
 
+func debuxExecCommand(command []string) []string {
+	return []string{"sh", "-c", debuxShellCommand(command)}
+}
+
+func debuxShellCommand(command []string) string {
+	if len(command) == 0 {
+		return debuxZshExecCommand
+	}
+	return debuxShellSetupCommand + " export DEBUX_BANNER_SHOWN=1; exec zsh -ic " + shellQuote(shellJoin(command))
+}
+
+func shellJoin(args []string) string {
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		quoted[i] = shellQuote(arg)
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
 // DefaultImage is the debug toolbox image used when --image is not set.
 // Release builds pin this to the matching image tag via GoReleaser ldflags;
 // development builds keep using latest for convenience.
@@ -81,11 +107,12 @@ type DebugOpts struct {
 	AutoRemove   bool
 	Kubeconfig   string
 	KubeContext  string
-	ShareVolumes bool   // share target container's volumes (default: true)
-	PullPolicy   string // Kubernetes image pull policy (Always, IfNotPresent, Never)
-	Fresh        bool   // force a new ephemeral container instead of reusing an existing one
-	Copy         bool   // for Kubernetes: debug a copied pod instead of using ephemeral containers
-	Profile      string // security profile (general, baseline, restricted, netadmin, sysadmin)
+	ShareVolumes bool     // share target container's volumes (default: true)
+	PullPolicy   string   // debug image pull policy (Always, IfNotPresent, Never)
+	Fresh        bool     // force a new ephemeral container instead of reusing an existing one
+	Copy         bool     // for Kubernetes: debug a copied pod instead of using ephemeral containers
+	Profile      string   // security profile (general, baseline, restricted, netadmin, sysadmin)
+	Command      []string // optional command to run instead of opening an interactive shell
 }
 
 // PodOpts are options for creating a standalone debug pod.

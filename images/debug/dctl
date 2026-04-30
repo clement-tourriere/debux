@@ -145,6 +145,10 @@ case "${1:-}" in
     ;;
   search)
     shift
+    if [[ $# -eq 0 ]]; then
+      echo "Usage: dctl search <query>" >&2
+      exit 2
+    fi
     nix search nixpkgs "$1" 2>/dev/null || echo "Search failed. Try: nix search nixpkgs $1"
     ;;
   list)
@@ -156,7 +160,8 @@ case "${1:-}" in
     ;;
   update)
     ensure_nix_writable || exit 1
-    nix-channel --update
+    nix flake metadata --refresh nixpkgs >/dev/null
+    echo -e "\e[32mRefreshed nixpkgs flake metadata.\e[0m"
     ;;
   *)
     echo "dctl - debux package manager"

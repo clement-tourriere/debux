@@ -198,6 +198,30 @@ func KubernetesFindPods(ctx context.Context, kubeconfig, kubeContext, namespace,
 	return kubernetesListPods(ctx, kubeconfig, kubeContext, namespace, query)
 }
 
+// KubernetesRunningContainers returns the regular containers currently running
+// in a pod, in pod spec order.
+func KubernetesRunningContainers(ctx context.Context, kubeconfig, kubeContext, namespace, podName string) ([]string, error) {
+	_, clientset, err := getK8sClient(kubeconfig, kubeContext)
+	if err != nil {
+		return nil, err
+	}
+	namespace = resolveTargetNamespace(namespace, kubeconfig, kubeContext)
+	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("getting pod %s/%s: %w", namespace, podName, err)
+	}
+	containers := make([]string, 0, len(pod.Spec.Containers))
+	for _, c := range pod.Spec.Containers {
+		if podContainerRunning(pod, c.Name) {
+			containers = append(containers, c.Name)
+		}
+	}
+	if len(containers) == 0 {
+		return nil, fmt.Errorf("pod %s/%s has no running regular containers to target (available: %s)", namespace, podName, strings.Join(podContainerNames(pod), ", "))
+	}
+	return containers, nil
+}
+
 // KubernetesKill terminates the debux ephemeral container on a specific pod by
 // killing PID 1 inside it. K8s ephemeral containers cannot be removed from the
 // pod spec, but killing their init process terminates them.
@@ -363,7 +387,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		if existing := findRunningDebuxContainerForTarget(pod, targetContainer, opts.Profile); existing != "" {
 			fmt.Printf("Reusing debug container %q\n", existing)
 			fmt.Printf("Debugging %s/%s (container: %s)\n", namespace, podName, existing)
-			return execInPod(ctx, config, clientset, namespace, podName, existing)
+			return execInPod(ctx, config, clientset, namespace, podName, existing, opts.Command)
 		}
 	}
 
@@ -463,7 +487,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	fmt.Printf("Debugging %s/%s (container: %s)\n", namespace, podName, debugContainerName)
 
 	// Exec into the daemon container to start an interactive shell
-	return execInPod(ctx, config, clientset, namespace, podName, debugContainerName)
+	return execInPod(ctx, config, clientset, namespace, podName, debugContainerName, opts.Command)
 }
 
 func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace string, sourcePod *corev1.Pod, targetContainer string, opts DebugOpts) error {
@@ -580,7 +604,7 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 
 	fmt.Printf("Debugging copy %s/%s (container: %s, source: %s)\n", namespace, created.Name, debugContainerName, sourcePod.Name)
 
-	return execInPodWithCommand(ctx, config, clientset, namespace, created.Name, debugContainerName, copyPodShellCommand(targetContainerID))
+	return execInPodWithCommand(ctx, config, clientset, namespace, created.Name, debugContainerName, copyPodShellCommand(targetContainerID, opts.Command))
 }
 
 func kubernetesDebugTargetLabel(kubeContext, namespace, podName, containerName string) string {
@@ -700,14 +724,14 @@ func findContainerID(pod *corev1.Pod, containerName string) string {
 	return ""
 }
 
-func copyPodShellCommand(targetContainerID string) []string {
-	cmd := debuxZshExecCommand
+func copyPodShellCommand(targetContainerID string, command []string) []string {
+	cmd := debuxShellCommand(command)
 	if targetContainerID != "" {
 		shortID := targetContainerID
 		if len(shortID) > 12 {
 			shortID = shortID[:12]
 		}
-		cmd = fmt.Sprintf("target_cid=%q; target_cid_short=%q; target_pid=''; if [ -n \"$target_cid\" ]; then for p in /proc/[0-9]*; do [ -r \"$p/cgroup\" ] || continue; if grep -q \"$target_cid\" \"$p/cgroup\" 2>/dev/null || grep -q \"$target_cid_short\" \"$p/cgroup\" 2>/dev/null; then target_pid=\"${p##*/}\"; break; fi; done; fi; if [ -n \"$target_pid\" ] && [ -d \"/proc/$target_pid/root\" ]; then export DEBUX_TARGET_ROOT=\"/proc/$target_pid/root\"; export DEBUX_TARGET_ENVIRON=\"/proc/$target_pid/environ\"; export DEBUX_TARGET_CWD_LINK=\"/proc/$target_pid/cwd\"; fi; %s", targetContainerID, shortID, debuxZshExecCommand)
+		cmd = fmt.Sprintf("target_cid=%q; target_cid_short=%q; target_pid=''; if [ -n \"$target_cid\" ]; then for p in /proc/[0-9]*; do [ -r \"$p/cgroup\" ] || continue; if grep -q \"$target_cid\" \"$p/cgroup\" 2>/dev/null || grep -q \"$target_cid_short\" \"$p/cgroup\" 2>/dev/null; then target_pid=\"${p##*/}\"; break; fi; done; fi; if [ -n \"$target_pid\" ] && [ -d \"/proc/$target_pid/root\" ]; then export DEBUX_TARGET_ROOT=\"/proc/$target_pid/root\"; export DEBUX_TARGET_ENVIRON=\"/proc/$target_pid/environ\"; export DEBUX_TARGET_CWD_LINK=\"/proc/$target_pid/cwd\"; fi; %s", targetContainerID, shortID, cmd)
 	}
 	return []string{"sh", "-c", cmd}
 }
@@ -766,15 +790,17 @@ func debuxEphemeralContainerProfileMatches(ec corev1.EphemeralContainer, request
 	return requested == ProfileGeneral
 }
 
-const debuxZshExecCommand = `if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ] || [ ! -w "$HOME" ]; then debux_uid="$(id -u 2>/dev/null || echo 0)"; export HOME="/tmp/debux-home-$debux_uid"; mkdir -p "$HOME" 2>/dev/null || export HOME=/tmp; unset debux_uid; fi; export ZDOTDIR=/tmp; exec zsh`
+const debuxShellSetupCommand = `if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ] || [ ! -w "$HOME" ]; then debux_uid="$(id -u 2>/dev/null || echo 0)"; export HOME="/tmp/debux-home-$debux_uid"; mkdir -p "$HOME" 2>/dev/null || export HOME=/tmp; unset debux_uid; fi; export ZDOTDIR=/tmp;`
+
+const debuxZshExecCommand = debuxShellSetupCommand + ` exec zsh`
 
 // execInPod starts a new interactive zsh session inside a running container
 // using the /exec subresource (unlike attachToPod which uses /attach).
-func execInPod(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string) error {
+func execInPod(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string, command []string) error {
 	if err := bootstrapPodShell(ctx, config, clientset, namespace, podName, containerName); err != nil {
 		return fmt.Errorf("preparing debux shell config: %w", err)
 	}
-	return execInPodWithCommand(ctx, config, clientset, namespace, podName, containerName, []string{"sh", "-c", debuxZshExecCommand})
+	return execInPodWithCommand(ctx, config, clientset, namespace, podName, containerName, debuxExecCommand(command))
 }
 
 func bootstrapPodShell(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string) error {
