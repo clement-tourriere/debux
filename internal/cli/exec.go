@@ -242,7 +242,7 @@ func pickK8sPodFromList(title string, pods []runtime.PodInfo) (string, error) {
 		}
 	}
 
-	return picker.PickText(title, items)
+	return picker.Pick(title, items)
 }
 
 func formatK8sPodLabel(p runtime.PodInfo, active bool) string {
