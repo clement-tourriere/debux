@@ -3,6 +3,7 @@ go = "latest"
 golangci-lint = "latest"
 hk = "latest"
 pkl = "latest"
+"pipx:commitizen" = "latest"
 
 [vars]
 binary = "debux"
@@ -68,6 +69,10 @@ run = "hk run pre-commit"
 [tasks.check]
 description = "Run hk checks on all files"
 run = "hk check --all --check"
+
+[tasks."release:bump"]
+description = "Bump version, changelog, and tag with Commitizen"
+run = "cz bump"
 
 [tasks.fix]
 description = "Run hk fixes on all files"

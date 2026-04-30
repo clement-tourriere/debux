@@ -340,6 +340,7 @@ mise run check          # hk checks on all files
 mise run fix            # hk fixes on all files
 mise run hooks-install  # install hk git hooks with mise integration
 mise run image-build    # build debug image
+mise run release:bump   # bump version/changelog/tag with Commitizen
 mise run docs           # serve docs at http://localhost:8000
 mise run docs:open      # open local docs in your browser
 
@@ -347,7 +348,7 @@ debux docs              # print documentation URL
 debux docs --open       # open documentation in your browser
 ```
 
-The repository uses [hk](https://hk.jdx.dev/) for git hooks and [pkl](https://pkl-lang.org/) for hk configuration.
+The repository uses [hk](https://hk.jdx.dev/) for git hooks, [pkl](https://pkl-lang.org/) for hk configuration, and [Commitizen](https://commitizen-tools.github.io/commitizen/) for release bumps. Commitizen is installed by mise via `pipx:commitizen`.
 
 ## Releases and distribution
 
