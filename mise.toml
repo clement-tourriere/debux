@@ -73,7 +73,7 @@ run = "hk check --all --check"
 
 [tasks."release:bump"]
 description = "Bump version, changelog, and tag with Commitizen"
-run = "cz bump"
+run = "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=tag.gpgSign GIT_CONFIG_VALUE_0=false cz bump"
 
 [tasks."release:dry-run"]
 description = "Build release artifacts locally without publishing"

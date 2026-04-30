@@ -10,6 +10,7 @@
 
 ### Fix
 
+- make release bump work with tag signing enabled
 - fall back to source install before releases
 - allow dctl installs in restricted profile
 - bootstrap restricted kubernetes shells
