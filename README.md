@@ -363,6 +363,8 @@ mise run release:bump      # updates .cz.toml/changelog and creates a vX.Y.Z tag
 mise run release:push      # git push origin main --follow-tags
 ```
 
+If there are no commits since the latest version tag, `mise run release:bump` exits successfully and tells you no bump is needed.
+
 Pushing a `v*` tag runs `.github/workflows/release.yml`, which creates the GitHub Release, uploads checksummed CLI archives, and publishes the debug image to GHCR as `X.Y.Z`, `X.Y`, `X`, and `latest`. You can also run the **Release** workflow manually with a version input from GitHub Actions.
 
 After installation, keep the CLI current with:

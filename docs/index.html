@@ -906,7 +906,7 @@ mise run release:push
             </div>
           </div>
           <div class="callout info" style="margin-top: 1rem;">
-            <strong>Release flow:</strong> run <code>mise run release:bump</code>, then <code>mise run release:push</code>. Pushing a <code>v*</code> tag runs the Release workflow, creates the GitHub Release with checksummed CLI archives, and publishes the debug image as versioned GHCR tags plus <code>latest</code>. The same workflow can also be run manually with a version input.
+            <strong>Release flow:</strong> run <code>mise run release:bump</code>, then <code>mise run release:push</code>. If there are no commits since the latest version tag, the bump task exits successfully and says no bump is needed. Pushing a <code>v*</code> tag runs the Release workflow, creates the GitHub Release with checksummed CLI archives, and publishes the debug image as versioned GHCR tags plus <code>latest</code>. The same workflow can also be run manually with a version input.
           </div>
         </section>
 

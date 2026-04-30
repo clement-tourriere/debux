@@ -10,6 +10,7 @@
 
 ### Fix
 
+- make release bump idempotent when there are no new commits
 - create annotated release tags for push flow
 - make release bump work with tag signing enabled
 - fall back to source install before releases
