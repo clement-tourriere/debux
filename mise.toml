@@ -74,15 +74,23 @@ run = "hk check --all --check"
 [tasks."release:bump"]
 description = "Bump version, changelog, and tag with Commitizen"
 run = '''
-set +e
-out=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=tag.gpgSign GIT_CONFIG_VALUE_0=false cz bump 2>&1)
-status=$?
-printf '%s\n' "$out"
-if [ "$status" -ne 0 ] && printf '%s\n' "$out" | grep -q '\[NO_COMMITS_FOUND\]'; then
-  echo "No release bump needed: no commits since the latest version tag."
+set -eu
+current_version="$(awk -F'"' '/^version = / {print $2; exit}' .cz.toml)"
+current_tag="v${current_version}"
+
+if [ -n "$current_version" ] && [ "$current_version" != "0.0.0" ] && ! git rev-parse -q --verify "refs/tags/${current_tag}" >/dev/null; then
+  echo "Version is ${current_version}, but ${current_tag} is missing. Creating the release tag without GPG signing."
+  git -c tag.gpgSign=false tag -a "$current_tag" -m "$current_tag"
   exit 0
 fi
-exit "$status"
+
+latest_tag="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n 1)"
+if [ -n "$latest_tag" ] && [ -z "$(git log --format=%H "${latest_tag}..HEAD")" ]; then
+  echo "No release bump needed: no commits since $latest_tag."
+  exit 0
+fi
+
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=tag.gpgSign GIT_CONFIG_VALUE_0=false cz bump --yes
 '''
 
 [tasks."release:dry-run"]

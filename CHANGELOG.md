@@ -10,6 +10,8 @@
 
 ### Fix
 
+- recreate missing release tag after interrupted bump
+- make release bump non-interactive when no matching tag exists
 - make release bump idempotent when there are no new commits
 - create annotated release tags for push flow
 - make release bump work with tag signing enabled
