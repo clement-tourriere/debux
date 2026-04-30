@@ -1,0 +1,29 @@
+amends "package://github.com/jdx/hk/releases/download/v1.44.2/hk@1.44.2#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v1.44.2/hk@1.44.2#/Builtins.pkl"
+
+local linters = new Mapping<String, Step> {
+    ["golangci-lint"] = (Builtins.golangci_lint) {
+        exclude = Regex(#"^\.hk/"#)
+    }
+}
+
+hooks {
+    ["pre-commit"] {
+        fix = true
+        stash = "git"
+        steps {
+            ...linters
+        }
+    }
+    ["check"] {
+        steps {
+            ...linters
+        }
+    }
+    ["fix"] {
+        fix = true
+        steps {
+            ...linters
+        }
+    }
+}

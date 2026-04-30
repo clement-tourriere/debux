@@ -1,7 +1,8 @@
 [tools]
 go = "latest"
 golangci-lint = "latest"
-"pipx:pre-commit" = { version = "latest", uvx_args = "--python-preference=system" }
+hk = "latest"
+pkl = "latest"
 
 [vars]
 binary = "debux"
@@ -43,3 +44,19 @@ run = "go test ./..."
 [tasks.lint]
 description = "Run linter"
 run = "golangci-lint run"
+
+[tasks.hooks-install]
+description = "Install hk git hooks for this repository"
+run = "hk install --mise"
+
+[tasks.pre-commit]
+description = "Run hk pre-commit checks"
+run = "hk run pre-commit"
+
+[tasks.check]
+description = "Run hk checks on all files"
+run = "hk check --all --check"
+
+[tasks.fix]
+description = "Run hk fixes on all files"
+run = "hk fix --all"

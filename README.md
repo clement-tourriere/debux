@@ -16,8 +16,9 @@ Requires [mise](https://mise.jdx.dev) (handles Go and all build tooling automati
 ```bash
 git clone https://github.com/clement-tourriere/debux.git
 cd debux
-mise run install        # Builds and copies to ~/.local/bin
-mise run image-build    # Build the debug image
+mise run install         # Builds and copies to ~/.local/bin
+mise run image-build     # Build the debug image
+mise run hooks-install   # Optional: install hk git hooks for development
 ```
 
 ## Quick start
