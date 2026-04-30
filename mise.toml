@@ -29,6 +29,10 @@ run = "docker build -t {{vars.image}} -f images/debug/Dockerfile ."
 description = "Push the Docker debug image"
 run = "docker push {{vars.image}}"
 
+[tasks.docs]
+description = "Serve the documentation site locally"
+run = "cd docs && python3 -m http.server ${PORT:-8000}"
+
 [tasks.dev]
 description = "Build binary and Docker image for development"
 depends = ["build", "image-build"]

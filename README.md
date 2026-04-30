@@ -255,13 +255,24 @@ mise run check          # hk checks on all files
 mise run fix            # hk fixes on all files
 mise run hooks-install  # install hk git hooks with mise integration
 mise run image-build    # build debug image
+mise run docs           # serve docs at http://localhost:8000
 ```
 
 The repository uses [hk](https://hk.jdx.dev/) for git hooks and [pkl](https://pkl-lang.org/) for hk configuration.
 
 ## Documentation site
 
-The documentation site lives in [`docs/`](docs/) and is deployed by GitHub Actions on pushes to `main`:
+The documentation site lives in [`docs/`](docs/) and is deployed by GitHub Actions on pushes to `main`.
+
+Run it locally with:
+
+```bash
+mise run docs
+# or choose a port
+PORT=9000 mise run docs
+```
+
+Deployment workflow:
 
 ```text
 .github/workflows/pages.yml
