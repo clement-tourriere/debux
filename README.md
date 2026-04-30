@@ -424,7 +424,7 @@ mise run release:bump      # updates .cz.toml/changelog and creates a vX.Y.Z tag
 mise run release:push      # git push origin main --follow-tags
 ```
 
-If there are no commits since the latest version tag, `mise run release:bump` exits successfully and tells you no bump is needed. If Commitizen already bumped the version but tag creation was interrupted, the task recreates the missing `vX.Y.Z` tag without GPG signing.
+If there are no commits since the latest version tag, or if the commits are not release-eligible conventional commits such as `ci:`/`docs:`, `mise run release:bump` exits successfully and tells you no bump is needed. If Commitizen already bumped the version but tag creation was interrupted, the task recreates the missing `vX.Y.Z` tag without GPG signing.
 
 Pushing a `v*` tag runs `.github/workflows/release.yml`, publishes the debug image to GHCR as `X.Y.Z`, `X.Y`, `X`, and `latest`, signs the image with keyless cosign, then creates the GitHub Release with checksummed CLI archives. Release binaries pin their default debug image to the matching `X.Y.Z` image tag; development builds keep using `latest`. You can also run the **Release** workflow manually for an existing pushed tag.
 

@@ -100,7 +100,19 @@ if [ -n "$latest_tag" ] && [ -z "$(git log --format=%H "${latest_tag}..HEAD")" ]
   exit 0
 fi
 
-GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=tag.gpgSign GIT_CONFIG_VALUE_0=false cz bump --yes
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+if GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=tag.gpgSign GIT_CONFIG_VALUE_0=false cz bump --yes >"$tmp" 2>&1; then
+  cat "$tmp"
+  exit 0
+fi
+status=$?
+cat "$tmp"
+if grep -Eq '\[(NO_COMMITS_FOUND|NO_COMMITS_TO_BUMP)\]' "$tmp"; then
+  echo "No release bump needed: no eligible conventional commits since ${latest_tag:-the latest tag}."
+  exit 0
+fi
+exit "$status"
 '''
 
 [tasks."release:dry-run"]
