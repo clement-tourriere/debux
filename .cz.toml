@@ -2,6 +2,7 @@
 name = "cz_conventional_commits"
 version = "0.1.0"
 tag_format = "v$version"
+annotated_tag = true
 version_files = [".cz.toml:version"]
 update_changelog_on_bump = true
 major_version_zero = true
