@@ -317,6 +317,7 @@ mise run fix            # hk fixes on all files
 mise run hooks-install  # install hk git hooks with mise integration
 mise run image-build    # build debug image
 mise run docs           # serve docs at http://localhost:8000
+mise run docs:open      # open local docs in your browser
 
 debux docs              # print documentation URL
 debux docs --open       # open documentation in your browser
@@ -332,6 +333,7 @@ Run it locally with:
 
 ```bash
 mise run docs
+mise run docs:open
 # or choose a port
 PORT=9000 mise run docs
 ```
