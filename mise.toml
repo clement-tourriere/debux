@@ -19,7 +19,7 @@ run = "go build -o bin/{{vars.binary}} ./cmd/debux"
 [tasks.install]
 description = "Build and install the binary to ~/.local/bin"
 depends = ["build"]
-run = "cp bin/{{vars.binary}} ~/.local/bin/{{vars.binary}}"
+run = "bash -lc 'set -euo pipefail; dst=\"$HOME/.local/bin/{{vars.binary}}\"; mkdir -p \"$(dirname \"$dst\")\"; rm -f \"$dst\"; install -m 0755 bin/{{vars.binary}} \"$dst\"; if command -v xattr >/dev/null 2>&1; then xattr -c \"$dst\" 2>/dev/null || true; fi; if command -v codesign >/dev/null 2>&1; then codesign --force --sign - \"$dst\" >/dev/null 2>&1 || true; fi; \"$dst\" --help >/dev/null; printf \"Installed %s\\nRun hash -r if your shell still finds an older debux.\\n\" \"$dst\"'"
 
 [tasks.image-build]
 description = "Build the Docker debug image"
