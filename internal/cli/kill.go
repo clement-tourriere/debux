@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os/signal"
 	"sort"
-	"strings"
 	"syscall"
 
 	"github.com/clement-tourriere/debux/internal/picker"
@@ -160,12 +159,8 @@ func killInteractive(ctx context.Context, cmd *cobra.Command) error {
 		if len(active) > 0 {
 			items := make([]picker.Item, len(active))
 			for i, p := range active {
-				label := fmt.Sprintf("● %s/%s [%s]", p.Namespace, p.Name, strings.Join(p.Containers, ", "))
-				if p.Context != "" {
-					label = fmt.Sprintf("● %s:%s/%s [%s]", p.Context, p.Namespace, p.Name, strings.Join(p.Containers, ", "))
-				}
 				items[i] = picker.Item{
-					Label: label,
+					Label: formatK8sPodLabel(p, true),
 					Value: p.Name,
 				}
 			}

@@ -200,18 +200,22 @@ func pickK8sPod(ctx context.Context, kubeconfig, kubeContext, namespace string) 
 
 	items := make([]picker.Item, len(pods))
 	for i, p := range pods {
-		label := fmt.Sprintf("%s/%s [%s]", p.Namespace, p.Name, strings.Join(p.Containers, ", "))
-		if p.Context != "" {
-			label = fmt.Sprintf("%s:%s", p.Context, label)
-		}
-		if p.HasDebuxSession {
-			label = "● " + label
-		}
 		items[i] = picker.Item{
-			Label: label,
+			Label: formatK8sPodLabel(p, p.HasDebuxSession),
 			Value: p.Name,
 		}
 	}
 
 	return picker.Pick("Select a pod", items)
+}
+
+func formatK8sPodLabel(p runtime.PodInfo, active bool) string {
+	label := fmt.Sprintf("%s/%s [%s]", p.Namespace, p.Name, strings.Join(p.Containers, ", "))
+	if p.Context != "" {
+		label = fmt.Sprintf("%s · ctx: %s", label, p.Context)
+	}
+	if active {
+		label = "● " + label
+	}
+	return label
 }

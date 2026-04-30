@@ -94,7 +94,7 @@ func KubernetesList(ctx context.Context, kubeconfig string, kubeContext string, 
 	}
 
 	listNs := resolveTargetNamespace(namespace, kubeconfig, kubeContext)
-	resolvedContext := resolveContextName(kubeconfig, kubeContext)
+	resolvedContext := kubeContext
 
 	pods, err := clientset.CoreV1().Pods(listNs).List(ctx, metav1.ListOptions{
 		FieldSelector: "status.phase=Running",
@@ -827,21 +827,6 @@ func resolveNamespace(kubeconfig, kubeContext string) string {
 		return "default"
 	}
 	return ns
-}
-
-func resolveContextName(kubeconfig, kubeContext string) string {
-	if kubeContext != "" {
-		return kubeContext
-	}
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if kubeconfig != "" {
-		loadingRules.ExplicitPath = kubeconfig
-	}
-	rawConfig, err := loadingRules.Load()
-	if err != nil {
-		return ""
-	}
-	return rawConfig.CurrentContext
 }
 
 func resolveTargetNamespace(namespace, kubeconfig, kubeContext string) string {
