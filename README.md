@@ -1,105 +1,130 @@
 # debux
 
-Like `docker debug` and `orb debug`, but free and open-source. Works with Kubernetes too.
+<p align="center">
+  <strong>Debug any container — even distroless, scratch, and minimal images — with a rich Nix-powered shell.</strong>
+</p>
 
-## Why debux
+<p align="center">
+  <a href="https://github.com/clement-tourriere/debux/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/clement-tourriere/debux/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/clement-tourriere/debux/actions/workflows/docker.yml"><img alt="Docker" src="https://github.com/clement-tourriere/debux/actions/workflows/docker.yml/badge.svg"></a>
+  <a href="https://github.com/clement-tourriere/debux/actions/workflows/pages.yml"><img alt="Docs" src="https://github.com/clement-tourriere/debux/actions/workflows/pages.yml/badge.svg"></a>
+  <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+</p>
 
-- **Free and open-source** — no paid Docker or OrbStack subscription required
-- **Works on any container** — distroless, scratch, alpine, minimal images where `docker exec` is useless
-- **Docker + Kubernetes** — debug Docker containers or Kubernetes pods with the same tool
-- **Rich shell** — zsh with 40+ pre-installed tools (curl, strace, vim, tcpdump, ...) and on-demand packages via Nix
+<p align="center">
+  <a href="https://clement-tourriere.github.io/debux/"><strong>Read the docs</strong></a>
+  ·
+  <a href="#quick-start">Quick start</a>
+  ·
+  <a href="#kubernetes">Kubernetes</a>
+  ·
+  <a href="#troubleshooting">Troubleshooting</a>
+</p>
 
-## Install
+---
 
-Requires [mise](https://mise.jdx.dev) (handles Go and all build tooling automatically).
+`debux` is like `docker debug` and `orb debug`, but free, open-source, and Kubernetes-aware.
+
+It starts a temporary debug toolbox next to your target container, shares useful namespaces, and exposes the target filesystem at `$DEBUX_TARGET_ROOT`. That means you can debug production-style containers without rebuilding them, adding a shell, or shipping troubleshooting tools in your app image.
+
+📚 **Full documentation:** <https://clement-tourriere.github.io/debux/> — includes a `Ctrl`/`Cmd` + `K` search palette.
+
+## Why debux?
+
+- **Works when `docker exec` is useless** — distroless, scratch, Alpine, and tiny production images.
+- **Docker + Kubernetes** — same workflow locally and in clusters.
+- **Nix-powered shell** — zsh plus tools like `curl`, `strace`, `tcpdump`, `vim`, `jq`, `dig`, `nmap`, and more.
+- **Install tools on demand** — `dctl install <pkg>` pulls from nixpkgs during a debug session.
+- **Target-aware shell** — jump into the target root, inspect target processes, and reuse the target network namespace.
+- **Open source** — no paid Docker Desktop or OrbStack subscription required.
+
+## Quick start
+
+Requires [mise](https://mise.jdx.dev) for Go and developer tooling.
 
 ```bash
 git clone https://github.com/clement-tourriere/debux.git
 cd debux
-mise run install         # Builds and copies to ~/.local/bin
-mise run image-build     # Build the debug image
-mise run hooks-install   # Optional: install hk git hooks for development
-```
 
-## Quick start
+mise run install         # Build and copy debux to ~/.local/bin
+mise run image-build     # Build ghcr.io/clement-tourriere/debux:latest locally
+```
 
 ### Docker
 
 ```bash
 docker run -d --name my-app nginx:alpine
-debux exec my-app
+
+debux my-app
+# or
+debux docker://my-app
 ```
 
-Even on distroless containers:
+Interactive picker:
+
+```bash
+debux docker://
+```
+
+Even if the target image has no shell:
 
 ```bash
 docker run -d --name distroless gcr.io/distroless/static-debian12
-debux exec distroless
+
+debux distroless
 ```
 
 ### Kubernetes
 
 ```bash
-# Debug a running pod (ephemeral container)
-debux exec k8s://my-pod                         # current kube-context namespace
-debux exec k8s://my-namespace/my-pod
-debux exec k8s://my-namespace/my-pod/my-container
+# Current kube-context namespace
+debux k8s://my-pod
 
-# Debug by creating a copied pod (when pods/ephemeralcontainers RBAC is denied)
-debux exec k8s://my-namespace/my-pod --copy
+# Explicit namespace
+debux k8s://my-namespace/my-pod
 
-# Standalone debug pod
-debux pod -n my-namespace
+# Specific container in a multi-container pod
+debux k8s://my-namespace/my-pod/my-container
+
+# Interactive pod picker
+debux k8s://
 ```
 
-### Interactive picker
-
-Run `debux exec` with no target to get an interactive picker that lists running containers. Use a bare runtime prefix to scope it:
+If ephemeral containers are blocked by RBAC or admission policy:
 
 ```bash
-debux exec              # Pick from Docker containers
-debux exec docker://    # Pick from Docker containers
-debux exec k8s://       # Pick from Kubernetes pods
+debux k8s://my-namespace/my-pod --copy
 ```
 
-## Usage
-
-### Target formats
-
-| Format | Runtime |
-|---|---|
-| `<container>` or `docker://<container>` | Docker |
-| `k8s://<pod>` | Kubernetes (current kube-context namespace) |
-| `k8s://<namespace>/<pod>` | Kubernetes |
-| `k8s://<namespace>/<pod>/<container>` | Kubernetes (specific container) |
-
-### `debux exec [flags] <target>`
-
-| Flag | Description |
-|---|---|
-| `--image <image>` | Override debug image |
-| `--privileged` | Run in privileged mode |
-| `--user <uid:gid>` | Run as a specific user |
-| `--fresh` | Force a new Kubernetes debug container |
-| `--copy` | For Kubernetes, debug a copied pod instead of an ephemeral container |
-| `--kubeconfig <path>` | Override kubeconfig path |
-| `--pull-policy <policy>` | Kubernetes image pull policy (default: Kubernetes default; `Always` for `:latest`) |
-
-### `debux pod [flags]`
-
-Create a standalone debug pod in Kubernetes.
-
-| Flag | Description |
-|---|---|
-| `-n, --namespace <ns>` | Kubernetes namespace (default: `default`) |
-| `--keep` | Keep the pod after exiting |
-| `--host-network` | Use the host network |
-
-### `debux store`
+Force a fresh debug container and pull the newest debug image:
 
 ```bash
-debux store info     # Show store volumes and sizes
-debux store clean    # Remove all persistent store volumes
+debux k8s://my-namespace/my-pod/my-container \
+  --fresh \
+  --pull-policy=Always
+```
+
+## How it works
+
+`debux` does **not** modify your application image.
+
+1. It starts a debug container using the debux Nix toolbox image.
+2. It joins the target's useful namespaces: network and process namespaces where supported.
+3. It exposes the target filesystem at:
+
+```bash
+$DEBUX_TARGET_ROOT
+# usually /proc/1/root
+```
+
+Inside the debug shell:
+
+```bash
+target                              # cd into the target filesystem
+ls $DEBUX_TARGET_ROOT/etc
+ps aux                              # target processes
+curl localhost:8080                 # target network namespace
+strace -p 1                         # trace target PID 1, may require more privileges
 ```
 
 ## Inside the debug shell
@@ -108,48 +133,188 @@ debux store clean    # Remove all persistent store volumes
 
 | Category | Tools |
 |---|---|
-| Network | curl, wget, dig, nmap, tcpdump, nettools, iproute2 |
-| Debugging | strace, ltrace, htop, procps |
-| Editors | vim |
-| Text/Files | jq, less, grep, awk, diff, find, file, tree |
-| Other | git, openssh |
+| Network | `curl`, `wget`, `dig`, `nmap`, `tcpdump`, `nettools`, `iproute2` |
+| Debugging | `strace`, `ltrace`, `htop`, `procps` |
+| Editors | `vim` |
+| Text/files | `jq`, `less`, `grep`, `awk`, `diff`, `find`, `file`, `tree` |
+| Other | `git`, `openssh`, `zsh` |
 
-### Installing more tools
+### Install more tools with `dctl`
 
 ```bash
-dctl install python3     # Install a package
-dctl search postgres     # Search available packages
-dctl list                # List installed packages
+dctl search postgres
+dctl install postgresql
+dctl list
 ```
 
-Packages are backed by [nixpkgs](https://search.nixos.org/packages) and persist across sessions via Docker volumes.
+If a command is missing, the shell offers to install it:
 
-Just type a missing command and you'll be prompted to install it:
-
-```
+```text
 [debux] my-app ~ # python3
 python3: command not found
-  Install now? [y/N] y
+
+  Install with: dctl install python3
+
+  Install now? [y/N]
 ```
 
-### Accessing the target
+Packages are backed by [nixpkgs](https://search.nixos.org/packages). Docker mode uses image-specific persistent Nix volumes so tools can survive across sessions without breaking rebuilt debug images.
+
+## Usage
+
+### Target formats
+
+| Format | Runtime | Meaning |
+|---|---|---|
+| `<container>` | Docker | Debug a Docker container by name or ID. |
+| `docker://` | Docker | Open the Docker picker. |
+| `docker://<container>` | Docker | Debug a Docker container. |
+| `k8s://` | Kubernetes | Open the pod picker in the current kube-context namespace. |
+| `k8s://<pod>` | Kubernetes | Debug a pod in the current kube-context namespace. |
+| `k8s://<namespace>/<pod>` | Kubernetes | Debug a pod in an explicit namespace. |
+| `k8s://<namespace>/<pod>/<container>` | Kubernetes | Debug a specific container. |
+
+### Common flags
+
+| Flag | Description |
+|---|---|
+| `--image <image>` | Override the debug image. |
+| `--fresh` | Force a new debug container instead of reusing an existing session. |
+| `--copy` | Kubernetes: create a copied debug pod instead of an ephemeral container. |
+| `--no-volumes` | Do not share target volumes with the debug container. |
+| `--pull-policy <policy>` | Kubernetes image pull policy: `Always`, `IfNotPresent`, `Never`. |
+| `--profile <profile>` | Kubernetes security profile: `general`, `baseline`, `restricted`, `netadmin`, `sysadmin`. |
+| `--user <uid[:gid]>` | Run the debug container as a specific user. |
+| `--kubeconfig <path>` | Override kubeconfig path. |
+
+### Standalone Kubernetes debug pod
 
 ```bash
-ls $DEBUX_TARGET_ROOT                           # Target's filesystem
-cat $DEBUX_TARGET_ROOT/etc/nginx/nginx.conf
-target                                          # cd into the target's root
+debux pod -n my-namespace
 
-ps aux                  # Target's processes (shared PID namespace)
-curl localhost:8080     # Target's network (shared network namespace)
-strace -p 1            # Trace PID 1 (may need --privileged)
+debux pod -n my-namespace --host-network
+
+debux pod -n my-namespace --keep
 ```
+
+### Debug an image without starting it
+
+Useful when the image itself cannot boot.
+
+```bash
+debux image gcr.io/distroless/static-debian12
+
+debux image my-app:broken
+```
+
+The image filesystem is copied into the debug container and exposed at `/target`.
+
+### Manage debux sessions and stores
+
+```bash
+# Kill a Docker or Kubernetes debug session
+debux kill docker://my-app
+debux kill k8s://my-namespace/my-pod
+
+# Kill all sessions in the selected runtime
+debux kill --all
+debux kill k8s://my-namespace/ --all
+
+# Inspect or clean persistent Docker Nix stores
+debux store info
+debux store clean
+```
+
+## Kubernetes security profiles
+
+| Profile | Purpose |
+|---|---|
+| `general` | Default. Adds practical debugging capabilities such as ptrace/chroot. |
+| `baseline` | No extra security context. Useful for stricter clusters. |
+| `restricted` | Non-root, drops capabilities, runtime default seccomp. |
+| `netadmin` | Adds network capabilities for tools like `tcpdump`. |
+| `sysadmin` | Privileged debug container. Last resort for deep debugging. |
+
+Examples:
+
+```bash
+# Lower-privilege Kubernetes debug shell
+debux k8s://prod/api/app --profile=baseline --user 65534:65534
+
+# Full privileged debug shell
+debux k8s://prod/api/app --profile=sysadmin
+```
+
+## Development
+
+```bash
+mise run build          # Build CLI
+mise run test           # go test ./...
+mise run lint           # golangci-lint run
+mise run check          # hk checks on all files
+mise run fix            # hk fixes on all files
+mise run hooks-install  # install hk git hooks with mise integration
+mise run image-build    # build debug image
+```
+
+The repository uses [hk](https://hk.jdx.dev/) for git hooks and [pkl](https://pkl-lang.org/) for hk configuration.
+
+## Documentation site
+
+The documentation site lives in [`docs/`](docs/) and is deployed by GitHub Actions on pushes to `main`:
+
+```text
+.github/workflows/pages.yml
+```
+
+If this is the first deployment for a fork or new repository, enable **GitHub Pages → Source: GitHub Actions** in repository settings.
 
 ## Troubleshooting
 
-### Kubernetes `openat etc/passwd: path escapes from parent`
+### Kubernetes: `openat etc/passwd: path escapes from parent`
 
-This means the debug image has NixOS-style `/etc/passwd` or `/etc/group` symlinks that your cluster runtime refuses during container creation. Rebuild/pull the latest debux debug image, then retry with `--pull-policy=Always` or `--image <your-fixed-image>`.
+Your cluster runtime rejected debug images with NixOS-style absolute symlinks in `/etc/passwd` or `/etc/group`. Rebuild and push the latest debux image, then force Kubernetes to pull it:
+
+```bash
+mise run image-build
+docker push ghcr.io/clement-tourriere/debux:latest
+
+debux k8s://my-namespace/my-pod --fresh --pull-policy=Always
+```
+
+### Docker: `exec: "/bin/sh": stat /bin/sh: no such file or directory`
+
+This is usually a stale Nix store volume mounted over a rebuilt debug image. Recent debux versions use image-specific volumes. Upgrade and clean old stores if needed:
+
+```bash
+mise run install
+debux store clean
+debux docker://my-container --fresh
+```
+
+### Ephemeral containers denied
+
+Your Kubernetes RBAC or admission policy may block `pods/ephemeralcontainers` or the selected security profile.
+
+Try:
+
+```bash
+debux k8s://my-namespace/my-pod --copy
+# or
+debux k8s://my-namespace/my-pod --profile=baseline
+```
+
+### File permissions look broad inside debux
+
+The target filesystem is shown as-is through `/proc/1/root`. If files are `777` inside debux, they are likely `777` in the target image or mounted volume too.
+
+Verify with:
+
+```bash
+kubectl exec -n my-namespace my-pod -- \
+  stat -c '%A %a %u:%g %n' /app /app/manage.py
+```
 
 ## License
 
-MIT
+MIT — see [`LICENSE`](LICENSE).

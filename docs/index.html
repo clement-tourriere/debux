@@ -1,0 +1,1384 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>debux — Debug any container</title>
+    <meta
+      name="description"
+      content="debux gives you an OrbStack/Docker Debug-like shell for Docker and Kubernetes containers, powered by Nix. Debug distroless, scratch and minimal images without rebuilding them."
+    />
+    <meta name="theme-color" content="#0a1020" />
+    <meta property="og:title" content="debux — Debug any container" />
+    <meta
+      property="og:description"
+      content="A free, open-source debugging shell for Docker and Kubernetes containers. Works with distroless and scratch images."
+    />
+    <meta property="og:type" content="website" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #070b14;
+        --bg-2: #0b1224;
+        --panel: rgba(14, 22, 43, 0.74);
+        --panel-strong: rgba(17, 29, 57, 0.92);
+        --text: #eef5ff;
+        --muted: #9fb0cb;
+        --muted-2: #72809a;
+        --line: rgba(154, 178, 220, 0.18);
+        --cyan: #67e8f9;
+        --blue: #60a5fa;
+        --purple: #a78bfa;
+        --green: #86efac;
+        --amber: #fcd34d;
+        --red: #fda4af;
+        --shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+        --radius: 22px;
+        --max: 1180px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 8% 12%, rgba(103, 232, 249, 0.18), transparent 28rem),
+          radial-gradient(circle at 72% 2%, rgba(167, 139, 250, 0.2), transparent 30rem),
+          radial-gradient(circle at 52% 72%, rgba(96, 165, 250, 0.12), transparent 30rem),
+          linear-gradient(180deg, var(--bg), #05070e 45%, #070b14);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.6;
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+        background-size: 56px 56px;
+        mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.72), transparent 72%);
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      a.link {
+        color: var(--cyan);
+        text-decoration: underline;
+        text-decoration-color: rgba(103, 232, 249, 0.38);
+        text-underline-offset: 4px;
+      }
+
+      code,
+      pre,
+      kbd {
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, ui-monospace, monospace;
+      }
+
+      code {
+        padding: 0.16rem 0.35rem;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(8, 13, 25, 0.72);
+        color: #d8f8ff;
+        font-size: 0.92em;
+      }
+
+      pre {
+        margin: 0;
+        padding: 1.05rem;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: rgba(4, 8, 17, 0.86);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      }
+
+      pre code {
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: #eaf6ff;
+        font-size: 0.91rem;
+      }
+
+      kbd {
+        display: inline-flex;
+        align-items: center;
+        min-width: 1.7rem;
+        justify-content: center;
+        padding: 0.18rem 0.45rem;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-bottom-color: rgba(255, 255, 255, 0.32);
+        border-radius: 8px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
+        color: #eef6ff;
+        font-size: 0.76rem;
+        box-shadow: 0 2px 0 rgba(0, 0, 0, 0.25);
+      }
+
+      .skip {
+        position: absolute;
+        left: -9999px;
+        top: 1rem;
+        z-index: 100;
+        padding: 0.6rem 0.9rem;
+        border-radius: 999px;
+        background: var(--cyan);
+        color: #03111a;
+        font-weight: 800;
+      }
+
+      .skip:focus {
+        left: 1rem;
+      }
+
+      .shell {
+        position: relative;
+        z-index: 1;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 40;
+        backdrop-filter: blur(18px);
+        background: rgba(7, 11, 20, 0.76);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .topbar-inner {
+        width: min(var(--max), calc(100% - 2rem));
+        margin: 0 auto;
+        min-height: 72px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-weight: 900;
+        letter-spacing: -0.035em;
+        font-size: 1.2rem;
+      }
+
+      .logo {
+        width: 38px;
+        height: 38px;
+        border-radius: 13px;
+        display: grid;
+        place-items: center;
+        background:
+          linear-gradient(135deg, rgba(103, 232, 249, 0.95), rgba(167, 139, 250, 0.95)),
+          #0b1224;
+        color: #06111f;
+        box-shadow: 0 12px 36px rgba(103, 232, 249, 0.24);
+      }
+
+      .nav {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+      }
+
+      .nav a,
+      .search-trigger,
+      .github-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        min-height: 40px;
+        padding: 0.45rem 0.75rem;
+        border: 1px solid transparent;
+        border-radius: 999px;
+        color: var(--muted);
+        background: transparent;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      .nav a:hover,
+      .search-trigger:hover,
+      .github-link:hover {
+        color: var(--text);
+        border-color: var(--line);
+        background: rgba(255, 255, 255, 0.05);
+      }
+
+      .search-trigger {
+        border-color: var(--line);
+        background: rgba(255, 255, 255, 0.06);
+      }
+
+      .mobile-nav-toggle {
+        display: none;
+      }
+
+      .hero {
+        width: min(var(--max), calc(100% - 2rem));
+        margin: 0 auto;
+        padding: 6rem 0 3.5rem;
+        display: grid;
+        grid-template-columns: 1.05fr 0.95fr;
+        gap: 3rem;
+        align-items: center;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.38rem 0.75rem;
+        border: 1px solid rgba(103, 232, 249, 0.26);
+        border-radius: 999px;
+        background: rgba(103, 232, 249, 0.08);
+        color: #bff8ff;
+        font-weight: 700;
+        font-size: 0.86rem;
+      }
+
+      h1,
+      h2,
+      h3 {
+        line-height: 1.08;
+        letter-spacing: -0.045em;
+      }
+
+      h1 {
+        margin: 1.1rem 0 1rem;
+        font-size: clamp(3rem, 8vw, 6.8rem);
+      }
+
+      .gradient-text {
+        background: linear-gradient(90deg, #fff, var(--cyan), var(--purple));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+
+      .hero-lead {
+        max-width: 64ch;
+        margin: 0;
+        color: #bed0ea;
+        font-size: clamp(1.08rem, 2vw, 1.35rem);
+      }
+
+      .hero-actions {
+        margin-top: 1.6rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.8rem;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.55rem;
+        min-height: 46px;
+        padding: 0.75rem 1rem;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        font-weight: 800;
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.06);
+        box-shadow: 0 8px 26px rgba(0, 0, 0, 0.18);
+      }
+
+      .button.primary {
+        border-color: transparent;
+        color: #06111f;
+        background: linear-gradient(135deg, var(--cyan), var(--purple));
+      }
+
+      .button:hover {
+        transform: translateY(-1px);
+      }
+
+      .hero-card {
+        overflow: hidden;
+        border: 1px solid rgba(154, 178, 220, 0.23);
+        border-radius: 28px;
+        background: linear-gradient(180deg, rgba(16, 28, 55, 0.88), rgba(8, 13, 25, 0.88));
+        box-shadow: var(--shadow);
+      }
+
+      .terminal-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.9rem 1rem;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .dots {
+        display: flex;
+        gap: 0.45rem;
+      }
+
+      .dot {
+        width: 0.72rem;
+        height: 0.72rem;
+        border-radius: 50%;
+      }
+
+      .dot.red {
+        background: #fb7185;
+      }
+      .dot.amber {
+        background: #fbbf24;
+      }
+      .dot.green {
+        background: #34d399;
+      }
+
+      .terminal-title {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+
+      .terminal-body {
+        padding: 1.2rem;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 0.92rem;
+      }
+
+      .line {
+        display: block;
+        margin: 0.2rem 0;
+        color: #dcecff;
+      }
+
+      .line .prompt {
+        color: var(--cyan);
+      }
+
+      .line .dim {
+        color: var(--muted-2);
+      }
+
+      .line .ok {
+        color: var(--green);
+      }
+
+      .stats {
+        width: min(var(--max), calc(100% - 2rem));
+        margin: 0 auto 4rem;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 1rem;
+      }
+
+      .stat {
+        padding: 1.25rem;
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        background: rgba(255, 255, 255, 0.055);
+      }
+
+      .stat strong {
+        display: block;
+        color: #fff;
+        font-size: 1.55rem;
+        letter-spacing: -0.04em;
+      }
+
+      .stat span {
+        color: var(--muted);
+      }
+
+      main {
+        width: min(var(--max), calc(100% - 2rem));
+        margin: 0 auto;
+      }
+
+      section.doc-section {
+        scroll-margin-top: 92px;
+        margin: 0 0 4rem;
+      }
+
+      .section-heading {
+        display: grid;
+        grid-template-columns: 0.75fr 1fr;
+        gap: 2rem;
+        align-items: end;
+        margin-bottom: 1.3rem;
+      }
+
+      .section-heading h2 {
+        margin: 0;
+        font-size: clamp(2rem, 4vw, 3.4rem);
+      }
+
+      .section-heading p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 1.05rem;
+      }
+
+      .grid {
+        display: grid;
+        gap: 1rem;
+      }
+
+      .grid.two {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .grid.three {
+        grid-template-columns: repeat(3, 1fr);
+      }
+
+      .card {
+        padding: 1.25rem;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--panel);
+        box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+      }
+
+      .card h3 {
+        margin: 0 0 0.45rem;
+        font-size: 1.2rem;
+      }
+
+      .card p,
+      .card li {
+        color: var(--muted);
+      }
+
+      .card p:last-child,
+      .card ul:last-child,
+      .card ol:last-child {
+        margin-bottom: 0;
+      }
+
+      .feature-icon {
+        width: 42px;
+        height: 42px;
+        display: grid;
+        place-items: center;
+        margin-bottom: 0.85rem;
+        border: 1px solid rgba(103, 232, 249, 0.22);
+        border-radius: 15px;
+        background: rgba(103, 232, 249, 0.09);
+        color: var(--cyan);
+      }
+
+      .code-card {
+        position: relative;
+      }
+
+      .copy {
+        position: absolute;
+        top: 0.65rem;
+        right: 0.65rem;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 0.35rem 0.6rem;
+        background: rgba(255, 255, 255, 0.07);
+        color: var(--muted);
+        cursor: pointer;
+      }
+
+      .copy:hover {
+        color: var(--text);
+      }
+
+      .callout {
+        padding: 1rem 1.1rem;
+        border: 1px solid rgba(252, 211, 77, 0.24);
+        border-radius: 18px;
+        background: rgba(252, 211, 77, 0.08);
+        color: #fdeeb2;
+      }
+
+      .callout.info {
+        border-color: rgba(103, 232, 249, 0.24);
+        background: rgba(103, 232, 249, 0.08);
+        color: #c8f8ff;
+      }
+
+      .table-wrap {
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 20px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: rgba(10, 16, 32, 0.72);
+      }
+
+      th,
+      td {
+        padding: 0.85rem 1rem;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        color: #fff;
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      td {
+        color: var(--muted);
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .timeline {
+        position: relative;
+        display: grid;
+        gap: 1rem;
+      }
+
+      .timeline-item {
+        display: grid;
+        grid-template-columns: 46px 1fr;
+        gap: 1rem;
+      }
+
+      .timeline-num {
+        width: 42px;
+        height: 42px;
+        display: grid;
+        place-items: center;
+        border-radius: 50%;
+        background: linear-gradient(135deg, var(--cyan), var(--purple));
+        color: #06111f;
+        font-weight: 900;
+      }
+
+      .footer {
+        margin-top: 5rem;
+        padding: 2rem 0 3rem;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+      }
+
+      .footer-inner {
+        width: min(var(--max), calc(100% - 2rem));
+        margin: 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+
+      .search-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: none;
+        padding: 7vh 1rem;
+        background: rgba(3, 6, 12, 0.72);
+        backdrop-filter: blur(14px);
+      }
+
+      .search-modal.open {
+        display: block;
+      }
+
+      .search-box {
+        width: min(760px, 100%);
+        margin: 0 auto;
+        overflow: hidden;
+        border: 1px solid rgba(154, 178, 220, 0.24);
+        border-radius: 28px;
+        background: rgba(9, 15, 30, 0.96);
+        box-shadow: var(--shadow);
+      }
+
+      .search-input-wrap {
+        display: flex;
+        align-items: center;
+        gap: 0.8rem;
+        padding: 1rem;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .search-input-wrap svg {
+        color: var(--cyan);
+        flex: 0 0 auto;
+      }
+
+      #searchInput {
+        width: 100%;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--text);
+        font: inherit;
+        font-size: 1.08rem;
+      }
+
+      .search-results {
+        max-height: min(62vh, 560px);
+        overflow: auto;
+        padding: 0.5rem;
+      }
+
+      .result {
+        display: block;
+        padding: 0.9rem 1rem;
+        border-radius: 18px;
+        color: var(--text);
+      }
+
+      .result:hover,
+      .result[aria-selected="true"] {
+        background: rgba(103, 232, 249, 0.1);
+      }
+
+      .result strong {
+        display: block;
+        margin-bottom: 0.2rem;
+      }
+
+      .result span {
+        color: var(--muted);
+        font-size: 0.93rem;
+      }
+
+      .search-empty {
+        padding: 1.5rem;
+        color: var(--muted);
+      }
+
+      .search-footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.8rem 1rem;
+        border-top: 1px solid var(--line);
+        color: var(--muted-2);
+        font-size: 0.86rem;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      @media (max-width: 980px) {
+        .hero,
+        .section-heading {
+          grid-template-columns: 1fr;
+        }
+
+        .hero {
+          padding-top: 4rem;
+        }
+
+        .stats,
+        .grid.three,
+        .grid.two {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .nav a.hide-md {
+          display: none;
+        }
+      }
+
+      @media (max-width: 720px) {
+        .topbar-inner {
+          min-height: 64px;
+        }
+
+        .nav a {
+          display: none;
+        }
+
+        .github-link span,
+        .search-trigger .label {
+          display: none;
+        }
+
+        .hero {
+          padding: 3rem 0 2rem;
+        }
+
+        .stats,
+        .grid.three,
+        .grid.two {
+          grid-template-columns: 1fr;
+        }
+
+        .footer-inner {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <div class="shell">
+      <header class="topbar" aria-label="Primary navigation">
+        <div class="topbar-inner">
+          <a class="brand" href="#top" aria-label="debux home">
+            <span class="logo" aria-hidden="true">⌁</span>
+            <span>debux</span>
+          </a>
+          <nav class="nav" aria-label="Docs navigation">
+            <a href="#install">Install</a>
+            <a href="#docker">Docker</a>
+            <a href="#kubernetes">Kubernetes</a>
+            <a href="#security" class="hide-md">Security</a>
+            <a href="#troubleshooting" class="hide-md">Troubleshooting</a>
+            <button class="search-trigger" type="button" aria-label="Open search">
+              <span class="label">Search</span>
+              <kbd>Ctrl</kbd><kbd>K</kbd>
+            </button>
+            <a class="github-link" href="https://github.com/clement-tourriere/debux" aria-label="GitHub repository">
+              <span>GitHub</span> ↗
+            </a>
+          </nav>
+        </div>
+      </header>
+
+      <section id="top" class="hero" data-search data-title="Overview">
+        <div>
+          <span class="eyebrow">Free, open-source container debugging</span>
+          <h1>Debug any container. <span class="gradient-text">Even the ones with nothing inside.</span></h1>
+          <p class="hero-lead">
+            debux gives you an OrbStack/Docker Debug-style shell for Docker and Kubernetes: a rich Nix-powered toolbox that joins the target container's namespaces and lets you inspect distroless, scratch, Alpine and minimal images without rebuilding them.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#quickstart">Start debugging</a>
+            <button class="button search-trigger" type="button">Open search <kbd>Ctrl</kbd><kbd>K</kbd></button>
+            <a class="button" href="https://github.com/clement-tourriere/debux">View source ↗</a>
+          </div>
+        </div>
+        <div class="hero-card" aria-label="Terminal demo">
+          <div class="terminal-top">
+            <div class="dots" aria-hidden="true"><span class="dot red"></span><span class="dot amber"></span><span class="dot green"></span></div>
+            <span class="terminal-title">debugging a distroless app</span>
+          </div>
+          <div class="terminal-body">
+            <span class="line"><span class="prompt">❯</span> debux k8s://prod/api-7c9d/app</span>
+            <span class="line dim">Waiting for debug container "debux-1777533699123" to start...</span>
+            <span class="line"><span class="ok">✓</span> Debugging prod/api-7c9d (container: debux-1777533699123)</span>
+            <span class="line"><span class="prompt">[debux]</span> prod/api/app /proc/1/root/app # target</span>
+            <span class="line"><span class="prompt">[debux]</span> prod/api/app /proc/1/root # strace -p 1</span>
+            <span class="line dim">attach to target PID namespace, filesystem and network</span>
+            <span class="line"><span class="prompt">[debux]</span> prod/api/app /proc/1/root # dctl install postgresql</span>
+          </div>
+        </div>
+      </section>
+
+      <div class="stats" aria-label="Project highlights">
+        <div class="stat"><strong>Docker + K8s</strong><span>one workflow for local and cluster debugging</span></div>
+        <div class="stat"><strong>Distroless</strong><span>debug images with no shell or package manager</span></div>
+        <div class="stat"><strong>Nix tools</strong><span>install missing tools on demand with dctl</span></div>
+        <div class="stat"><strong>Open source</strong><span>no paid desktop subscription required</span></div>
+      </div>
+
+      <main id="main">
+        <section id="why" class="doc-section" data-search data-title="Why debux">
+          <div class="section-heading">
+            <h2>Why debux?</h2>
+            <p>Modern production images are small, locked-down and often shell-less. That is great for shipping. It is painful when something breaks. debux adds a temporary toolbox next to the container instead of changing the container.</p>
+          </div>
+          <div class="grid three">
+            <article class="card">
+              <div class="feature-icon">◎</div>
+              <h3>No shell? No problem.</h3>
+              <p>Scratch, distroless and minimal images usually cannot run <code>sh</code>, <code>curl</code>, <code>ps</code> or <code>strace</code>. debux brings those tools from a dedicated debug image.</p>
+            </article>
+            <article class="card">
+              <div class="feature-icon">↔</div>
+              <h3>Debug in place</h3>
+              <p>The debug container shares the target network and process namespaces, then exposes the target filesystem at <code>$DEBUX_TARGET_ROOT</code>.</p>
+            </article>
+            <article class="card">
+              <div class="feature-icon">✦</div>
+              <h3>Nix-powered toolbox</h3>
+              <p>Start with a curated set of tools, then install more with <code>dctl install</code>. Installed tools persist in Docker debug stores.</p>
+            </article>
+          </div>
+        </section>
+
+        <section id="quickstart" class="doc-section" data-search data-title="Quick start">
+          <div class="section-heading">
+            <h2>Quick start</h2>
+            <p>Install the binary, build the debug image, then point debux at a Docker container or Kubernetes pod.</p>
+          </div>
+          <div class="grid two">
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code>git clone https://github.com/clement-tourriere/debux.git
+cd debux
+mise run install
+mise run image-build</code></pre>
+            </div>
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code># Docker picker
+debux docker://
+
+# Kubernetes picker, current kube-context namespace
+debux k8s://
+
+# Force a brand-new debug container
+debux k8s://prod/api-pod/app --fresh</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <section id="install" class="doc-section" data-search data-title="Installation and development setup">
+          <div class="section-heading">
+            <h2>Install</h2>
+            <p>debux uses <a class="link" href="https://mise.jdx.dev">mise</a> to manage Go, hk, pkl and build tooling. Clone, build, install. No language runtime guessing.</p>
+          </div>
+          <div class="timeline">
+            <div class="timeline-item card">
+              <div class="timeline-num">1</div>
+              <div>
+                <h3>Clone</h3>
+                <pre><code>git clone https://github.com/clement-tourriere/debux.git
+cd debux</code></pre>
+              </div>
+            </div>
+            <div class="timeline-item card">
+              <div class="timeline-num">2</div>
+              <div>
+                <h3>Build the CLI and debug image</h3>
+                <pre><code>mise run install
+mise run image-build</code></pre>
+              </div>
+            </div>
+            <div class="timeline-item card">
+              <div class="timeline-num">3</div>
+              <div>
+                <h3>Optional: install git hooks with hk</h3>
+                <pre><code>mise run hooks-install
+mise run check</code></pre>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="mental-model" class="doc-section" data-search data-title="Mental model architecture namespaces filesystem">
+          <div class="section-heading">
+            <h2>Mental model</h2>
+            <p>debux does not mutate your target container. It creates a debug companion with tools, then joins what matters.</p>
+          </div>
+          <div class="grid three">
+            <article class="card">
+              <h3>1. Start a debug toolbox</h3>
+              <p>Docker uses a sidecar container. Kubernetes uses an ephemeral container by default or a copied pod with <code>--copy</code>.</p>
+            </article>
+            <article class="card">
+              <h3>2. Share namespaces</h3>
+              <p>Network and PID namespaces let you inspect localhost services, process trees and attach tools like <code>strace</code>.</p>
+            </article>
+            <article class="card">
+              <h3>3. Mount the target root</h3>
+              <p>The target filesystem is reachable through <code>/proc/1/root</code> and exposed as <code>$DEBUX_TARGET_ROOT</code>.</p>
+            </article>
+          </div>
+          <div class="callout info" style="margin-top: 1rem;">
+            Inside the shell, run <code>target</code> to jump into the target filesystem. If a command is not available in the debug image, debux can either run the target binary via chroot wrappers or offer to install the tool with Nix.
+          </div>
+        </section>
+
+        <section id="docker" class="doc-section" data-search data-title="Docker debugging">
+          <div class="section-heading">
+            <h2>Docker debugging</h2>
+            <p>Use debux locally exactly where <code>docker exec</code> stops being useful: distroless images, missing tools, or debugging without rebuilding.</p>
+          </div>
+          <div class="grid two">
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code># Start something tiny
+docker run -d --name my-nginx nginx:alpine
+
+# Debug by name
+debux my-nginx
+
+# Or with an explicit runtime prefix
+debux docker://my-nginx</code></pre>
+            </div>
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code># Interactive picker for running containers
+debux docker://
+
+# Force a new debug sidecar
+debux docker://my-nginx --fresh
+
+# Do not mount target volumes into the debug container
+debux docker://my-nginx --no-volumes</code></pre>
+            </div>
+          </div>
+          <div class="card" style="margin-top: 1rem;">
+            <h3>Persistent Nix store</h3>
+            <p>Docker mode uses image-specific Nix volumes such as <code>debux-nix-store-&lt;image-id&gt;</code>. This keeps installed packages persistent while avoiding stale store volumes after rebuilding the debug image.</p>
+          </div>
+        </section>
+
+        <section id="kubernetes" class="doc-section" data-search data-title="Kubernetes debugging ephemeral containers copy pods RBAC">
+          <div class="section-heading">
+            <h2>Kubernetes debugging</h2>
+            <p>Use ephemeral containers for in-place debugging. If RBAC or policy blocks them, use copy mode to create a temporary copied pod.</p>
+          </div>
+          <div class="grid two">
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code># Current kube-context namespace
+debux k8s://
+debux k8s://api-pod
+
+# Explicit namespace and container
+debux k8s://prod/api-pod/app
+
+# Pull a fresh debug image and force a new container
+debux k8s://prod/api-pod/app --fresh --pull-policy=Always</code></pre>
+            </div>
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code># When pods/ephemeralcontainers RBAC is denied
+debux k8s://prod/api-pod/app --copy
+
+# Standalone toolbox pod
+debux pod -n prod
+
+# Keep standalone pod after exit
+debux pod -n prod --keep</code></pre>
+            </div>
+          </div>
+          <div class="table-wrap" style="margin-top: 1rem;">
+            <table>
+              <thead><tr><th>Mode</th><th>Best for</th><th>Notes</th></tr></thead>
+              <tbody>
+                <tr><td><code>ephemeral container</code></td><td>Debugging a live pod in-place</td><td>Shares target container PID namespace when supported; cannot be removed from the pod spec after creation.</td></tr>
+                <tr><td><code>--copy</code></td><td>RBAC or PodSecurity blocks ephemeral containers</td><td>Creates a temporary copied pod, enables process namespace sharing, then deletes it on exit.</td></tr>
+                <tr><td><code>debux pod</code></td><td>Cluster network troubleshooting</td><td>Standalone debug pod, optionally with host networking.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="targets" class="doc-section" data-search data-title="Target formats runtime prefixes">
+          <div class="section-heading">
+            <h2>Target formats</h2>
+            <p>Prefixes make the runtime explicit. A bare target defaults to Docker.</p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Format</th><th>Runtime</th><th>Meaning</th></tr></thead>
+              <tbody>
+                <tr><td><code>my-container</code></td><td>Docker</td><td>Debug Docker container by name or ID.</td></tr>
+                <tr><td><code>docker://</code></td><td>Docker</td><td>Open the Docker container picker.</td></tr>
+                <tr><td><code>docker://my-container</code></td><td>Docker</td><td>Debug a specific Docker container.</td></tr>
+                <tr><td><code>k8s://</code></td><td>Kubernetes</td><td>Open the pod picker in the current kube-context namespace.</td></tr>
+                <tr><td><code>k8s://pod</code></td><td>Kubernetes</td><td>Debug a pod in the current kube-context namespace.</td></tr>
+                <tr><td><code>k8s://namespace/pod</code></td><td>Kubernetes</td><td>Debug a pod in an explicit namespace.</td></tr>
+                <tr><td><code>k8s://namespace/pod/container</code></td><td>Kubernetes</td><td>Debug a specific container in a multi-container pod.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="shell" class="doc-section" data-search data-title="Inside the debug shell dctl Nix tools target filesystem">
+          <div class="section-heading">
+            <h2>Inside the shell</h2>
+            <p>The debug shell is zsh with common tools, target-aware helpers, and a small package manager named <code>dctl</code>.</p>
+          </div>
+          <div class="grid three">
+            <article class="card">
+              <h3>Target shortcuts</h3>
+              <pre><code>echo $DEBUX_TARGET_ROOT
+target
+ls /target
+cat $DEBUX_TARGET_ROOT/etc/hosts</code></pre>
+            </article>
+            <article class="card">
+              <h3>Install missing tools</h3>
+              <pre><code>dctl search postgres
+dctl install postgresql
+dctl list
+dctl remove postgresql</code></pre>
+            </article>
+            <article class="card">
+              <h3>Debug processes and network</h3>
+              <pre><code>ps aux
+curl localhost:8080
+strace -p 1
+tcpdump -i any</code></pre>
+            </article>
+          </div>
+          <div class="callout" style="margin-top: 1rem;">
+            Some low-level tools need more privileges. In Kubernetes, use <code>--profile=sysadmin</code> for a fully privileged session or <code>--profile=netadmin</code> for network capabilities.
+          </div>
+        </section>
+
+        <section id="image-debug" class="doc-section" data-search data-title="Debug Docker images without starting them">
+          <div class="section-heading">
+            <h2>Debug an image directly</h2>
+            <p>Sometimes the target image cannot start at all. debux can copy its filesystem into a debug container and expose it at <code>/target</code>.</p>
+          </div>
+          <div class="card code-card">
+            <button class="copy" data-copy>Copy</button>
+            <pre><code># Works with scratch and distroless images too
+debux image gcr.io/distroless/static-debian12
+
+# Keep the debug container after exit
+debux image my-app:broken --rm=false</code></pre>
+          </div>
+        </section>
+
+        <section id="security" class="doc-section" data-search data-title="Security profiles privileges root non-root">
+          <div class="section-heading">
+            <h2>Security model</h2>
+            <p>Debugging is privileged by nature. debux defaults to a practical profile, but gives you explicit controls to reduce or increase permissions.</p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Profile</th><th>Purpose</th><th>Typical use</th></tr></thead>
+              <tbody>
+                <tr><td><code>general</code></td><td>Default debug profile with useful capabilities like ptrace/chroot.</td><td>Most debugging sessions.</td></tr>
+                <tr><td><code>baseline</code></td><td>No extra security context.</td><td>Clusters with stricter defaults.</td></tr>
+                <tr><td><code>restricted</code></td><td>Non-root, drops capabilities, runtime default seccomp.</td><td>Policy-restricted environments.</td></tr>
+                <tr><td><code>netadmin</code></td><td>Adds network capabilities.</td><td>Network debugging with tools like tcpdump.</td></tr>
+                <tr><td><code>sysadmin</code></td><td>Privileged container.</td><td>Last resort for deep kernel/namespace debugging.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="grid two" style="margin-top: 1rem;">
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code># Run a Kubernetes debug container as nobody
+debux k8s://prod/api/app \
+  --profile=baseline \
+  --user 65534:65534</code></pre>
+            </div>
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code># Full privileged debug session
+debux k8s://prod/api/app \
+  --profile=sysadmin</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <section id="store" class="doc-section" data-search data-title="Persistent store volumes cleanup">
+          <div class="section-heading">
+            <h2>Store management</h2>
+            <p>Installed packages and shell history can persist between sessions. Use the store commands to inspect or clean them.</p>
+          </div>
+          <div class="grid two">
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code>debux store info
+
+debux store clean</code></pre>
+            </div>
+            <div class="card">
+              <h3>When to clean?</h3>
+              <p>Clean the store if you want to reclaim disk space, reset installed tools, or remove old image-specific Docker Nix volumes after frequent debug image rebuilds.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="cli" class="doc-section" data-search data-title="CLI reference flags commands">
+          <div class="section-heading">
+            <h2>CLI reference</h2>
+            <p>The most important commands and flags in one place.</p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Command / flag</th><th>Description</th></tr></thead>
+              <tbody>
+                <tr><td><code>debux [target]</code></td><td>Debug a running Docker container or Kubernetes pod.</td></tr>
+                <tr><td><code>debux exec [target]</code></td><td>Explicit form of the default debug command.</td></tr>
+                <tr><td><code>debux image &lt;image&gt;</code></td><td>Debug a Docker image filesystem without starting it.</td></tr>
+                <tr><td><code>debux pod</code></td><td>Create a standalone Kubernetes debug pod.</td></tr>
+                <tr><td><code>debux kill [target]</code></td><td>Stop a running debux debug session.</td></tr>
+                <tr><td><code>--image &lt;image&gt;</code></td><td>Override the debug image.</td></tr>
+                <tr><td><code>--fresh</code></td><td>Force a new debug container instead of reusing an existing one.</td></tr>
+                <tr><td><code>--copy</code></td><td>Kubernetes: create a copied debug pod instead of an ephemeral container.</td></tr>
+                <tr><td><code>--no-volumes</code></td><td>Do not share target volumes with the debug container.</td></tr>
+                <tr><td><code>--pull-policy</code></td><td>Kubernetes image pull policy: <code>Always</code>, <code>IfNotPresent</code>, <code>Never</code>.</td></tr>
+                <tr><td><code>--profile</code></td><td>Kubernetes security profile: <code>general</code>, <code>baseline</code>, <code>restricted</code>, <code>netadmin</code>, <code>sysadmin</code>.</td></tr>
+                <tr><td><code>--user uid[:gid]</code></td><td>Run the debug container as a specific user.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="troubleshooting" class="doc-section" data-search data-title="Troubleshooting errors containerd RBAC image pull stale store">
+          <div class="section-heading">
+            <h2>Troubleshooting</h2>
+            <p>Most failures come from image pull policy, cluster security policy, stale Docker volumes, or trying to debug a container that is not running.</p>
+          </div>
+          <div class="grid two">
+            <article class="card">
+              <h3><code>openat etc/passwd: path escapes from parent</code></h3>
+              <p>Your cluster runtime rejected NixOS-style absolute symlinks in <code>/etc/passwd</code> or <code>/etc/group</code>. Rebuild and push the latest debug image, then retry with <code>--pull-policy=Always</code>.</p>
+              <pre><code>mise run image-build
+docker push ghcr.io/clement-tourriere/debux:latest
+debux k8s://prod/api/app --fresh --pull-policy=Always</code></pre>
+            </article>
+            <article class="card">
+              <h3><code>/bin/sh: no such file or directory</code> in Docker</h3>
+              <p>This usually means an old Nix store volume was mounted over a rebuilt debug image. Recent debux versions use image-specific volumes. Upgrade and clean old stores if needed.</p>
+              <pre><code>mise run install
+debux store clean
+debux docker://my-container --fresh</code></pre>
+            </article>
+            <article class="card">
+              <h3>Ephemeral containers denied</h3>
+              <p>Your RBAC may not allow <code>pods/ephemeralcontainers</code>, or PodSecurity/admission policy blocks the profile. Try copy mode or a less privileged profile.</p>
+              <pre><code>debux k8s://prod/api/app --copy
+# or
+debux k8s://prod/api/app --profile=baseline</code></pre>
+            </article>
+            <article class="card">
+              <h3>Image pull failures</h3>
+              <p>Check the debug image name, registry access and imagePullSecrets. For freshly pushed <code>:latest</code>, use <code>--pull-policy=Always</code>.</p>
+              <pre><code>debux k8s://prod/api/app \
+  --image ghcr.io/clement-tourriere/debux:latest \
+  --pull-policy=Always</code></pre>
+            </article>
+          </div>
+        </section>
+
+        <section id="faq" class="doc-section" data-search data-title="FAQ frequently asked questions">
+          <div class="section-heading">
+            <h2>FAQ</h2>
+            <p>Short answers to common newcomer questions.</p>
+          </div>
+          <div class="grid two">
+            <article class="card">
+              <h3>Does debux change my application image?</h3>
+              <p>No. It starts a separate debug container. In Docker it is a sidecar. In Kubernetes it is an ephemeral container or a temporary copied pod.</p>
+            </article>
+            <article class="card">
+              <h3>Why is the debug image large?</h3>
+              <p>It includes Nix and a curated toolbox. Docker reports uncompressed local size. The size buys fast, predictable tools in locked-down containers.</p>
+            </article>
+            <article class="card">
+              <h3>Why do files show as writable?</h3>
+              <p>debux shows the target filesystem as-is through <code>/proc/1/root</code>. If files are <code>777</code> there, the target image or volume has those permissions.</p>
+            </article>
+            <article class="card">
+              <h3>Can I use it in restricted clusters?</h3>
+              <p>Try <code>--profile=baseline</code> or <code>--profile=restricted</code>. If ephemeral containers are blocked by RBAC, use <code>--copy</code>.</p>
+            </article>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <div class="footer-inner">
+          <div>
+            <strong>debux</strong> — free and open-source container debugging.
+            <br />Built for Docker, Kubernetes, distroless images and late-night incidents.
+          </div>
+          <div>
+            <button class="button search-trigger" type="button">Search docs <kbd>Ctrl</kbd><kbd>K</kbd></button>
+          </div>
+        </div>
+      </footer>
+    </div>
+
+    <div class="search-modal" id="searchModal" role="dialog" aria-modal="true" aria-labelledby="searchTitle">
+      <div class="search-box">
+        <div class="search-input-wrap">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m21 21-4.3-4.3m1.3-5.2a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+          <h2 id="searchTitle" class="sr-only">Search documentation</h2>
+          <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Search debux docs…" />
+          <kbd>Esc</kbd>
+        </div>
+        <div class="search-results" id="searchResults" role="listbox" aria-label="Search results"></div>
+        <div class="search-footer"><span>Open with <kbd>Ctrl</kbd> <kbd>K</kbd> or <kbd>⌘</kbd> <kbd>K</kbd></span><span>Enter opens the first result</span></div>
+      </div>
+    </div>
+
+    <script>
+      const $ = (selector, root = document) => root.querySelector(selector);
+      const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+
+      const modal = $("#searchModal");
+      const input = $("#searchInput");
+      const results = $("#searchResults");
+      let activeIndex = 0;
+      let currentResults = [];
+
+      const docs = $$('[data-search]').map((section) => {
+        const heading = section.dataset.title || section.querySelector('h1,h2,h3')?.textContent || section.id;
+        const text = section.innerText.replace(/\s+/g, ' ').trim();
+        return {
+          id: section.id,
+          title: heading,
+          text,
+          haystack: `${heading} ${text}`.toLowerCase(),
+        };
+      });
+
+      function openSearch() {
+        modal.classList.add('open');
+        document.body.style.overflow = 'hidden';
+        input.value = '';
+        activeIndex = 0;
+        renderResults(docs.slice(0, 8));
+        setTimeout(() => input.focus(), 20);
+      }
+
+      function closeSearch() {
+        modal.classList.remove('open');
+        document.body.style.overflow = '';
+      }
+
+      function scoreDoc(doc, terms) {
+        let score = 0;
+        const title = doc.title.toLowerCase();
+        for (const term of terms) {
+          if (!doc.haystack.includes(term)) return -1;
+          if (title.includes(term)) score += 8;
+          score += Math.max(1, 5 - doc.haystack.indexOf(term) / 200);
+        }
+        return score;
+      }
+
+      function search(query) {
+        const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+        if (!terms.length) return docs.slice(0, 8);
+        return docs
+          .map((doc) => ({ ...doc, score: scoreDoc(doc, terms) }))
+          .filter((doc) => doc.score >= 0)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 10);
+      }
+
+      function excerpt(text, query) {
+        const q = query.trim().toLowerCase();
+        if (!q) return text.slice(0, 150) + (text.length > 150 ? '…' : '');
+        const idx = text.toLowerCase().indexOf(q.split(/\s+/)[0]);
+        const start = Math.max(0, idx - 70);
+        const end = Math.min(text.length, start + 180);
+        return (start > 0 ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '');
+      }
+
+      function renderResults(items) {
+        currentResults = items;
+        activeIndex = Math.min(activeIndex, Math.max(0, items.length - 1));
+        if (!items.length) {
+          results.innerHTML = '<div class="search-empty">No results. Try “kubernetes”, “dctl”, “copy”, “security”, or “store”.</div>';
+          return;
+        }
+        results.innerHTML = items
+          .map((item, index) => `
+            <a class="result" role="option" aria-selected="${index === activeIndex}" href="#${item.id}" data-result-index="${index}">
+              <strong>${escapeHtml(item.title)}</strong>
+              <span>${escapeHtml(excerpt(item.text, input.value))}</span>
+            </a>
+          `)
+          .join('');
+      }
+
+      function escapeHtml(value) {
+        return value.replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
+      }
+
+      function openResult(index = activeIndex) {
+        const item = currentResults[index];
+        if (!item) return;
+        closeSearch();
+        location.hash = item.id;
+      }
+
+      $$('.search-trigger').forEach((button) => button.addEventListener('click', openSearch));
+
+      document.addEventListener('keydown', (event) => {
+        const key = event.key.toLowerCase();
+        if ((event.ctrlKey || event.metaKey) && key === 'k') {
+          event.preventDefault();
+          openSearch();
+          return;
+        }
+        if (!modal.classList.contains('open')) return;
+        if (event.key === 'Escape') closeSearch();
+        if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          activeIndex = Math.min(activeIndex + 1, currentResults.length - 1);
+          renderResults(currentResults);
+        }
+        if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          activeIndex = Math.max(activeIndex - 1, 0);
+          renderResults(currentResults);
+        }
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          openResult();
+        }
+      });
+
+      input.addEventListener('input', () => {
+        activeIndex = 0;
+        renderResults(search(input.value));
+      });
+      results.addEventListener('click', (event) => {
+        const result = event.target.closest('[data-result-index]');
+        if (!result) return;
+        event.preventDefault();
+        openResult(Number(result.dataset.resultIndex));
+      });
+      modal.addEventListener('click', (event) => {
+        if (event.target === modal) closeSearch();
+      });
+
+      $$('[data-copy]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const code = button.parentElement.querySelector('pre')?.innerText || '';
+          try {
+            await navigator.clipboard.writeText(code.trim());
+            const previous = button.textContent;
+            button.textContent = 'Copied';
+            setTimeout(() => (button.textContent = previous), 1400);
+          } catch {
+            button.textContent = 'Copy failed';
+          }
+        });
+      });
+    </script>
+  </body>
+</html>
