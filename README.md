@@ -279,6 +279,7 @@ debux k8s://my-namespace/my-pod/app -- ps aux
 
 # Diagnose local Docker/Kubernetes readiness
 debux doctor
+debux doctor --strict
 debux doctor k8s://my-namespace/my-pod --profile=restricted
 
 # Version and release metadata
@@ -370,9 +371,13 @@ Example custom team toolbox:
 
 ```Dockerfile
 FROM ghcr.io/clement-tourriere/debux:latest
+ARG NIXPKGS_REF=github:NixOS/nixpkgs/1c3fe55ad329cbcb28471bb30f05c9827f724c76
 RUN NIX_CONFIG="experimental-features = nix-command flakes" \
     nix profile add --profile /nix/var/debux-profile \
-      nixpkgs#postgresql nixpkgs#redis nixpkgs#kubectl nixpkgs#ripgrep
+      "${NIXPKGS_REF}#postgresql" \
+      "${NIXPKGS_REF}#redis" \
+      "${NIXPKGS_REF}#kubectl" \
+      "${NIXPKGS_REF}#ripgrep"
 ```
 
 ```bash
@@ -397,6 +402,8 @@ mise run image-build    # build debug image
 mise run release:bump   # bump version/changelog/tag with Commitizen
 mise run release:dry-run # build release artifacts locally without publishing
 mise run release:push   # push main + tags to trigger GitHub release
+mise run e2e:docker     # run Docker end-to-end smoke tests
+mise run e2e:kubernetes # run Kubernetes e2e against the current kube-context
 mise run docs           # serve docs at http://localhost:8000
 mise run docs:open      # open local docs in your browser
 
@@ -419,7 +426,16 @@ mise run release:push      # git push origin main --follow-tags
 
 If there are no commits since the latest version tag, `mise run release:bump` exits successfully and tells you no bump is needed. If Commitizen already bumped the version but tag creation was interrupted, the task recreates the missing `vX.Y.Z` tag without GPG signing.
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which creates the GitHub Release, uploads checksummed CLI archives, and publishes the debug image to GHCR as `X.Y.Z`, `X.Y`, `X`, and `latest`. Release binaries pin their default debug image to the matching `X.Y.Z` image tag; development builds keep using `latest`. You can also run the **Release** workflow manually with a version input from GitHub Actions.
+Pushing a `v*` tag runs `.github/workflows/release.yml`, publishes the debug image to GHCR as `X.Y.Z`, `X.Y`, `X`, and `latest`, signs the image with keyless cosign, then creates the GitHub Release with checksummed CLI archives. Release binaries pin their default debug image to the matching `X.Y.Z` image tag; development builds keep using `latest`. You can also run the **Release** workflow manually for an existing pushed tag.
+
+Verify a released image:
+
+```bash
+cosign verify \
+  --certificate-identity-regexp 'https://github.com/clement-tourriere/debux/.github/workflows/release.yml@refs/tags/v.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/clement-tourriere/debux:0.2.0
+```
 
 If `HOMEBREW_TAP_GITHUB_TOKEN` is configured, GoReleaser also publishes a Homebrew formula to `clement-tourriere/homebrew-tap`.
 

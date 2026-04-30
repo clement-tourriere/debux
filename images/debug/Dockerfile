@@ -1,4 +1,11 @@
-FROM nixos/nix:latest AS builder
+# syntax=docker/dockerfile:1
+
+# Pin the multi-platform base image digest for reproducible debug images.
+# Dependabot can still propose digest refreshes for this Dockerfile.
+FROM nixos/nix:latest@sha256:e2fe74e96e965653c7b8f16ac64d1e56581c63c84d7fa07fb0692fd055cd06b0 AS builder
+
+# Pin nixpkgs so rebuilds do not silently change the toolbox contents.
+ARG NIXPKGS_REV=1c3fe55ad329cbcb28471bb30f05c9827f724c76
 
 # Enable flakes (needed for dctl's nix build/search fallbacks)
 RUN echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf && \
@@ -10,6 +17,9 @@ RUN nix-env -e git-minimal 2>/dev/null || true
 # Install base packages into a profile. Keep the cleanup in this same layer:
 # otherwise Docker retains the removed Nix channels/derivations in lower layers.
 RUN set -eux; \
+    nix-channel --remove nixpkgs 2>/dev/null || true; \
+    nix-channel --remove nixos 2>/dev/null || true; \
+    nix-channel --add "https://github.com/NixOS/nixpkgs/archive/${NIXPKGS_REV}.tar.gz" nixpkgs; \
     nix-channel --update; \
     nix-env -iA \
       nixpkgs.zsh \

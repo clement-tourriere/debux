@@ -25,6 +25,7 @@ type doctorReportSection struct {
 
 func newDoctorCmd() *cobra.Command {
 	var outputJSON bool
+	var strict bool
 	cmd := &cobra.Command{
 		Use:   "doctor [target]",
 		Short: "Diagnose Docker/Kubernetes readiness for debux",
@@ -37,6 +38,7 @@ and checks common Kubernetes RBAC permissions for debug sessions.`,
   debux doctor docker://my-app
   debux doctor k8s://prod/api-pod/app
   debux doctor k8s://prod/api-pod/app --profile=restricted
+  debux doctor --strict
   debux doctor --json`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -55,15 +57,22 @@ and checks common Kubernetes RBAC permissions for debug sessions.`,
 			if outputJSON {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				return enc.Encode(report)
+				if err := enc.Encode(report); err != nil {
+					return err
+				}
+			} else {
+				printDoctorReport(cmd, report)
 			}
-			printDoctorReport(cmd, report)
+			if strict && reportHasFailures(report) {
+				return fmt.Errorf("doctor found failing checks")
+			}
 			return nil
 		},
 	}
 	addKubeconfigFlag(cmd)
 	cmd.Flags().StringVar(&flagProfile, "profile", runtime.ProfileGeneral, "Kubernetes security profile to evaluate")
 	cmd.Flags().BoolVar(&outputJSON, "json", false, "Print diagnostics as JSON")
+	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero when any diagnostic check fails")
 	return cmd
 }
 
@@ -125,6 +134,17 @@ func printDoctorReport(cmd *cobra.Command, report doctorReport) {
 			_, _ = fmt.Fprintln(out)
 		}
 	}
+}
+
+func reportHasFailures(report doctorReport) bool {
+	for _, section := range report.Sections {
+		for _, check := range section.Checks {
+			if check.Status == runtime.CheckFail {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func doctorSymbol(status string) string {

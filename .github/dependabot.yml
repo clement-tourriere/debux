@@ -15,6 +15,6 @@ updates:
       interval: weekly
 
   - package-ecosystem: docker
-    directory: /images/debug
+    directory: /
     schedule:
       interval: weekly

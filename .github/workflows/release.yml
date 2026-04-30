@@ -13,6 +13,7 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write
 
 jobs:
   prepare:
@@ -38,14 +39,11 @@ jobs:
               exit 1
             fi
             tag="v$version"
-            if git rev-parse "$tag" >/dev/null 2>&1; then
-              echo "::error::Tag $tag already exists"
+            git fetch --force --tags origin
+            if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              echo "::error::Tag $tag does not exist. Run mise run release:bump and push the tag first."
               exit 1
             fi
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag -a "$tag" -m "$tag"
-            git push origin "$tag"
           else
             tag="${GITHUB_REF_NAME}"
             version="${tag#v}"
@@ -109,12 +107,22 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: images/debug/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          provenance: true
+          sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Sign image
+        env:
+          COSIGN_YES: "true"
+        run: cosign sign --yes "ghcr.io/clement-tourriere/debux@${{ steps.build.outputs.digest }}"

@@ -1,0 +1,48 @@
+name: E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      debux_image:
+        description: "Debug image to test"
+        required: false
+        default: "ghcr.io/clement-tourriere/debux:latest"
+      run_kubernetes:
+        description: "Run kind/Kubernetes e2e"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: CGO_ENABLED=0 go build -o bin/debux ./cmd/debux
+      - run: scripts/e2e-docker.sh
+        env:
+          DEBUX_IMAGE: ${{ inputs.debux_image }}
+          DEBUX_PULL_POLICY: Always
+
+  kubernetes:
+    if: inputs.run_kubernetes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: debux-e2e
+      - run: CGO_ENABLED=0 go build -o bin/debux ./cmd/debux
+      - run: scripts/e2e-kubernetes.sh
+        env:
+          DEBUX_IMAGE: ${{ inputs.debux_image }}
+          DEBUX_PULL_POLICY: Always

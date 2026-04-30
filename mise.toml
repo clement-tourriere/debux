@@ -51,6 +51,16 @@ depends = ["build", "image-build"]
 description = "Remove build artifacts"
 run = "rm -rf bin/"
 
+[tasks."e2e:docker"]
+description = "Run Docker end-to-end smoke tests"
+depends = ["build"]
+run = "scripts/e2e-docker.sh"
+
+[tasks."e2e:kubernetes"]
+description = "Run Kubernetes end-to-end smoke tests against the current kube-context"
+depends = ["build"]
+run = "scripts/e2e-kubernetes.sh"
+
 [tasks.test]
 description = "Run tests"
 run = "go test ./..."
