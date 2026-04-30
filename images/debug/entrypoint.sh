@@ -13,10 +13,13 @@ if [ ! -d /proc/1/root ]; then
   echo "Warning: could not find target process namespace"
 fi
 
-# If --user runs us as a non-root UID, /root is not writable. Keep the shell
-# functional by falling back to /tmp for startup files and history.
-if [ -z "${HOME:-}" ] || { [ -d "$HOME" ] && [ ! -w "$HOME" ]; }; then
-  export HOME=/tmp
+# If --user/profile=restricted runs us as a non-root UID, /root is not writable.
+# Use a per-UID home owned by the current user so zsh and Nix behave normally.
+if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ] || [ ! -w "$HOME" ]; then
+  debux_uid="$(id -u 2>/dev/null || echo 0)"
+  export HOME="/tmp/debux-home-$debux_uid"
+  mkdir -p "$HOME" 2>/dev/null || export HOME=/tmp
+  unset debux_uid
 fi
 export ZDOTDIR=/tmp
 

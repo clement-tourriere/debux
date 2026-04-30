@@ -737,7 +737,7 @@ func debuxEphemeralContainerProfileMatches(ec corev1.EphemeralContainer, request
 	return requested == ProfileGeneral
 }
 
-const debuxZshExecCommand = `if [ -z "${HOME:-}" ] || { [ -d "$HOME" ] && [ ! -w "$HOME" ]; }; then export HOME=/tmp; fi; export ZDOTDIR=/tmp; exec zsh`
+const debuxZshExecCommand = `if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ] || [ ! -w "$HOME" ]; then debux_uid="$(id -u 2>/dev/null || echo 0)"; export HOME="/tmp/debux-home-$debux_uid"; mkdir -p "$HOME" 2>/dev/null || export HOME=/tmp; unset debux_uid; fi; export ZDOTDIR=/tmp; exec zsh`
 
 // execInPod starts a new interactive zsh session inside a running container
 // using the /exec subresource (unlike attachToPod which uses /attach).

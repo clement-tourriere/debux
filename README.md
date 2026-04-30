@@ -250,7 +250,7 @@ debux docs --open
 |---|---|
 | `general` | Default. Adds practical debugging capabilities such as ptrace/chroot. |
 | `baseline` | No extra security context. Useful for stricter clusters. |
-| `restricted` | Non-root, drops capabilities, runtime default seccomp. Shell startup works, but deep target integration such as chrooting into the target filesystem may be limited by Kubernetes/Linux permissions. |
+| `restricted` | Non-root, drops capabilities, runtime default seccomp. Shell startup and `dctl install` work with the current debug image, but deep target integration such as chrooting into the target filesystem may be limited by Kubernetes/Linux permissions. |
 | `netadmin` | Adds network capabilities for tools like `tcpdump`. |
 | `sysadmin` | Privileged debug container. Last resort for deep debugging. |
 
@@ -263,6 +263,11 @@ debux k8s://prod/api/app --profile=baseline --user 65534:65534
 # Full privileged debug shell
 debux k8s://prod/api/app --profile=sysadmin
 ```
+
+Kubernetes note: ephemeral containers cannot add new volumes, so debux cannot
+mount your local Docker toolbox/history into arbitrary pods. Reusing the same
+debug container on the same pod keeps its installed tools; across pods, bake
+common tools into a custom debug image and pass it with `--image`.
 
 ## Development
 

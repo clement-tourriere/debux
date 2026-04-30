@@ -73,7 +73,15 @@ COPY images/debug/zshrc /etc/debux/zshrc
 COPY images/debug/command-not-found-handler /etc/zsh/command-not-found-handler
 COPY images/debug/entrypoint.sh /entrypoint.sh
 
-RUN chmod +x /usr/local/bin/dctl /entrypoint.sh && chmod 1777 /tmp
+# Allow the restricted Kubernetes profile (uid 65534, no extra capabilities) to
+# install ad-hoc tools with dctl. Only the Nix state/database and store directory
+# need to be writable; existing store paths remain immutable.
+RUN set -eux; \
+    chmod +x /usr/local/bin/dctl /entrypoint.sh; \
+    rm -rf /nix/var/debux-profile; \
+    chmod 1777 /tmp /nix/store /nix/var; \
+    find /nix/var/nix -xdev -exec chown 65534:65534 {} +; \
+    find /nix/var/nix -xdev -exec chmod a+rwX {} +
 
 ENV PATH="/nix/var/debux-profile/bin:/usr/local/bin:/root/.nix-profile/bin:$PATH"
 

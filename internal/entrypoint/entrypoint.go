@@ -24,10 +24,14 @@ if [ ! -d /proc/1/root ]; then
   echo "Warning: could not find target process namespace"
 fi
 
-# If --user runs us as a non-root UID, /root is not writable. Keep the shell
-# functional by falling back to /tmp for startup files and history.
-if [ -z "${HOME:-}" ] || { [ -d "$HOME" ] && [ ! -w "$HOME" ]; }; then
-  export HOME=/tmp
+# If --user/profile=restricted runs us as a non-root UID, /root is not writable.
+# Use a per-UID home owned by the current user so zsh and Nix do not fall back
+# to zsh-newuser-install or /var/empty.
+if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ] || [ ! -w "$HOME" ]; then
+  debux_uid="$(id -u 2>/dev/null || echo 0)"
+  export HOME="/tmp/debux-home-$debux_uid"
+  mkdir -p "$HOME" 2>/dev/null || export HOME=/tmp
+  unset debux_uid
 fi
 
 # Ensure PATH includes all tool locations
@@ -353,8 +357,12 @@ exec zsh
 // command.
 func ShellBootstrapScript() string {
 	return `# If the container runs as a non-root UID, /root is often not writable.
-if [ -z "${HOME:-}" ] || { [ -d "$HOME" ] && [ ! -w "$HOME" ]; }; then
-  export HOME=/tmp
+# Use a per-UID home owned by the current user so zsh and Nix behave normally.
+if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ] || [ ! -w "$HOME" ]; then
+  debux_uid="$(id -u 2>/dev/null || echo 0)"
+  export HOME="/tmp/debux-home-$debux_uid"
+  mkdir -p "$HOME" 2>/dev/null || export HOME=/tmp
+  unset debux_uid
 fi
 export ZDOTDIR=/tmp
 export PATH="/nix/var/debux-profile/bin:/usr/local/bin:${HOME:-/tmp}/.nix-profile/bin:$PATH"
@@ -394,9 +402,12 @@ const ImageScript = `#!/bin/sh
 set -e
 
 # If --user runs us as a non-root UID, /root is not writable. Keep the shell
-# functional by falling back to /tmp for startup files and history.
-if [ -z "${HOME:-}" ] || { [ -d "$HOME" ] && [ ! -w "$HOME" ]; }; then
-  export HOME=/tmp
+# functional with a per-UID home owned by the current user.
+if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ] || [ ! -w "$HOME" ]; then
+  debux_uid="$(id -u 2>/dev/null || echo 0)"
+  export HOME="/tmp/debux-home-$debux_uid"
+  mkdir -p "$HOME" 2>/dev/null || export HOME=/tmp
+  unset debux_uid
 fi
 
 # Ensure PATH includes all tool locations

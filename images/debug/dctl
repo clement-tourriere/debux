@@ -9,6 +9,41 @@ export NIX_CONFIG="experimental-features = nix-command flakes"
 # User-installed packages go in a separate nix profile (persisted in /nix/var volume)
 DEBUX_PROFILE="/nix/var/debux-profile"
 
+ensure_home() {
+  if [[ -z "${HOME:-}" || ! -d "$HOME" || ! -w "$HOME" || ! -O "$HOME" ]]; then
+    local uid
+    uid="$(id -u 2>/dev/null || echo 0)"
+    export HOME="/tmp/debux-home-$uid"
+    mkdir -p "$HOME"
+  fi
+}
+
+ensure_nix_writable() {
+  if [[ $EUID -eq 0 ]]; then
+    return 0
+  fi
+  if [[ -w /nix/store && -w /nix/var && -w /nix/var/nix/db ]]; then
+    return 0
+  fi
+
+  cat >&2 <<'EOF'
+
+This debug container is running as non-root, but the Nix store is not writable.
+
+To install tools with dctl under --profile=restricted, rebuild and push the
+current debux debug image, then start a fresh session:
+
+  mise run image-build
+  docker push ghcr.io/clement-tourriere/debux:latest
+  debux k8s://... --profile=restricted --fresh --pull-policy=Always
+
+Alternatively, use --profile=general for a root debug container.
+EOF
+  return 1
+}
+
+ensure_home
+
 # Command-to-nixpkgs mapping for common mismatches
 declare -A ALIASES=(
   [nvim]=neovim
@@ -73,6 +108,8 @@ case "${1:-}" in
       exit 2
     fi
 
+    ensure_nix_writable || exit 1
+
     status=0
     for pkg in "$@"; do
       resolved=$(resolve_pkg "$pkg")
@@ -94,6 +131,7 @@ case "${1:-}" in
     ;;
   remove)
     shift
+    ensure_nix_writable || exit 1
     for pkg in "$@"; do
       resolved=$(resolve_pkg "$pkg")
       # Use --json to reliably check if the element exists (avoids ANSI / whitespace issues)
@@ -117,6 +155,7 @@ case "${1:-}" in
     nix profile list --profile "$DEBUX_PROFILE" 2>/dev/null || echo "  (none)"
     ;;
   update)
+    ensure_nix_writable || exit 1
     nix-channel --update
     ;;
   *)
