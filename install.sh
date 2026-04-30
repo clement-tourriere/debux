@@ -10,6 +10,9 @@ usage() {
   cat <<EOF
 Install debux from GitHub Releases.
 
+If no release asset exists yet and Go is installed, the installer falls back to
+building from source with go install.
+
 Usage:
   curl -fsSL https://raw.githubusercontent.com/${repo}/main/install.sh | sh
   curl -fsSL https://raw.githubusercontent.com/${repo}/main/install.sh | sh -s -- --version v1.2.3
@@ -76,12 +79,14 @@ esac
 archive="${binary}_${os}_${arch}.tar.gz"
 if [ "$version" = "latest" ]; then
   base_url="https://github.com/${repo}/releases/latest/download"
+  go_ref="main"
 else
   case "$version" in
     v*) tag="$version" ;;
     *) tag="v$version" ;;
   esac
   base_url="https://github.com/${repo}/releases/download/${tag}"
+  go_ref="$tag"
 fi
 
 if command -v curl >/dev/null 2>&1; then
@@ -100,53 +105,67 @@ archive_path="$tmp/$archive"
 checksums_path="$tmp/checksums.txt"
 
 echo "Installing debux ${version} for ${os}/${arch}..."
-echo "Downloading ${archive}"
-download "${base_url}/${archive}" "$archive_path" || {
-  echo "error: failed to download ${base_url}/${archive}" >&2
-  echo "Make sure a debux GitHub Release exists for ${os}/${arch}." >&2
-  exit 1
-}
+installed_from_source=0
+install_path="$bin_dir/$binary"
 
-if download "${base_url}/checksums.txt" "$checksums_path" 2>/dev/null; then
-  expected="$(awk -v file="$archive" '$2 == file {print $1; exit}' "$checksums_path")"
-  if [ -n "$expected" ]; then
-    if command -v sha256sum >/dev/null 2>&1; then
-      actual="$(sha256sum "$archive_path" | awk '{print $1}')"
-    elif command -v shasum >/dev/null 2>&1; then
-      actual="$(shasum -a 256 "$archive_path" | awk '{print $1}')"
+echo "Downloading ${archive}"
+if ! download "${base_url}/${archive}" "$archive_path"; then
+  echo "warning: failed to download ${base_url}/${archive}" >&2
+  if command -v go >/dev/null 2>&1; then
+    echo "No release asset found; falling back to source build with Go (${go_ref})." >&2
+    mkdir -p "$bin_dir"
+    GOBIN="$bin_dir" go install "github.com/${repo}/cmd/debux@${go_ref}"
+    installed_from_source=1
+  else
+    echo "error: no release asset exists for ${os}/${arch}, and Go is not installed for the source-build fallback." >&2
+    echo "Create a debux GitHub Release or install Go, then retry." >&2
+    exit 1
+  fi
+fi
+
+if [ "$installed_from_source" -eq 0 ]; then
+  if download "${base_url}/checksums.txt" "$checksums_path" 2>/dev/null; then
+    expected="$(awk -v file="$archive" '$2 == file {print $1; exit}' "$checksums_path")"
+    if [ -n "$expected" ]; then
+      if command -v sha256sum >/dev/null 2>&1; then
+        actual="$(sha256sum "$archive_path" | awk '{print $1}')"
+      elif command -v shasum >/dev/null 2>&1; then
+        actual="$(shasum -a 256 "$archive_path" | awk '{print $1}')"
+      else
+        actual=""
+        echo "warning: sha256sum/shasum not found; skipping checksum verification" >&2
+      fi
+      if [ -n "$actual" ] && [ "$actual" != "$expected" ]; then
+        echo "error: checksum mismatch for ${archive}" >&2
+        echo "expected: $expected" >&2
+        echo "actual:   $actual" >&2
+        exit 1
+      fi
     else
-      actual=""
-      echo "warning: sha256sum/shasum not found; skipping checksum verification" >&2
+      echo "warning: checksum for ${archive} not found; skipping verification" >&2
     fi
-    if [ -n "$actual" ] && [ "$actual" != "$expected" ]; then
-      echo "error: checksum mismatch for ${archive}" >&2
-      echo "expected: $expected" >&2
-      echo "actual:   $actual" >&2
+  else
+    echo "warning: checksums.txt not found; skipping verification" >&2
+  fi
+fi
+
+if [ "$installed_from_source" -eq 0 ]; then
+  tar -xzf "$archive_path" -C "$tmp"
+  if [ ! -f "$tmp/$binary" ]; then
+    found="$(find "$tmp" -type f -name "$binary" 2>/dev/null | head -n 1 || true)"
+    if [ -z "$found" ]; then
+      echo "error: archive did not contain ${binary}" >&2
       exit 1
     fi
   else
-    echo "warning: checksum for ${archive} not found; skipping verification" >&2
+    found="$tmp/$binary"
   fi
-else
-  echo "warning: checksums.txt not found; skipping verification" >&2
-fi
 
-tar -xzf "$archive_path" -C "$tmp"
-if [ ! -f "$tmp/$binary" ]; then
-  found="$(find "$tmp" -type f -name "$binary" 2>/dev/null | head -n 1 || true)"
-  if [ -z "$found" ]; then
-    echo "error: archive did not contain ${binary}" >&2
-    exit 1
-  fi
-else
-  found="$tmp/$binary"
+  mkdir -p "$bin_dir"
+  rm -f "$install_path"
+  cp "$found" "$install_path"
+  chmod 0755 "$install_path"
 fi
-
-mkdir -p "$bin_dir"
-install_path="$bin_dir/$binary"
-rm -f "$install_path"
-cp "$found" "$install_path"
-chmod 0755 "$install_path"
 
 # Downloads via curl/wget are normally not quarantined, but clear xattrs and
 # ad-hoc sign on macOS when available to keep local development installs smooth.
