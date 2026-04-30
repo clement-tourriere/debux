@@ -21,7 +21,10 @@ func newExecCmd() *cobra.Command {
 		Long: `Start an interactive debux shell attached to a running target.
 
 With no target, debux opens the Docker picker. Use docker:// or k8s:// to make
-the runtime explicit and to open runtime-specific pickers.`,
+the runtime explicit and to open runtime-specific pickers.
+
+Security: the default Kubernetes profile is root inside the pod. Use
+--profile=restricted for a non-root, drop-capabilities session.`,
 		Example: `  debux exec
   debux exec docker://my-app
   debux exec k8s://

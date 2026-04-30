@@ -46,7 +46,11 @@ Target formats:
   k8s://@<context>/<ns>/<pod>/<ctr> Specific container in a specific context
 
 If a Kubernetes pod name is not found exactly, debux treats it as a substring
-and opens the searchable picker with matching running pods.`
+and opens the searchable picker with matching running pods.
+
+Security: the default Kubernetes profile runs a root debug container with
+practical debugging capabilities inside the pod. Use --profile=restricted for a
+non-root, drop-capabilities session.`
 
 const rootExample = `  # Pick a Docker container interactively
   debux

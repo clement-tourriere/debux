@@ -204,7 +204,7 @@ Persistence model:
 | `--image <image>` | Override the debug image. |
 | `--fresh` | Force a new debug container instead of reusing an existing session. |
 | `--copy` | Kubernetes: create a copied debug pod instead of an ephemeral container. |
-| `--no-volumes` | Do not share target volumes with the debug container. |
+| `--no-volumes` | Do not mount target volumes directly. This is not an isolation boundary if the debug container can access `/proc/1/root`. |
 | `--pull-policy <policy>` | Kubernetes image pull policy: `Always`, `IfNotPresent`, `Never`. |
 | `--profile <profile>` | Kubernetes security profile: `general`, `baseline`, `restricted`, `netadmin`, `sysadmin`. |
 | `--user <uid[:gid]>` | Run the debug container as a specific user. |
@@ -253,13 +253,41 @@ debux docs
 debux docs --open
 ```
 
+## Security model
+
+`debux` is a debugger, not a sandbox. The default Kubernetes profile is intentionally powerful because production debugging often needs process, filesystem, and network visibility.
+
+With the default Kubernetes `general` profile, debux can usually:
+
+- run a root debug process inside the pod;
+- use the pod network namespace, so `localhost` is the pod's localhost;
+- target the selected container's PID namespace when the runtime supports ephemeral-container targeting;
+- list pod processes with tools like `ps`;
+- expose the target filesystem through `/proc/1/root` and `$DEBUX_TARGET_ROOT`;
+- mount the target container's volumes directly by default;
+- use debugging capabilities such as `SYS_PTRACE`, `SYS_ADMIN`, and `SYS_CHROOT`.
+
+That means a default debux session can read secrets and service-account files mounted in the pod and can read/write files that Linux permissions and container capabilities allow.
+
+It does **not** automatically grant:
+
+- root on the Kubernetes node or host filesystem;
+- access to other pods' filesystems;
+- Kubernetes API permissions beyond the pod's service account and your own RBAC;
+- a way to bypass PodSecurity, admission webhooks, seccomp, AppArmor, or runtime policy;
+- local Docker toolbox/history persistence inside Kubernetes pods.
+
+`--no-volumes` only disables direct volume mounts into the debug container. It is not a security boundary if the debug container can still access the target via `/proc/1/root`.
+
+RBAC implication: granting a user the ability to update `pods/ephemeralcontainers` and create `pods/exec` is effectively granting the ability to run code inside selected pods. Treat it like production shell access.
+
 ## Kubernetes security profiles
 
 | Profile | Purpose |
 |---|---|
-| `general` | Default. Adds practical debugging capabilities such as ptrace/chroot. |
-| `baseline` | No extra security context. Useful for stricter clusters. |
-| `restricted` | Non-root, drops capabilities, runtime default seccomp. Shell startup and `dctl install` work with the current debug image, but deep target integration such as chrooting into the target filesystem may be limited by Kubernetes/Linux permissions. |
+| `general` | Default. Runs as root and adds practical debugging capabilities such as ptrace/chroot. Best UX, highest access inside the pod. |
+| `baseline` | No explicit security context. Useful when cluster policy should decide defaults. Not a non-root guarantee because the image default user is root. |
+| `restricted` | Non-root, drops capabilities, runtime default seccomp. Shell startup and `dctl install` work with the current debug image, but deep target integration such as chrooting into the target filesystem is limited by Kubernetes/Linux permissions. |
 | `netadmin` | Adds network capabilities for tools like `tcpdump`. |
 | `sysadmin` | Privileged debug container. Last resort for deep debugging. |
 

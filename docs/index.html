@@ -1091,21 +1091,45 @@ debux image my-app:broken --rm=false</code></pre>
         <section id="security" class="doc-section" data-search data-title="Security profiles privileges root non-root">
           <div class="section-heading">
             <h2>Security model</h2>
-            <p>Debugging is privileged by nature. debux defaults to a practical profile, but gives you explicit controls to reduce or increase permissions.</p>
+            <p>debux is a debugger, not a sandbox. The default Kubernetes profile is intentionally powerful because production debugging often needs process, filesystem, and network visibility.</p>
+          </div>
+          <div class="callout" style="margin-bottom: 1rem;">
+            With the default <code>general</code> profile, a debux session can usually run as root inside the pod, use the pod network namespace, target the selected container's PID namespace, list pod processes, inspect <code>/proc/1/root</code>, mount target volumes directly, and use debugging capabilities such as <code>SYS_PTRACE</code>, <code>SYS_ADMIN</code>, and <code>SYS_CHROOT</code>.
+          </div>
+          <div class="grid two" style="margin-bottom: 1rem;">
+            <article class="card">
+              <h3>What default debux can expose</h3>
+              <ul>
+                <li>Pod-local network services via <code>localhost</code>.</li>
+                <li>Pod processes with tools like <code>ps</code> and, when allowed, <code>strace</code>.</li>
+                <li>The target filesystem through <code>$DEBUX_TARGET_ROOT</code>.</li>
+                <li>Mounted secrets, config maps, service-account files, and writable volumes that Linux permissions/capabilities allow.</li>
+              </ul>
+            </article>
+            <article class="card">
+              <h3>What it does not grant by itself</h3>
+              <ul>
+                <li>Root on the Kubernetes node or host filesystem.</li>
+                <li>Access to other pods' filesystems.</li>
+                <li>Kubernetes API permissions beyond your RBAC and the pod's service account.</li>
+                <li>A bypass for PodSecurity, admission webhooks, seccomp, AppArmor, or runtime policy.</li>
+              </ul>
+            </article>
           </div>
           <div class="table-wrap">
             <table>
               <thead><tr><th>Profile</th><th>Purpose</th><th>Typical use</th></tr></thead>
               <tbody>
-                <tr><td><code>general</code></td><td>Default debug profile with useful capabilities like ptrace/chroot.</td><td>Most debugging sessions.</td></tr>
-                <tr><td><code>baseline</code></td><td>No extra security context.</td><td>Clusters with stricter defaults.</td></tr>
-                <tr><td><code>restricted</code></td><td>Non-root, drops capabilities, runtime default seccomp. Shell startup and <code>dctl install</code> work with the current debug image, but chroot/target filesystem integration can be limited by Linux permissions.</td><td>Policy-restricted environments.</td></tr>
+                <tr><td><code>general</code></td><td>Default. Runs as root and adds useful debugging capabilities like ptrace/chroot.</td><td>Best UX, highest access inside the pod.</td></tr>
+                <tr><td><code>baseline</code></td><td>No explicit security context. Not a non-root guarantee because the image default user is root.</td><td>Clusters where policy should decide defaults.</td></tr>
+                <tr><td><code>restricted</code></td><td>Non-root, drops capabilities, runtime default seccomp. Shell startup and <code>dctl install</code> work with the current debug image, but chroot/target filesystem integration is limited by Linux permissions.</td><td>Policy-restricted environments.</td></tr>
                 <tr><td><code>netadmin</code></td><td>Adds network capabilities.</td><td>Network debugging with tools like tcpdump.</td></tr>
                 <tr><td><code>sysadmin</code></td><td>Privileged container.</td><td>Last resort for deep kernel/namespace debugging.</td></tr>
               </tbody>
             </table>
           </div>
-          <p class="note">Kubernetes ephemeral containers cannot add new volumes, so debux cannot mount your local Docker toolbox/history into arbitrary pods. Reusing the same debug container on the same pod keeps its installed tools; across pods, bake common tools into a custom debug image and pass it with <code>--image</code>.</p>
+          <p class="note"><code>--no-volumes</code> only disables direct volume mounts into the debug container. It is not a security boundary if the debug container can still access the target through <code>/proc/1/root</code>. Kubernetes ephemeral containers also cannot add new volumes, so debux cannot mount your local Docker toolbox/history into arbitrary pods. Reusing the same debug container on the same pod keeps its installed tools; across pods, bake common tools into a custom debug image and pass it with <code>--image</code>.</p>
+          <p class="note">RBAC implication: granting a user permission to update <code>pods/ephemeralcontainers</code> and create <code>pods/exec</code> is effectively granting the ability to run code inside selected pods. Treat it like production shell access.</p>
           <div class="grid two" style="margin-top: 1rem;">
             <div class="card code-card">
               <button class="copy" data-copy>Copy</button>
@@ -1161,7 +1185,7 @@ debux store clean</code></pre>
                 <tr><td><code>--image &lt;image&gt;</code></td><td>Override the debug image.</td></tr>
                 <tr><td><code>--fresh</code></td><td>Force a new debug container instead of reusing an existing one.</td></tr>
                 <tr><td><code>--copy</code></td><td>Kubernetes: create a copied debug pod instead of an ephemeral container.</td></tr>
-                <tr><td><code>--no-volumes</code></td><td>Do not share target volumes with the debug container.</td></tr>
+                <tr><td><code>--no-volumes</code></td><td>Do not mount target volumes directly. This is not an isolation boundary if the debug container can access <code>/proc/1/root</code>.</td></tr>
                 <tr><td><code>--pull-policy</code></td><td>Kubernetes image pull policy: <code>Always</code>, <code>IfNotPresent</code>, <code>Never</code>.</td></tr>
                 <tr><td><code>--context</code></td><td>Kubernetes kube context name. Prefer this for context names containing slashes.</td></tr>
                 <tr><td><code>--profile</code></td><td>Kubernetes security profile: <code>general</code>, <code>baseline</code>, <code>restricted</code>, <code>netadmin</code>, <code>sysadmin</code>.</td></tr>
