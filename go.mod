@@ -1,6 +1,6 @@
 module github.com/clement-tourriere/debux
 
-go 1.25.7
+go 1.25.9
 
 require (
 	github.com/charmbracelet/huh v0.8.0
