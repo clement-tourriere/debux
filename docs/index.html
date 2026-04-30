@@ -880,9 +880,12 @@ debux k8s://prod/api-pod/app --fresh</code></pre>
             <div class="timeline-item card">
               <div class="timeline-num">2</div>
               <div>
-                <h3>Pin a version or install directory</h3>
+                <h3>Pin, move, or update</h3>
                 <pre><code>curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh -s -- --version v1.2.3
-curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh -s -- --bin-dir /usr/local/bin</code></pre>
+curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh -s -- --bin-dir /usr/local/bin
+
+debux update --check
+debux update</code></pre>
               </div>
             </div>
             <div class="timeline-item card">
@@ -892,6 +895,7 @@ curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/instal
                 <pre><code>git clone https://github.com/clement-tourriere/debux.git
 cd debux
 mise run install
+mise run uninstall
 mise run image-build
 # For Kubernetes after image changes:
 # docker push ghcr.io/clement-tourriere/debux:latest</code></pre>
@@ -1183,6 +1187,7 @@ debux store clean</code></pre>
                 <tr><td><code>debux pod</code></td><td>Create a standalone Kubernetes debug pod.</td></tr>
                 <tr><td><code>debux kill [target]</code></td><td>Stop a running debux debug session.</td></tr>
                 <tr><td><code>debux docs</code></td><td>Print the documentation URL. Use <code>--open</code> to open it in a browser.</td></tr>
+                <tr><td><code>debux update</code></td><td>Check GitHub Releases and update the current debux binary in place.</td></tr>
                 <tr><td><code>--image &lt;image&gt;</code></td><td>Override the debug image.</td></tr>
                 <tr><td><code>--fresh</code></td><td>Force a new debug container instead of reusing an existing one.</td></tr>
                 <tr><td><code>--copy</code></td><td>Kubernetes: create a copied debug pod instead of an ephemeral container.</td></tr>

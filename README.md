@@ -56,6 +56,10 @@ curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/instal
 
 # Choose another install directory
 curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh -s -- --bin-dir /usr/local/bin
+
+# Later, check or update from GitHub Releases
+debux update --check
+debux update
 ```
 
 For development from source, use [mise](https://mise.jdx.dev):
@@ -328,6 +332,8 @@ bake common tools into a custom debug image and pass it with `--image`.
 
 ```bash
 mise run build          # Build CLI
+mise run install        # install local dev binary to ~/.local/bin
+mise run uninstall      # remove local dev binary from ~/.local/bin
 mise run test           # go test ./...
 mise run lint           # golangci-lint run
 mise run check          # hk checks on all files
@@ -346,6 +352,13 @@ The repository uses [hk](https://hk.jdx.dev/) for git hooks and [pkl](https://pk
 ## Releases and distribution
 
 GitHub Releases publish prebuilt `debux` binaries for Linux and macOS on amd64/arm64 using GoReleaser. The one-line installer downloads those release assets and verifies `checksums.txt` when available.
+
+After installation, keep the CLI current with:
+
+```bash
+debux update --check
+debux update
+```
 
 The debug toolbox image is published separately to GHCR:
 

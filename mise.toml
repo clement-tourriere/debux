@@ -21,6 +21,10 @@ description = "Build and install the binary to ~/.local/bin"
 depends = ["build"]
 run = "bash -lc 'set -euo pipefail; dst=\"$HOME/.local/bin/{{vars.binary}}\"; mkdir -p \"$(dirname \"$dst\")\"; rm -f \"$dst\"; install -m 0755 bin/{{vars.binary}} \"$dst\"; if command -v xattr >/dev/null 2>&1; then xattr -c \"$dst\" 2>/dev/null || true; fi; if command -v codesign >/dev/null 2>&1; then codesign --force --sign - \"$dst\" >/dev/null 2>&1 || true; fi; \"$dst\" --help >/dev/null; printf \"Installed %s\\nRun hash -r if your shell still finds an older debux.\\n\" \"$dst\"'"
 
+[tasks.uninstall]
+description = "Remove the locally installed debux binary from ~/.local/bin"
+run = "bash -lc 'set -euo pipefail; dst=\"$HOME/.local/bin/{{vars.binary}}\"; if [ -e \"$dst\" ] || [ -L \"$dst\" ]; then rm -f \"$dst\"; printf \"Removed %s\\nRun hash -r if your shell still has debux cached.\\n\" \"$dst\"; else printf \"%s is not installed.\\n\" \"$dst\"; fi'"
+
 [tasks.image-build]
 description = "Build the Docker debug image"
 run = "docker build -t {{vars.image}} -f images/debug/Dockerfile ."

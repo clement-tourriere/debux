@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/clement-tourriere/debux/internal/runtime"
+	"github.com/clement-tourriere/debux/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -90,6 +91,7 @@ func NewRootCmd() *cobra.Command {
 		Short:         "Debug any Docker or Kubernetes container",
 		Long:          rootLong,
 		Example:       rootExample,
+		Version:       version.Details(),
 		Args:          cobra.MaximumNArgs(1),
 		RunE:          runExec,
 		SilenceUsage:  true,
@@ -107,6 +109,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newKillCmd())
 	cmd.AddCommand(newStoreCmd())
 	cmd.AddCommand(newDocsCmd())
+	cmd.AddCommand(newUpdateCmd())
 
 	return cmd
 }
