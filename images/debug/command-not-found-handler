@@ -48,11 +48,17 @@ command_not_found_handler() {
   read "REPLY?  Install now? [y/N] "
   if [[ "$REPLY" =~ ^[Yy]$ ]]; then
     if dctl install "$cmd"; then
-      command "$cmd" "$@"
-      return $?
+      rehash
+      if command -v "$cmd" >/dev/null 2>&1; then
+        command "$cmd" "$@"
+        return $?
+      fi
+      echo ""
+      echo "  Install finished, but command '$cmd' is still not available."
+      echo "  Try: dctl search $cmd"
     else
       echo ""
-      echo "  Package '$cmd' not found. Try: dctl search $cmd"
+      echo "  Install failed. Try: dctl search $cmd"
     fi
   fi
 

@@ -68,6 +68,12 @@ resolve_pkg() {
 case "${1:-}" in
   install)
     shift
+    if [[ $# -eq 0 ]]; then
+      echo "Usage: dctl install <pkg> [pkg...]" >&2
+      exit 2
+    fi
+
+    status=0
     for pkg in "$@"; do
       resolved=$(resolve_pkg "$pkg")
       if [[ "$resolved" != "$pkg" ]]; then
@@ -77,11 +83,14 @@ case "${1:-}" in
       if nix profile add --profile "$DEBUX_PROFILE" "nixpkgs#$resolved"; then
         echo -e "\e[32mInstalled $resolved.\e[0m"
       else
+        status=1
         echo ""
-        echo -e "  \e[31mPackage '$resolved' not found.\e[0m"
+        echo -e "  \e[31mFailed to install '$resolved'.\e[0m"
+        echo "  It may not exist in nixpkgs, or it may currently fail to build."
         echo "  Try: dctl search $pkg"
       fi
     done
+    exit "$status"
     ;;
   remove)
     shift
