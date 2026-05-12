@@ -131,6 +131,10 @@ case "${1:-}" in
     ;;
   remove)
     shift
+    if [[ $# -eq 0 ]]; then
+      echo "Usage: dctl remove <pkg> [pkg...]" >&2
+      exit 2
+    fi
     ensure_nix_writable || exit 1
     for pkg in "$@"; do
       resolved=$(resolve_pkg "$pkg")

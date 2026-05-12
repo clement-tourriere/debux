@@ -417,18 +417,9 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		TargetContainerName: targetContainer,
 	}
 
-	// Share target container's volume mounts (skip ones with SubPath, not allowed on ephemeral containers)
+	// Share target container's volume mounts (skip ones with SubPath, not allowed on ephemeral containers).
 	if opts.ShareVolumes {
-		for _, c := range pod.Spec.Containers {
-			if c.Name == targetContainer {
-				for _, vm := range c.VolumeMounts {
-					if vm.SubPath == "" && vm.SubPathExpr == "" && !isReservedDebugMountPath(vm.MountPath) {
-						ephemeralContainer.VolumeMounts = append(ephemeralContainer.VolumeMounts, vm)
-					}
-				}
-				break
-			}
-		}
+		ephemeralContainer.VolumeMounts = targetKubernetesVolumeMounts(pod, targetContainer, opts.ReadOnlyVolumes, false)
 	}
 
 	sc, err := SecurityContextForProfile(opts.Profile)
@@ -534,16 +525,7 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 	}
 
 	if opts.ShareVolumes {
-		for _, c := range sourcePod.Spec.Containers {
-			if c.Name == targetContainer {
-				for _, vm := range c.VolumeMounts {
-					if !isReservedDebugMountPath(vm.MountPath) {
-						debugContainer.VolumeMounts = append(debugContainer.VolumeMounts, vm)
-					}
-				}
-				break
-			}
-		}
+		debugContainer.VolumeMounts = targetKubernetesVolumeMounts(sourcePod, targetContainer, opts.ReadOnlyVolumes, true)
 	}
 
 	sc, err := SecurityContextForProfile(opts.Profile)
@@ -655,6 +637,30 @@ func isReservedDebugMountPath(mountPath string) bool {
 	default:
 		return false
 	}
+}
+
+func targetKubernetesVolumeMounts(pod *corev1.Pod, targetContainer string, readOnly bool, allowSubPath bool) []corev1.VolumeMount {
+	for _, c := range pod.Spec.Containers {
+		if c.Name != targetContainer {
+			continue
+		}
+
+		mounts := make([]corev1.VolumeMount, 0, len(c.VolumeMounts))
+		for _, vm := range c.VolumeMounts {
+			if !allowSubPath && (vm.SubPath != "" || vm.SubPathExpr != "") {
+				continue
+			}
+			if isReservedDebugMountPath(vm.MountPath) {
+				continue
+			}
+			if readOnly {
+				vm.ReadOnly = true
+			}
+			mounts = append(mounts, vm)
+		}
+		return mounts
+	}
+	return nil
 }
 
 func selectKubernetesTargetContainer(pod *corev1.Pod, requested string) (string, error) {
@@ -895,7 +901,7 @@ func KubernetesPod(ctx context.Context, opts PodOpts) error {
 		return err
 	}
 
-	if opts.Namespace == "default" {
+	if opts.Namespace == "" {
 		opts.Namespace = resolveNamespace(opts.Kubeconfig, opts.KubeContext)
 	}
 

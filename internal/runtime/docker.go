@@ -330,7 +330,7 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 
 	// Share target container's volumes
 	if opts.ShareVolumes {
-		shared := targetMounts(targetInfo)
+		shared := targetMounts(targetInfo, opts.ReadOnlyVolumes)
 		if len(shared) > 0 {
 			fmt.Printf("Sharing %d volume(s) from %s\n", len(shared), targetName)
 			hostConfig.Mounts = append(hostConfig.Mounts, shared...)
@@ -614,7 +614,7 @@ func sanitizeImageRef(ref string) string {
 
 // targetMounts extracts the target container's mounts and converts them to
 // mount.Mount entries for the debug container, skipping paths reserved by debux.
-func targetMounts(info container.InspectResponse) []mount.Mount {
+func targetMounts(info container.InspectResponse, readOnly bool) []mount.Mount {
 	if info.Mounts == nil {
 		return nil
 	}
@@ -632,7 +632,7 @@ func targetMounts(info container.InspectResponse) []mount.Mount {
 		m := mount.Mount{
 			Type:     mp.Type,
 			Target:   mp.Destination,
-			ReadOnly: !mp.RW,
+			ReadOnly: readOnly || !mp.RW,
 		}
 		switch mp.Type {
 		case mount.TypeVolume:

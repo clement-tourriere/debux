@@ -17,15 +17,17 @@ func newPodCmd() *cobra.Command {
 
 This is useful for cluster-level network or DNS debugging when you do not need
 to attach to a specific application pod.`,
-		Example: `  debux pod -n prod
+		Example: `  debux pod
+  debux pod -n prod
   debux pod -n prod --host-network
   debux pod -n prod --keep
   debux pod -n prod --profile=netadmin`,
+		Args: cobra.NoArgs,
 		RunE: runPod,
 	}
 
 	addPodDebugFlags(cmd)
-	cmd.Flags().StringP("namespace", "n", "default", "Kubernetes namespace")
+	cmd.Flags().StringP("namespace", "n", "", "Kubernetes namespace (default: current kube-context namespace)")
 	cmd.Flags().Bool("keep", false, "Keep the debug pod after exit")
 	cmd.Flags().Bool("host-network", false, "Use host network for the debug pod")
 

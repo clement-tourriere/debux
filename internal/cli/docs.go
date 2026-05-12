@@ -16,6 +16,7 @@ func newDocsCmd() *cobra.Command {
 		Long:  "Print the debux documentation URL, or open it in your browser with --open.",
 		Example: `  debux docs
   debux docs --open`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !openBrowser {
 				cmd.Println(docsURL)
