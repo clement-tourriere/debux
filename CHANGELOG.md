@@ -1,3 +1,10 @@
+## v0.3.0 (2026-05-13)
+
+### Feat
+
+- add full-screen debug TUI
+- improve kubernetes debugging safety
+
 ## v0.2.3 (2026-04-30)
 
 ### Fix
