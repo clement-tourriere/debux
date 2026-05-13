@@ -474,6 +474,15 @@
         margin-bottom: 0;
       }
 
+      .clean-list {
+        padding-left: 1.1rem;
+        margin: 0.75rem 0 0;
+      }
+
+      .clean-list li {
+        margin: 0.35rem 0;
+      }
+
       .feature-icon {
         width: 42px;
         height: 42px;
@@ -757,6 +766,7 @@
           </a>
           <nav class="nav" aria-label="Docs navigation">
             <a href="#install">Install</a>
+            <a href="#tui">TUI</a>
             <a href="#docker">Docker</a>
             <a href="#kubernetes">Kubernetes</a>
             <a href="#security" class="hide-md">Security</a>
@@ -794,10 +804,10 @@
             <span class="line"><span class="prompt">❯</span> debux k8s://prod/api-7c9d/app</span>
             <span class="line dim">Waiting for debug container "debux-1777533699123" to start...</span>
             <span class="line"><span class="ok">✓</span> Debugging prod/api-7c9d (container: debux-1777533699123)</span>
-            <span class="line"><span class="prompt">[debux]</span> prod/api/app /proc/1/root/app # target</span>
-            <span class="line"><span class="prompt">[debux]</span> prod/api/app /proc/1/root # strace -p 1</span>
+            <span class="line"><span class="prompt">[debux]</span> eks-preprod-01:prod/api/app /proc/1/root/app # target</span>
+            <span class="line"><span class="prompt">[debux]</span> eks-preprod-01:prod/api/app /proc/1/root # strace -p 1</span>
             <span class="line dim">attach to target PID namespace, filesystem and network</span>
-            <span class="line"><span class="prompt">[debux]</span> prod/api/app /proc/1/root # dctl install postgresql</span>
+            <span class="line"><span class="prompt">[debux]</span> eks-preprod-01:prod/api/app /proc/1/root # dctl install postgresql</span>
           </div>
         </div>
       </section>
@@ -844,7 +854,11 @@
               <button class="copy" data-copy>Copy</button>
               <pre><code>curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh
 
-debux docker://</code></pre>
+debux docker://
+
+# Or browse Docker, Kubernetes and recent sessions
+# in the full-screen TUI
+debux tui</code></pre>
             </div>
             <div class="card code-card">
               <button class="copy" data-copy>Copy</button>
@@ -860,6 +874,46 @@ debux k8s://@eks-preprod-01
 # Force a brand-new debug container
 debux k8s://prod/api-pod/app --fresh</code></pre>
             </div>
+          </div>
+        </section>
+
+        <section id="tui" class="doc-section" data-search data-title="Full-screen TUI target browser Kubernetes context namespace history terminal launcher">
+          <div class="section-heading">
+            <h2>Full-screen TUI</h2>
+            <p>Use the TUI when you want to find a target visually instead of typing an exact container or pod name. It presents Docker, Kubernetes and History as clear source sections, supports keyboard navigation beyond number shortcuts, and avoids loading every pod at startup.</p>
+          </div>
+          <div class="grid two">
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code># Open the full-screen browser
+debux tui
+
+# Same command, shorter alias
+debux ui</code></pre>
+            </div>
+            <div class="card">
+              <h3>Useful keys</h3>
+              <ul class="clean-list">
+                <li><code>/</code> filter the current list</li>
+                <li><code>left</code> / <code>right</code> or <code>tab</code> cycle sources; <code>d</code>, <code>k</code>, <code>y</code> jump to Docker, Kubernetes and History</li>
+                <li><code>1</code>-<code>3</code> still work as optional source shortcuts</li>
+                <li><code>enter</code> drill into source/context/namespace lists or open a selected target</li>
+                <li><code>b</code> go back in Kubernetes navigation</li>
+                <li><code>s</code> search pods across the selected namespace when the initial pod list is too large</li>
+                <li><code>t</code> open externally only when <code>DEBUX_TERMINAL</code> is explicitly configured</li>
+                <li><code>r</code> reload the current view</li>
+                <li><code>f</code>, <code>c</code>, <code>v</code>, <code>o</code>, <code>p</code>, <code>i</code> toggle fresh, copy mode, volumes, read-only volumes, profile and pull policy</li>
+              </ul>
+            </div>
+          </div>
+          <div class="callout info" style="margin-top: 1rem;">
+            <strong>Fast Kubernetes browsing:</strong> the TUI first loads kubeconfig contexts only and includes a current context/default namespace shortcut for one-click access. Pods are fetched lazily after you choose a context and namespace, using lightweight metadata. If the namespace is huge, press <code>s</code> from the pod view to search the whole namespace by substring.
+          </div>
+          <div class="callout info" style="margin-top: 1rem;">
+            <strong>No surprise terminal launches:</strong> <code>enter</code> always uses the current terminal and returns to the TUI when the shell exits. The optional <code>t</code> shortcut is disabled unless you explicitly set <code>DEBUX_TERMINAL</code>.
+          </div>
+          <div class="callout" style="margin-top: 1rem;">
+            <strong>Session history:</strong> debux records launched sessions in <code>$XDG_STATE_HOME/debux/history.json</code>, or <code>~/.local/state/debux/history.json</code> when <code>XDG_STATE_HOME</code> is unset, so the TUI can quickly reopen previous debug sessions.
           </div>
         </section>
 
@@ -953,14 +1007,20 @@ debux docker://my-nginx</code></pre>
             </div>
             <div class="card code-card">
               <button class="copy" data-copy>Copy</button>
-              <pre><code># Interactive picker for running containers
+              <pre><code># Full-screen browser with Docker, Kubernetes and history
+debux tui
+
+# Lightweight picker for running containers
 debux docker://
 
 # Force a new debug sidecar
 debux docker://my-nginx --fresh
 
 # Do not mount target volumes into the debug container
-debux docker://my-nginx --no-volumes</code></pre>
+debux docker://my-nginx --no-volumes
+
+# Or mount target volumes read-only to reduce accidental writes
+debux docker://my-nginx --read-only-volumes</code></pre>
             </div>
           </div>
           <div class="card" style="margin-top: 1rem;">
@@ -983,6 +1043,9 @@ debux k8s://api-pod
 
 # Explicit namespace and container
 debux k8s://prod/api-pod/app
+
+# Or pass the namespace as a flag
+debux k8s://api-pod/app --namespace prod
 
 # Explicit kube context in the target
 debux k8s://@eks-preprod-01/prod/api-pod/app
@@ -1027,7 +1090,7 @@ RUN NIX_CONFIG="experimental-features = nix-command flakes" \
               <tbody>
                 <tr><td><code>ephemeral container</code></td><td>Debugging a live pod in-place</td><td>Shares target container PID namespace when supported; cannot be removed from the pod spec after creation.</td></tr>
                 <tr><td><code>--copy</code></td><td>RBAC or PodSecurity blocks ephemeral containers</td><td>Creates a temporary copied pod, enables process namespace sharing, then deletes it on exit.</td></tr>
-                <tr><td><code>debux pod</code></td><td>Cluster network troubleshooting</td><td>Standalone debug pod, optionally with host networking.</td></tr>
+                <tr><td><code>debux pod</code></td><td>Cluster network troubleshooting</td><td>Standalone debug pod in the current kube-context namespace by default, optionally with host networking.</td></tr>
               </tbody>
             </table>
           </div>
@@ -1047,7 +1110,7 @@ RUN NIX_CONFIG="experimental-features = nix-command flakes" \
                 <tr><td><code>docker://my-container</code></td><td>Docker</td><td>Debug a specific Docker container.</td></tr>
                 <tr><td><code>k8s://</code></td><td>Kubernetes</td><td>Open the pod picker in the current kube-context namespace.</td></tr>
                 <tr><td><code>k8s://pod</code></td><td>Kubernetes</td><td>Debug a pod in the current kube-context namespace.</td></tr>
-                <tr><td><code>k8s://namespace/pod</code></td><td>Kubernetes</td><td>Debug a pod in an explicit namespace.</td></tr>
+                <tr><td><code>k8s://namespace/pod</code></td><td>Kubernetes</td><td>Debug a pod in an explicit namespace (or use <code>--namespace</code> / <code>-n</code>).</td></tr>
                 <tr><td><code>k8s://namespace/pod/container</code></td><td>Kubernetes</td><td>Debug a specific container in a multi-container pod.</td></tr>
                 <tr><td><code>k8s://@context</code></td><td>Kubernetes</td><td>Open the pod picker in a specific kube context.</td></tr>
                 <tr><td><code>k8s://@context/pod</code></td><td>Kubernetes</td><td>Debug a pod in a specific context and that context's namespace.</td></tr>
@@ -1152,7 +1215,7 @@ debux image my-app:broken --rm=false</code></pre>
               </tbody>
             </table>
           </div>
-          <p class="note"><code>--no-volumes</code> only disables direct volume mounts into the debug container. It is not a security boundary if the debug container can still access the target through <code>/proc/1/root</code>. Kubernetes ephemeral containers also cannot add new volumes, so debux cannot mount your local Docker toolbox/history into arbitrary pods. Reusing the same debug container on the same pod keeps its installed tools; across pods, bake common tools into a custom debug image and pass it with <code>--image</code>.</p>
+          <p class="note"><code>--no-volumes</code> only disables direct volume mounts into the debug container, and <code>--read-only-volumes</code> makes those direct mounts read-only to reduce accidental writes. Neither is a security boundary if the debug container can still access the target through <code>/proc/1/root</code>. Kubernetes ephemeral containers also cannot add new volumes, so debux cannot mount your local Docker toolbox/history into arbitrary pods. Reusing the same debug container on the same pod keeps its installed tools; across pods, bake common tools into a custom debug image and pass it with <code>--image</code>.</p>
           <p class="note">RBAC implication: granting a user permission to update <code>pods/ephemeralcontainers</code> and create <code>pods/exec</code> is effectively granting the ability to run code inside selected pods. Treat it like production shell access.</p>
           <div class="card code-card" style="margin-top: 1rem;">
             <button class="copy" data-copy>Copy</button>
@@ -1221,6 +1284,7 @@ debux store clean</code></pre>
               <tbody>
                 <tr><td><code>debux [target]</code></td><td>Debug a running Docker container or Kubernetes pod.</td></tr>
                 <tr><td><code>debux exec [target]</code></td><td>Explicit form of the default debug command. Aliases: <code>debug</code>, <code>shell</code>.</td></tr>
+                <tr><td><code>debux tui</code></td><td>Open the full-screen target browser for Docker, Kubernetes and recent sessions. Alias: <code>ui</code>.</td></tr>
                 <tr><td><code>debux image &lt;image&gt;</code></td><td>Debug a Docker image filesystem without starting it.</td></tr>
                 <tr><td><code>debux pod</code></td><td>Create a standalone Kubernetes debug pod.</td></tr>
                 <tr><td><code>debux kill [target]</code></td><td>Stop a running debux debug session.</td></tr>
@@ -1233,8 +1297,10 @@ debux store clean</code></pre>
                 <tr><td><code>--fresh</code></td><td>Force a new debug container instead of reusing an existing one.</td></tr>
                 <tr><td><code>--copy</code></td><td>Kubernetes: create a copied debug pod instead of an ephemeral container.</td></tr>
                 <tr><td><code>--no-volumes</code></td><td>Do not mount target volumes directly. This is not an isolation boundary if the debug container can access <code>/proc/1/root</code>.</td></tr>
+                <tr><td><code>--read-only-volumes</code></td><td>Mount target volumes read-only in the debug container to reduce accidental writes. This is not an isolation boundary if <code>/proc/1/root</code> is accessible.</td></tr>
                 <tr><td><code>--pull-policy</code></td><td>Debug image pull policy for Docker/Kubernetes: <code>Always</code>, <code>IfNotPresent</code>, <code>Never</code>.</td></tr>
                 <tr><td><code>--context</code></td><td>Kubernetes kube context name. Prefer this for context names containing slashes.</td></tr>
+                <tr><td><code>-n, --namespace</code></td><td>Kubernetes namespace for pod pickers, targets without an inline namespace, <code>kill</code>, and <code>doctor</code>.</td></tr>
                 <tr><td><code>--profile</code></td><td>Kubernetes security profile: <code>general</code>, <code>baseline</code>, <code>restricted</code>, <code>netadmin</code>, <code>sysadmin</code>.</td></tr>
                 <tr><td><code>--user uid[:gid]</code></td><td>Run the debug container as a specific user.</td></tr>
               </tbody>

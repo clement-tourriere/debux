@@ -37,6 +37,7 @@ and checks common Kubernetes RBAC permissions for debug sessions.`,
 		Example: `  debux doctor
   debux doctor docker://my-app
   debux doctor k8s://prod/api-pod/app
+  debux doctor k8s://api-pod/app --namespace prod
   debux doctor k8s://prod/api-pod/app --profile=restricted
   debux doctor --strict
   debux doctor --json`,
@@ -69,7 +70,7 @@ and checks common Kubernetes RBAC permissions for debug sessions.`,
 			return nil
 		},
 	}
-	addKubeconfigFlag(cmd)
+	addKubernetesFlags(cmd)
 	cmd.Flags().StringVar(&flagProfile, "profile", runtime.ProfileGeneral, "Kubernetes security profile to evaluate")
 	cmd.Flags().BoolVar(&outputJSON, "json", false, "Print diagnostics as JSON")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero when any diagnostic check fails")
@@ -97,7 +98,11 @@ func buildDoctorReport(ctx context.Context, cmd *cobra.Command, args []string, p
 	if len(args) == 0 {
 		report.Sections = append(report.Sections, doctorReportSection{Name: "Docker", Checks: runtime.DockerDoctor(ctx)})
 		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
-		report.Sections = append(report.Sections, doctorReportSection{Name: "Kubernetes", Checks: runtime.KubernetesDoctor(ctx, kubeconfig, flagKubeContext, "", "", "", profile)})
+		kubeNamespace, err := resolveKubeNamespace(cmd, "")
+		if err != nil {
+			return doctorReport{}, err
+		}
+		report.Sections = append(report.Sections, doctorReportSection{Name: "Kubernetes", Checks: runtime.KubernetesDoctor(ctx, kubeconfig, flagKubeContext, kubeNamespace, "", "", profile)})
 		return report, nil
 	}
 
@@ -107,18 +112,32 @@ func buildDoctorReport(ctx context.Context, cmd *cobra.Command, args []string, p
 	}
 	switch target.Runtime {
 	case "docker":
+		if doctorKubernetesFlagsChanged(cmd) {
+			return doctorReport{}, fmt.Errorf("kubernetes flags are only supported for Kubernetes targets; use k8s://... or remove the flag")
+		}
 		report.Sections = append(report.Sections, doctorReportSection{Name: "Docker", Checks: runtime.DockerDoctor(ctx, target.Name)})
 	case "kubernetes":
 		kubeContext, err := resolveKubeContext(cmd, target.Context)
 		if err != nil {
 			return doctorReport{}, err
 		}
+		kubeNamespace, err := resolveKubeNamespace(cmd, target.Namespace)
+		if err != nil {
+			return doctorReport{}, err
+		}
 		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
-		report.Sections = append(report.Sections, doctorReportSection{Name: "Kubernetes", Checks: runtime.KubernetesDoctor(ctx, kubeconfig, kubeContext, target.Namespace, target.Name, target.Container, profile)})
+		report.Sections = append(report.Sections, doctorReportSection{Name: "Kubernetes", Checks: runtime.KubernetesDoctor(ctx, kubeconfig, kubeContext, kubeNamespace, target.Name, target.Container, profile)})
 	default:
+		if doctorKubernetesFlagsChanged(cmd) {
+			return doctorReport{}, fmt.Errorf("kubernetes flags are only supported for Kubernetes targets; use k8s://... or remove the flag")
+		}
 		report.Sections = append(report.Sections, doctorReportSection{Name: target.Runtime, Checks: []runtime.DoctorCheck{{Name: "Runtime", Status: runtime.CheckWarn, Detail: "doctor does not support this runtime yet"}}})
 	}
 	return report, nil
+}
+
+func doctorKubernetesFlagsChanged(cmd *cobra.Command) bool {
+	return flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig") || flagChanged(cmd, "namespace") || flagChanged(cmd, "profile")
 }
 
 func printDoctorReport(cmd *cobra.Command, report doctorReport) {

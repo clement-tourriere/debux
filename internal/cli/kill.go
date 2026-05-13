@@ -30,10 +30,12 @@ cannot be removed from the pod spec, so debux terminates their process instead.`
 
   # Stop the debux ephemeral container on a pod
   debux kill k8s://prod/api-pod
+  debux kill k8s://api-pod -n prod
   debux kill k8s://@eks-preprod-01/prod/api-pod
 
   # Stop all sessions in a namespace
   debux kill k8s://prod/ --all
+  debux kill --all --namespace prod
   debux kill k8s://@eks-preprod-01/prod/ --all`,
 		Args:          cobra.MaximumNArgs(1),
 		RunE:          runKill,
@@ -41,7 +43,7 @@ cannot be removed from the pod spec, so debux terminates their process instead.`
 		SilenceErrors: true,
 	}
 
-	addKubeconfigFlag(cmd)
+	addKubernetesFlags(cmd)
 	cmd.Flags().BoolVar(&flagKillAll, "all", false, "Kill all running debux sessions for the selected runtime")
 
 	return cmd
@@ -54,7 +56,8 @@ func runKill(cmd *cobra.Command, args []string) error {
 	// Determine runtime from args or default to Docker. If Kubernetes-only flags
 	// are present without a target, prefer Kubernetes for --all/interactive kill.
 	rt := "docker"
-	if flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig") {
+	kubernetesFlagsSet := flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig") || flagChanged(cmd, "namespace")
+	if kubernetesFlagsSet {
 		rt = "kubernetes"
 	}
 	if len(args) > 0 {
@@ -63,14 +66,19 @@ func runKill(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("invalid target: %w", err)
 		}
 		rt = target.Runtime
-		if rt != "kubernetes" && (flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig")) {
-			return fmt.Errorf("--context and --kubeconfig are only supported for Kubernetes targets; use k8s://... or remove the flag")
+		if rt != "kubernetes" && kubernetesFlagsSet {
+			return fmt.Errorf("--context, --kubeconfig, and --namespace are only supported for Kubernetes targets; use k8s://... or remove the flag")
 		}
 
 		kubeContext, err := resolveKubeContext(cmd, target.Context)
 		if err != nil {
 			return err
 		}
+		kubeNamespace, err := resolveKubeNamespace(cmd, target.Namespace)
+		if err != nil {
+			return err
+		}
+		target.Namespace = kubeNamespace
 
 		if flagKillAll {
 			return killAll(ctx, cmd, rt, kubeContext, target.Namespace)
@@ -89,7 +97,7 @@ func runKill(cmd *cobra.Command, args []string) error {
 	}
 
 	if flagKillAll {
-		return killAll(ctx, cmd, rt, flagKubeContext, "")
+		return killAll(ctx, cmd, rt, flagKubeContext, flagNamespace)
 	}
 
 	// No target, no --all: show interactive picker
@@ -109,7 +117,7 @@ func killAll(ctx context.Context, cmd *cobra.Command, rt string, kubeContext str
 }
 
 func killInteractive(ctx context.Context, cmd *cobra.Command) error {
-	preferKubernetes := flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig")
+	preferKubernetes := flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig") || flagChanged(cmd, "namespace")
 
 	// Try Docker first unless the user selected a Kubernetes context/config.
 	if !preferKubernetes {
@@ -147,7 +155,7 @@ func killInteractive(ctx context.Context, cmd *cobra.Command) error {
 
 	// Try K8s
 	kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
-	pods, k8sErr := runtime.KubernetesList(ctx, kubeconfig, flagKubeContext, "")
+	pods, k8sErr := runtime.KubernetesList(ctx, kubeconfig, flagKubeContext, flagNamespace)
 	if k8sErr == nil {
 		var active []runtime.PodInfo
 		for _, p := range pods {
@@ -170,9 +178,10 @@ func killInteractive(ctx context.Context, cmd *cobra.Command) error {
 				return err
 			}
 			target := &runtime.Target{
-				Runtime: "kubernetes",
-				Context: flagKubeContext,
-				Name:    name,
+				Runtime:   "kubernetes",
+				Context:   flagKubeContext,
+				Namespace: flagNamespace,
+				Name:      name,
 			}
 			return runtime.KubernetesKill(ctx, target, kubeconfig, flagKubeContext)
 		}

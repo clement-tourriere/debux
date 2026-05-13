@@ -160,6 +160,9 @@ command_not_found_handler() {
 
 # Prompt
 target="${DEBUX_TARGET:-unknown}"
+if [[ -n "${DEBUX_CONTEXT:-}" && "$target" != "${DEBUX_CONTEXT}:"* && "$target" != "${DEBUX_CONTEXT}/"* ]]; then
+  target="${DEBUX_CONTEXT}:${target}"
+fi
 PS1="%F{cyan}[debux]%f %F{yellow}${target}%f %F{blue}%~%f %# "
 
 # Session banner
@@ -514,6 +517,9 @@ alias rd='rmdir'
 
 # Target filesystem shortcut
 alias target='cd $DEBUX_TARGET_ROOT'
+
+# Wrap dctl to rehash after install/remove so new binaries are found immediately
+dctl() { command dctl "$@"; local ret=$?; rehash; return $ret; }
 
 # Key bindings
 bindkey -e

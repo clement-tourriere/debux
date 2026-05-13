@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -91,6 +92,14 @@ func TestFindRunningDebuxContainerForTargetHonorsProfile(t *testing.T) {
 	}
 }
 
+func TestKubernetesDebugTargetLabelIncludesContext(t *testing.T) {
+	got := kubernetesDebugTargetLabel("prod-context", "gim", "api", "app")
+	want := "prod-context:gim/api/app"
+	if got != want {
+		t.Fatalf("kubernetesDebugTargetLabel() = %q, want %q", got, want)
+	}
+}
+
 func TestDebuxExecCommandQuotesOneShotCommand(t *testing.T) {
 	cmd := debuxExecCommand([]string{"sh", "-c", "echo 'hello world'"})
 	if len(cmd) != 3 || cmd[0] != "sh" || cmd[1] != "-c" {
@@ -101,6 +110,62 @@ func TestDebuxExecCommandQuotesOneShotCommand(t *testing.T) {
 	}
 	if !strings.Contains(cmd[2], "hello world") || !strings.Contains(cmd[2], "\\''") {
 		t.Fatalf("command was not shell-quoted safely: %q", cmd[2])
+	}
+}
+
+func TestTargetMountsCanForceReadOnly(t *testing.T) {
+	info := container.InspectResponse{Mounts: []container.MountPoint{
+		{Type: mount.TypeVolume, Name: "data", Destination: "/data", RW: true},
+		{Type: mount.TypeBind, Source: "/host/config", Destination: "/config", RW: false},
+		{Type: mount.TypeVolume, Name: "nix", Destination: "/nix/store", RW: true},
+	}}
+
+	mounts := targetMounts(info, false)
+	if len(mounts) != 2 {
+		t.Fatalf("targetMounts returned %d mount(s), want 2", len(mounts))
+	}
+	if mounts[0].Target != "/data" || mounts[0].ReadOnly {
+		t.Fatalf("writable mount was not preserved: %#v", mounts[0])
+	}
+	if mounts[1].Target != "/config" || !mounts[1].ReadOnly {
+		t.Fatalf("read-only mount was not preserved: %#v", mounts[1])
+	}
+
+	readOnlyMounts := targetMounts(info, true)
+	for _, m := range readOnlyMounts {
+		if !m.ReadOnly {
+			t.Fatalf("mount %s was not forced read-only: %#v", m.Target, m)
+		}
+	}
+}
+
+func TestTargetKubernetesVolumeMountsCanForceReadOnly(t *testing.T) {
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+		Name: "app",
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "data", MountPath: "/data"},
+			{Name: "cache", MountPath: "/cache", ReadOnly: true},
+			{Name: "sub", MountPath: "/sub", SubPath: "item"},
+			{Name: "nix", MountPath: "/nix/store"},
+		},
+	}}}}
+
+	mounts := targetKubernetesVolumeMounts(pod, "app", true, false)
+	if len(mounts) != 2 {
+		t.Fatalf("ephemeral volume mounts = %#v, want only /data and /cache", mounts)
+	}
+	for _, vm := range mounts {
+		if !vm.ReadOnly {
+			t.Fatalf("mount %s was not forced read-only: %#v", vm.MountPath, vm)
+		}
+		if vm.MountPath == "/sub" || vm.MountPath == "/nix/store" {
+			t.Fatalf("reserved/subPath mount should have been skipped: %#v", vm)
+		}
+	}
+
+	copyMounts := targetKubernetesVolumeMounts(pod, "app", false, true)
+	if len(copyMounts) != 3 {
+		t.Fatalf("copy volume mounts = %#v, want /data, /cache, and /sub", copyMounts)
 	}
 }
 

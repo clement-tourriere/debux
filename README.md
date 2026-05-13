@@ -8,17 +8,23 @@
   <a href="https://github.com/clement-tourriere/debux/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/clement-tourriere/debux/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/clement-tourriere/debux/actions/workflows/docker.yml"><img alt="Docker" src="https://github.com/clement-tourriere/debux/actions/workflows/docker.yml/badge.svg"></a>
   <a href="https://github.com/clement-tourriere/debux/actions/workflows/pages.yml"><img alt="Docs" src="https://github.com/clement-tourriere/debux/actions/workflows/pages.yml/badge.svg"></a>
+  <a href="https://github.com/clement-tourriere/debux/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/clement-tourriere/debux?sort=semver"></a>
+  <a href="https://github.com/clement-tourriere/debux/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/clement-tourriere/debux"></a>
   <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
 </p>
 
 <p align="center">
   <a href="https://clement-tourriere.github.io/debux/"><strong>Read the docs</strong></a>
   ·
+  <a href="#why-debux">Why debux?</a>
+  ·
   <a href="#quick-start">Quick start</a>
   ·
   <a href="#kubernetes">Kubernetes</a>
   ·
   <a href="#troubleshooting">Troubleshooting</a>
+  ·
+  <a href="#community">Community</a>
 </p>
 
 ---
@@ -29,6 +35,8 @@ It starts a temporary debug toolbox next to your target container, shares useful
 
 📚 **Full documentation:** <https://clement-tourriere.github.io/debux/> — includes a `Ctrl`/`Cmd` + `K` search palette.
 
+If `debux` saves you a debugging session, a GitHub star helps other Docker and Kubernetes users find it.
+
 ## Why debux?
 
 - **Works when `docker exec` is useless** — distroless, scratch, Alpine, and tiny production images.
@@ -37,6 +45,22 @@ It starts a temporary debug toolbox next to your target container, shares useful
 - **Install tools on demand** — `dctl install <pkg>` pulls from nixpkgs during a debug session.
 - **Target-aware shell** — jump into the target root, inspect target processes, and reuse the target network namespace.
 - **Open source** — no paid Docker Desktop or OrbStack subscription required.
+
+## When to use it
+
+- You have a running container or pod, but the image has no shell or package manager.
+- You need incident-response tools without rebuilding or bloating production images.
+- You want one debugger for local Docker containers and Kubernetes workloads.
+- You need a free, open-source alternative to desktop-only container debugging features.
+
+## How debux is different
+
+| Usual option | Where it falls short | Debux approach |
+|---|---|---|
+| `docker exec` | Requires tools and a shell inside the target image. | Starts a separate toolbox and attaches it to the target. |
+| `kubectl debug` | Kubernetes-only, and you still need to curate a debug image. | Provides one Docker + Kubernetes workflow with a Nix toolbox. |
+| Rebuilding the app image | Slow during incidents and changes the artifact you are debugging. | Leaves the application image untouched. |
+| Shipping debug tools in prod | Increases image size and attack surface. | Keeps production images minimal and installs tools on demand. |
 
 ## Quick start
 
@@ -90,6 +114,17 @@ Interactive picker:
 debux docker://
 ```
 
+Full-screen target browser with Docker, Kubernetes context/namespace navigation, recent sessions, option toggles, and optional new-terminal launch support:
+
+```bash
+debux tui
+# keys: / filter, enter open/drill down, ←/→ or tab cycle sources,
+#       d/k/y jump to Docker/Kubernetes/History,
+#       b back, s search pods, r reload
+```
+
+The dashboard presents source sections first. Kubernetes pods are loaded only after you pick a context and namespace, and the Kubernetes view includes a current context/default namespace shortcut so common cases are one click. `enter` opens in the current terminal and returns to the TUI when the shell exits. External launch with `t` is disabled unless you explicitly set `DEBUX_TERMINAL`.
+
 Even if the target image has no shell:
 
 ```bash
@@ -104,8 +139,9 @@ debux distroless
 # Current kube-context namespace
 debux k8s://my-pod
 
-# Explicit namespace
+# Explicit namespace in the target or with --namespace/-n
 debux k8s://my-namespace/my-pod
+debux k8s://my-pod --namespace my-namespace
 
 # Specific container in a multi-container pod
 debux k8s://my-namespace/my-pod/my-container
@@ -215,7 +251,7 @@ Persistence model:
 | `docker://<container>` | Docker | Debug a Docker container. |
 | `k8s://` | Kubernetes | Open the pod picker in the current kube-context namespace. |
 | `k8s://<pod>` | Kubernetes | Debug a pod in the current kube-context namespace. |
-| `k8s://<namespace>/<pod>` | Kubernetes | Debug a pod in an explicit namespace. |
+| `k8s://<namespace>/<pod>` | Kubernetes | Debug a pod in an explicit namespace (or use `--namespace` / `-n`). |
 | `k8s://<namespace>/<pod>/<container>` | Kubernetes | Debug a specific container. |
 | `k8s://@<context>` | Kubernetes | Open the pod picker in a specific kube context. |
 | `k8s://@<context>/<pod>` | Kubernetes | Debug a pod in a specific context and that context's namespace. |
@@ -230,15 +266,18 @@ Persistence model:
 | `--fresh` | Force a new debug container instead of reusing an existing session. |
 | `--copy` | Kubernetes: create a copied debug pod instead of an ephemeral container. |
 | `--no-volumes` | Do not mount target volumes directly. This is not an isolation boundary if the debug container can access `/proc/1/root`. |
+| `--read-only-volumes` | Mount target volumes read-only in the debug container to reduce accidental writes. This is not a security boundary if `/proc/1/root` is accessible. |
 | `--pull-policy <policy>` | Debug image pull policy for Docker/Kubernetes: `Always`, `IfNotPresent`, `Never`. |
 | `--profile <profile>` | Kubernetes security profile: `general`, `baseline`, `restricted`, `netadmin`, `sysadmin`. |
 | `--user <uid[:gid]>` | Run the debug container as a specific user. |
 | `--kubeconfig <path>` | Override kubeconfig path. |
 | `--context <name>` | Kubernetes kube context name. |
+| `-n, --namespace <name>` | Kubernetes namespace for pod pickers, pod targets without an inline namespace, `kill`, and `doctor`. |
 
 ### Standalone Kubernetes debug pod
 
 ```bash
+debux pod                    # current kube-context namespace
 debux pod -n my-namespace
 
 debux pod -n my-namespace --host-network
@@ -264,10 +303,12 @@ The image filesystem is copied into the debug container and exposed at `/target`
 # Kill a Docker or Kubernetes debug session
 debux kill docker://my-app
 debux kill k8s://my-namespace/my-pod
+debux kill k8s://my-pod --namespace my-namespace
 
 # Kill all sessions in the selected runtime
 debux kill --all
 debux kill k8s://my-namespace/ --all
+debux kill --all --namespace my-namespace
 
 # Inspect or clean persistent Docker Nix stores
 debux store info
@@ -277,10 +318,14 @@ debux store clean
 debux docker://my-app -- curl -I localhost
 debux k8s://my-namespace/my-pod/app -- ps aux
 
+# Browse Docker, Kubernetes, and recent sessions in the full-screen TUI
+debux tui
+
 # Diagnose local Docker/Kubernetes readiness
 debux doctor
 debux doctor --strict
 debux doctor k8s://my-namespace/my-pod --profile=restricted
+debux doctor k8s://my-pod --namespace my-namespace
 
 # Version and release metadata
 debux version
@@ -318,7 +363,7 @@ It does **not** automatically grant:
 - a way to bypass PodSecurity, admission webhooks, seccomp, AppArmor, or runtime policy;
 - local Docker toolbox/history persistence inside Kubernetes pods.
 
-`--no-volumes` only disables direct volume mounts into the debug container. It is not a security boundary if the debug container can still access the target via `/proc/1/root`.
+`--no-volumes` only disables direct volume mounts into the debug container, and `--read-only-volumes` makes those direct mounts read-only. Neither is a security boundary if the debug container can still access the target via `/proc/1/root`.
 
 RBAC implication: granting a user the ability to update `pods/ephemeralcontainers` and create `pods/exec` is effectively granting the ability to run code inside selected pods. Treat it like production shell access.
 
@@ -394,7 +439,9 @@ mise run build          # Build CLI
 mise run install        # install local dev binary to ~/.local/bin
 mise run uninstall      # remove local dev binary from ~/.local/bin
 mise run test           # go test ./...
+mise run tidy           # go mod tidy
 mise run lint           # golangci-lint run
+mise run vulncheck      # govulncheck with the project allowlist
 mise run check          # hk checks on all files
 mise run fix            # hk fixes on all files
 mise run hooks-install  # install hk git hooks with mise integration
@@ -534,6 +581,13 @@ Verify with:
 kubectl exec -n my-namespace my-pod -- \
   stat -c '%A %a %u:%g %n' /app /app/manage.py
 ```
+
+## Community
+
+- Questions, ideas, and usage help: [GitHub Discussions](https://github.com/clement-tourriere/debux/discussions).
+- Bugs: [open an issue](https://github.com/clement-tourriere/debux/issues/new/choose) with the generated template.
+- Security reports: [open a private security advisory](https://github.com/clement-tourriere/debux/security/advisories/new) — see [`SECURITY.md`](SECURITY.md).
+- If Debux is useful to you, consider [starring the repo](https://github.com/clement-tourriere/debux/stargazers).
 
 ## License
 

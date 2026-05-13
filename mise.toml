@@ -1,5 +1,5 @@
 [tools]
-go = "1.26.2"
+go = "1.26.3"
 golangci-lint = "2.10.1"
 goreleaser = "2.15.4"
 hk = "1.44.2"
@@ -64,6 +64,14 @@ run = "scripts/e2e-kubernetes.sh"
 [tasks.test]
 description = "Run tests"
 run = "go test ./..."
+
+[tasks.tidy]
+description = "Tidy Go module files"
+run = "go mod tidy"
+
+[tasks.vulncheck]
+description = "Run govulncheck with the project allowlist"
+run = "scripts/govulncheck.sh ./..."
 
 [tasks.lint]
 description = "Run linter"
