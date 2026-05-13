@@ -40,7 +40,7 @@ func EnsureImageWithPolicy(ctx context.Context, cli *client.Client, ref, pullPol
 
 // ImageExists reports whether ref is present locally.
 func ImageExists(ctx context.Context, cli *client.Client, ref string) bool {
-	_, _, err := cli.ImageInspectWithRaw(ctx, ref)
+	_, err := cli.ImageInspect(ctx, ref)
 	return err == nil
 }
 

@@ -26,6 +26,7 @@ func newVersionCmd() *cobra.Command {
 		Short: "Show debux version information",
 		Example: `  debux version
   debux version --json`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			info := versionInfo{
 				Version:      version.String(),

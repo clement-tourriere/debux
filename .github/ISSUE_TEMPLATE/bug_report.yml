@@ -1,0 +1,96 @@
+name: Bug report
+description: Report something that is not working as expected
+title: "bug: "
+labels: ["bug", "needs-repro"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please include enough detail for someone else to reproduce it.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: debux version
+      description: Paste `debux version --json` when possible.
+      placeholder: '{"version":"...","commit":"..."}'
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - Docker
+        - Kubernetes
+        - Both
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS, architecture, Docker/Kubernetes version, and cluster/runtime details if relevant.
+      placeholder: macOS arm64, Docker Desktop 4.x / Kubernetes 1.x
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: Paste the exact command you ran.
+      render: bash
+      placeholder: debux k8s://namespace/pod/container --profile=restricted
+    validations:
+      required: true
+
+  - type: textarea
+    id: target
+    attributes:
+      label: Target image or pod details
+      description: Image type, pod security context, namespace, container count, or anything unusual.
+      placeholder: distroless/scratch/Alpine image, multi-container pod, restricted PodSecurity, etc.
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and logs
+      description: Include terminal output, errors, and relevant Docker/Kubernetes events.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: If possible, provide a Docker command, Kubernetes manifest, or steps to reproduce.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and discussions.
+          required: true
+        - label: I checked the documentation and troubleshooting section.
+          required: true

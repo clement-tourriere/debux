@@ -13,16 +13,18 @@ import (
 const docsURL = "https://clement-tourriere.github.io/debux/"
 
 var (
-	flagImage       string
-	flagPrivileged  bool
-	flagUser        string
-	flagRemove      bool
-	flagNoVolumes   bool
-	flagPullPolicy  string
-	flagKubeContext string
-	flagFresh       bool
-	flagCopy        bool
-	flagProfile     string
+	flagImage           string
+	flagPrivileged      bool
+	flagUser            string
+	flagRemove          bool
+	flagNoVolumes       bool
+	flagReadOnlyVolumes bool
+	flagPullPolicy      string
+	flagKubeContext     string
+	flagNamespace       string
+	flagFresh           bool
+	flagCopy            bool
+	flagProfile         string
 )
 
 const rootLong = `debux starts a rich Nix-powered debug container next to your target.
@@ -39,7 +41,7 @@ Target formats:
   docker://                       Docker picker
   k8s://                          Kubernetes pod picker
   k8s://<pod>                     Pod in the current kube-context namespace
-  k8s://<namespace>/<pod>         Pod in an explicit namespace
+  k8s://<namespace>/<pod>         Pod in an explicit namespace (or use -n/--namespace)
   k8s://<namespace>/<pod>/<ctr>   Specific container in a pod
   k8s://@<context>                Pod picker in a specific kube context
   k8s://@<context>/<pod>          Pod in that context's namespace
@@ -69,6 +71,7 @@ const rootExample = `  # Pick a Docker container interactively
 
   # Debug a Kubernetes pod or a specific container
   debux k8s://api-pod
+  debux k8s://api-pod --namespace prod
   debux k8s://prod/api-pod
   debux k8s://prod/api-pod/app
   debux k8s://@eks-preprod-01/prod/api-pod/app
@@ -84,6 +87,9 @@ const rootExample = `  # Pick a Docker container interactively
 
   # Pull the latest debug image and force a fresh session
   debux k8s://prod/api-pod/app --fresh --pull-policy=Always
+
+  # Mount target volumes read-only to reduce accidental writes
+  debux k8s://prod/api-pod/app --read-only-volumes
 
   # Run a one-shot command inside the debug toolbox
   debux docker://my-app -- curl -I localhost
@@ -108,6 +114,7 @@ func NewRootCmd() *cobra.Command {
 	addExecFlags(cmd)
 
 	cmd.AddCommand(newExecCmd())
+	cmd.AddCommand(newTUICmd())
 	cmd.AddCommand(newImageCmd())
 	cmd.AddCommand(newPodCmd())
 	cmd.AddCommand(newKillCmd())
@@ -126,6 +133,7 @@ func addExecFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&flagImage, "image", "", fmt.Sprintf("Debug image (default %s)", runtime.DefaultImage))
 	cmd.Flags().BoolVar(&flagFresh, "fresh", false, "Create a fresh debug container instead of reusing an existing debux session")
 	cmd.Flags().BoolVar(&flagNoVolumes, "no-volumes", false, "Do not directly mount target volumes (not a security boundary if /proc/1/root is accessible)")
+	cmd.Flags().BoolVar(&flagReadOnlyVolumes, "read-only-volumes", false, "Mount target volumes read-only in the debug container")
 	cmd.Flags().StringVar(&flagUser, "user", "", "Run debug container as uid[:gid]")
 	cmd.Flags().BoolVar(&flagPrivileged, "privileged", false, "Run privileged (Docker); Kubernetes alias for --profile=sysadmin")
 	cmd.Flags().BoolVar(&flagCopy, "copy", false, "Kubernetes: use a temporary copied pod instead of an ephemeral container")
@@ -134,6 +142,7 @@ func addExecFlags(cmd *cobra.Command) {
 		fmt.Sprintf("Kubernetes: security profile (%s)", strings.Join(runtime.ValidProfiles, ", ")))
 	cmd.Flags().String("kubeconfig", "", "Kubernetes: kubeconfig path")
 	cmd.Flags().StringVar(&flagKubeContext, "context", "", "Kubernetes: kube context name")
+	cmd.Flags().StringVarP(&flagNamespace, "namespace", "n", "", "Kubernetes: namespace")
 }
 
 func addImageFlags(cmd *cobra.Command) {
@@ -156,15 +165,26 @@ func addPodDebugFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&flagKubeContext, "context", "", "Kube context name")
 }
 
-func addKubeconfigFlag(cmd *cobra.Command) {
+func addKubernetesFlags(cmd *cobra.Command) {
 	cmd.Flags().SortFlags = false
 	cmd.Flags().String("kubeconfig", "", "Kubeconfig path")
 	cmd.Flags().StringVar(&flagKubeContext, "context", "", "Kube context name")
+	cmd.Flags().StringVarP(&flagNamespace, "namespace", "n", "", "Kubernetes namespace")
 }
 
 func flagChanged(cmd *cobra.Command, name string) bool {
 	flag := cmd.Flags().Lookup(name)
 	return flag != nil && flag.Changed
+}
+
+func resolveKubeNamespace(cmd *cobra.Command, targetNamespace string) (string, error) {
+	if !flagChanged(cmd, "namespace") {
+		return targetNamespace, nil
+	}
+	if targetNamespace != "" && targetNamespace != flagNamespace {
+		return "", fmt.Errorf("conflicting Kubernetes namespaces: target uses %q but --namespace=%q", targetNamespace, flagNamespace)
+	}
+	return flagNamespace, nil
 }
 
 // resolveProfile resolves the security profile from --profile and --privileged flags.
