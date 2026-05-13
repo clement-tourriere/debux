@@ -6,6 +6,35 @@ import (
 	"github.com/clement-tourriere/debux/internal/runtime"
 )
 
+func TestResolveKubeNamespace(t *testing.T) {
+	cmd := newExecCmd()
+	if got, err := resolveKubeNamespace(cmd, "prod"); err != nil || got != "prod" {
+		t.Fatalf("resolveKubeNamespace without flag = %q, %v; want prod, nil", got, err)
+	}
+
+	cmd = newExecCmd()
+	if err := cmd.Flags().Set("namespace", "staging"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := resolveKubeNamespace(cmd, ""); err != nil || got != "staging" {
+		t.Fatalf("resolveKubeNamespace with flag = %q, %v; want staging, nil", got, err)
+	}
+
+	if _, err := resolveKubeNamespace(cmd, "prod"); err == nil {
+		t.Fatalf("resolveKubeNamespace should reject conflicting target and flag namespaces")
+	}
+}
+
+func TestValidateExecFlagsRejectsNamespaceForDocker(t *testing.T) {
+	cmd := newExecCmd()
+	if err := cmd.Flags().Set("namespace", "prod"); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateExecFlags(cmd, "docker"); err == nil {
+		t.Fatalf("validateExecFlags should reject --namespace for Docker targets")
+	}
+}
+
 func TestReportHasFailures(t *testing.T) {
 	report := doctorReport{Sections: []doctorReportSection{{
 		Name:   "test",

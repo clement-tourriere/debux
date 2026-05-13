@@ -101,18 +101,19 @@ type Target struct {
 
 // DebugOpts are options for debugging a running container.
 type DebugOpts struct {
-	Image        string
-	Privileged   bool
-	User         string
-	AutoRemove   bool
-	Kubeconfig   string
-	KubeContext  string
-	ShareVolumes bool     // share target container's volumes (default: true)
-	PullPolicy   string   // debug image pull policy (Always, IfNotPresent, Never)
-	Fresh        bool     // force a new ephemeral container instead of reusing an existing one
-	Copy         bool     // for Kubernetes: debug a copied pod instead of using ephemeral containers
-	Profile      string   // security profile (general, baseline, restricted, netadmin, sysadmin)
-	Command      []string // optional command to run instead of opening an interactive shell
+	Image           string
+	Privileged      bool
+	User            string
+	AutoRemove      bool
+	Kubeconfig      string
+	KubeContext     string
+	ShareVolumes    bool     // share target container's volumes (default: true)
+	ReadOnlyVolumes bool     // mount shared target volumes read-only
+	PullPolicy      string   // debug image pull policy (Always, IfNotPresent, Never)
+	Fresh           bool     // force a new ephemeral container instead of reusing an existing one
+	Copy            bool     // for Kubernetes: debug a copied pod instead of using ephemeral containers
+	Profile         string   // security profile (general, baseline, restricted, netadmin, sysadmin)
+	Command         []string // optional command to run instead of opening an interactive shell
 }
 
 // PodOpts are options for creating a standalone debug pod.
