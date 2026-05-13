@@ -1,6 +1,6 @@
 ---
 name: debux-release
-description: Use this skill when the user asks Claude to cut, publish, prepare, or automate a Debux release. It runs release checks, uses Commitizen to bump the version/changelog/tag, pushes the release tag and changes, waits for the GitHub Release workflow, and polishes the GitHub release notes.
+description: Use this skill when the user asks to cut, publish, prepare, or automate a Debux release. It runs release checks, uses Commitizen to bump the version/changelog/tag, pushes the release tag and changes, waits for the GitHub Release workflow, and polishes the GitHub release notes.
 ---
 
 # Debux release skill
@@ -47,7 +47,7 @@ bash .claude/skills/debux-release/scripts/release.sh --timeout 5400
 bash .claude/skills/debux-release/scripts/release.sh --no-edit-release-notes
 ```
 
-## Claude workflow
+## Agent workflow
 
 When using this skill:
 
