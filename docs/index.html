@@ -474,6 +474,15 @@
         margin-bottom: 0;
       }
 
+      .clean-list {
+        padding-left: 1.1rem;
+        margin: 0.75rem 0 0;
+      }
+
+      .clean-list li {
+        margin: 0.35rem 0;
+      }
+
       .feature-icon {
         width: 42px;
         height: 42px;
@@ -757,6 +766,7 @@
           </a>
           <nav class="nav" aria-label="Docs navigation">
             <a href="#install">Install</a>
+            <a href="#tui">TUI</a>
             <a href="#docker">Docker</a>
             <a href="#kubernetes">Kubernetes</a>
             <a href="#security" class="hide-md">Security</a>
@@ -794,10 +804,10 @@
             <span class="line"><span class="prompt">❯</span> debux k8s://prod/api-7c9d/app</span>
             <span class="line dim">Waiting for debug container "debux-1777533699123" to start...</span>
             <span class="line"><span class="ok">✓</span> Debugging prod/api-7c9d (container: debux-1777533699123)</span>
-            <span class="line"><span class="prompt">[debux]</span> prod/api/app /proc/1/root/app # target</span>
-            <span class="line"><span class="prompt">[debux]</span> prod/api/app /proc/1/root # strace -p 1</span>
+            <span class="line"><span class="prompt">[debux]</span> eks-preprod-01:prod/api/app /proc/1/root/app # target</span>
+            <span class="line"><span class="prompt">[debux]</span> eks-preprod-01:prod/api/app /proc/1/root # strace -p 1</span>
             <span class="line dim">attach to target PID namespace, filesystem and network</span>
-            <span class="line"><span class="prompt">[debux]</span> prod/api/app /proc/1/root # dctl install postgresql</span>
+            <span class="line"><span class="prompt">[debux]</span> eks-preprod-01:prod/api/app /proc/1/root # dctl install postgresql</span>
           </div>
         </div>
       </section>
@@ -844,7 +854,11 @@
               <button class="copy" data-copy>Copy</button>
               <pre><code>curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh
 
-debux docker://</code></pre>
+debux docker://
+
+# Or browse Docker, Kubernetes and recent sessions
+# in the full-screen TUI
+debux tui</code></pre>
             </div>
             <div class="card code-card">
               <button class="copy" data-copy>Copy</button>
@@ -860,6 +874,46 @@ debux k8s://@eks-preprod-01
 # Force a brand-new debug container
 debux k8s://prod/api-pod/app --fresh</code></pre>
             </div>
+          </div>
+        </section>
+
+        <section id="tui" class="doc-section" data-search data-title="Full-screen TUI target browser Kubernetes context namespace history terminal launcher">
+          <div class="section-heading">
+            <h2>Full-screen TUI</h2>
+            <p>Use the TUI when you want to find a target visually instead of typing an exact container or pod name. It presents Docker, Kubernetes and History as clear source sections, supports keyboard navigation beyond number shortcuts, and avoids loading every pod at startup.</p>
+          </div>
+          <div class="grid two">
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code># Open the full-screen browser
+debux tui
+
+# Same command, shorter alias
+debux ui</code></pre>
+            </div>
+            <div class="card">
+              <h3>Useful keys</h3>
+              <ul class="clean-list">
+                <li><code>/</code> filter the current list</li>
+                <li><code>left</code> / <code>right</code> or <code>tab</code> cycle sources; <code>d</code>, <code>k</code>, <code>y</code> jump to Docker, Kubernetes and History</li>
+                <li><code>1</code>-<code>3</code> still work as optional source shortcuts</li>
+                <li><code>enter</code> drill into source/context/namespace lists or open a selected target</li>
+                <li><code>b</code> go back in Kubernetes navigation</li>
+                <li><code>s</code> search pods across the selected namespace when the initial pod list is too large</li>
+                <li><code>t</code> open externally only when <code>DEBUX_TERMINAL</code> is explicitly configured</li>
+                <li><code>r</code> reload the current view</li>
+                <li><code>f</code>, <code>c</code>, <code>v</code>, <code>o</code>, <code>p</code>, <code>i</code> toggle fresh, copy mode, volumes, read-only volumes, profile and pull policy</li>
+              </ul>
+            </div>
+          </div>
+          <div class="callout info" style="margin-top: 1rem;">
+            <strong>Fast Kubernetes browsing:</strong> the TUI first loads kubeconfig contexts only and includes a current context/default namespace shortcut for one-click access. Pods are fetched lazily after you choose a context and namespace, using lightweight metadata. If the namespace is huge, press <code>s</code> from the pod view to search the whole namespace by substring.
+          </div>
+          <div class="callout info" style="margin-top: 1rem;">
+            <strong>No surprise terminal launches:</strong> <code>enter</code> always uses the current terminal and returns to the TUI when the shell exits. The optional <code>t</code> shortcut is disabled unless you explicitly set <code>DEBUX_TERMINAL</code>.
+          </div>
+          <div class="callout" style="margin-top: 1rem;">
+            <strong>Session history:</strong> debux records launched sessions in <code>$XDG_STATE_HOME/debux/history.json</code>, or <code>~/.local/state/debux/history.json</code> when <code>XDG_STATE_HOME</code> is unset, so the TUI can quickly reopen previous debug sessions.
           </div>
         </section>
 
@@ -953,7 +1007,10 @@ debux docker://my-nginx</code></pre>
             </div>
             <div class="card code-card">
               <button class="copy" data-copy>Copy</button>
-              <pre><code># Interactive picker for running containers
+              <pre><code># Full-screen browser with Docker, Kubernetes and history
+debux tui
+
+# Lightweight picker for running containers
 debux docker://
 
 # Force a new debug sidecar
@@ -1227,6 +1284,7 @@ debux store clean</code></pre>
               <tbody>
                 <tr><td><code>debux [target]</code></td><td>Debug a running Docker container or Kubernetes pod.</td></tr>
                 <tr><td><code>debux exec [target]</code></td><td>Explicit form of the default debug command. Aliases: <code>debug</code>, <code>shell</code>.</td></tr>
+                <tr><td><code>debux tui</code></td><td>Open the full-screen target browser for Docker, Kubernetes and recent sessions. Alias: <code>ui</code>.</td></tr>
                 <tr><td><code>debux image &lt;image&gt;</code></td><td>Debug a Docker image filesystem without starting it.</td></tr>
                 <tr><td><code>debux pod</code></td><td>Create a standalone Kubernetes debug pod.</td></tr>
                 <tr><td><code>debux kill [target]</code></td><td>Stop a running debux debug session.</td></tr>

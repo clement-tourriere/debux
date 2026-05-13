@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,9 +89,144 @@ type PodInfo struct {
 	HasDebuxSession bool // true if pod has a running debux ephemeral container
 }
 
+// KubeContextInfo holds kubeconfig context metadata for interactive navigation.
+type KubeContextInfo struct {
+	Name      string
+	Namespace string
+	Cluster   string
+	AuthInfo  string
+	Current   bool
+}
+
+// NamespaceInfo holds Kubernetes namespace metadata for interactive navigation.
+type NamespaceInfo struct {
+	Name   string
+	Status string
+}
+
 // KubernetesList returns running pods, optionally filtered by namespace.
 func KubernetesList(ctx context.Context, kubeconfig string, kubeContext string, namespace string) ([]PodInfo, error) {
 	return kubernetesListPods(ctx, kubeconfig, kubeContext, namespace, "")
+}
+
+// KubernetesCurrentContext returns the current kubeconfig context name, if any.
+func KubernetesCurrentContext(kubeconfig string) (string, error) {
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if kubeconfig != "" {
+		loadingRules.ExplicitPath = kubeconfig
+	}
+	raw, err := loadingRules.Load()
+	if err != nil {
+		return "", fmt.Errorf("loading kubeconfig: %w", err)
+	}
+	return raw.CurrentContext, nil
+}
+
+// KubernetesDefaultNamespace returns the namespace selected by kubeconfig for a context.
+func KubernetesDefaultNamespace(kubeconfig, kubeContext string) string {
+	return resolveNamespace(kubeconfig, kubeContext)
+}
+
+// KubernetesContexts returns kubeconfig contexts without contacting the cluster.
+func KubernetesContexts(kubeconfig string) ([]KubeContextInfo, error) {
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if kubeconfig != "" {
+		loadingRules.ExplicitPath = kubeconfig
+	}
+	raw, err := loadingRules.Load()
+	if err != nil {
+		return nil, fmt.Errorf("loading kubeconfig: %w", err)
+	}
+	contexts := make([]KubeContextInfo, 0, len(raw.Contexts))
+	for name, ctx := range raw.Contexts {
+		ns := ctx.Namespace
+		if ns == "" {
+			ns = "default"
+		}
+		contexts = append(contexts, KubeContextInfo{
+			Name:      name,
+			Namespace: ns,
+			Cluster:   ctx.Cluster,
+			AuthInfo:  ctx.AuthInfo,
+			Current:   name == raw.CurrentContext,
+		})
+	}
+	sort.SliceStable(contexts, func(i, j int) bool {
+		if contexts[i].Current != contexts[j].Current {
+			return contexts[i].Current
+		}
+		return contexts[i].Name < contexts[j].Name
+	})
+	return contexts, nil
+}
+
+// KubernetesNamespaces returns namespaces visible in the selected context.
+func KubernetesNamespaces(ctx context.Context, kubeconfig, kubeContext string) ([]NamespaceInfo, error) {
+	_, clientset, err := getK8sClient(kubeconfig, kubeContext)
+	if err != nil {
+		return nil, err
+	}
+	var result []NamespaceInfo
+	listOptions := metav1.ListOptions{Limit: 200}
+	for {
+		namespaces, err := clientset.CoreV1().Namespaces().List(ctx, listOptions)
+		if err != nil {
+			return nil, fmt.Errorf("listing namespaces: %w", err)
+		}
+		for _, ns := range namespaces.Items {
+			result = append(result, NamespaceInfo{Name: ns.Name, Status: string(ns.Status.Phase)})
+		}
+		if namespaces.Continue == "" {
+			break
+		}
+		listOptions.Continue = namespaces.Continue
+	}
+	sort.SliceStable(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	return result, nil
+}
+
+// KubernetesBrowsePods returns lightweight running pod metadata for interactive navigation.
+// It avoids per-pod GET enrichment so large namespaces remain responsive.
+func KubernetesBrowsePods(ctx context.Context, kubeconfig, kubeContext, namespace, query string, maxResults int) ([]PodInfo, bool, error) {
+	config, _, err := getK8sClient(kubeconfig, kubeContext)
+	if err != nil {
+		return nil, false, err
+	}
+	metadataClient, err := metadata.NewForConfig(config)
+	if err != nil {
+		return nil, false, fmt.Errorf("creating Kubernetes metadata client: %w", err)
+	}
+	if maxResults <= 0 {
+		maxResults = 300
+	}
+	namespace = resolveTargetNamespace(namespace, kubeconfig, kubeContext)
+	query = strings.ToLower(strings.TrimSpace(query))
+
+	var result []PodInfo
+	listOptions := metav1.ListOptions{
+		FieldSelector: "status.phase=Running",
+		Limit:         200,
+	}
+	for {
+		pods, err := metadataClient.Resource(podsResource).Namespace(namespace).List(ctx, listOptions)
+		if err != nil {
+			return nil, false, fmt.Errorf("listing pods: %w", err)
+		}
+		for _, pod := range pods.Items {
+			if query != "" && !matchesPodQuery(pod.Namespace, pod.Name, query) {
+				continue
+			}
+			result = append(result, PodInfo{Name: pod.Name, Namespace: pod.Namespace, Context: kubeContext, Status: "Running"})
+			if len(result) >= maxResults {
+				return result, true, nil
+			}
+		}
+		if pods.Continue == "" {
+			break
+		}
+		listOptions.Continue = pods.Continue
+	}
+	return result, false, nil
 }
 
 const (
@@ -364,6 +500,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 
 	namespace := resolveTargetNamespace(target.Namespace, opts.Kubeconfig, opts.KubeContext)
 	podName := target.Name
+	displayContext := kubernetesDisplayContext(opts.Kubeconfig, opts.KubeContext)
 
 	// Get the target pod
 	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
@@ -378,8 +515,10 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		return err
 	}
 
+	debuxTarget := kubernetesDebugTargetLabel(displayContext, namespace, podName, targetContainer)
+
 	if opts.Copy {
-		return kubernetesExecWithPodCopy(ctx, config, clientset, namespace, pod, targetContainer, opts)
+		return kubernetesExecWithPodCopy(ctx, config, clientset, namespace, pod, targetContainer, opts, displayContext)
 	}
 
 	// Try to reuse an existing running debux container for the same target container.
@@ -387,7 +526,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		if existing := findRunningDebuxContainerForTarget(pod, targetContainer, opts.Profile); existing != "" {
 			fmt.Printf("Reusing debug container %q\n", existing)
 			fmt.Printf("Debugging %s/%s (container: %s)\n", namespace, podName, existing)
-			return execInPod(ctx, config, clientset, namespace, podName, existing, opts.Command)
+			return execInPodWithMetadata(ctx, config, clientset, namespace, podName, existing, debuxTarget, displayContext, opts.Command)
 		}
 	}
 
@@ -395,7 +534,6 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	// Use nanoseconds to avoid name collisions when retrying after a fast failure;
 	// ephemeral containers cannot be removed from the pod spec.
 	debugContainerName := fmt.Sprintf("debux-%d", time.Now().UnixNano())
-	debuxTarget := kubernetesDebugTargetLabel(opts.KubeContext, namespace, podName, targetContainer)
 
 	ephemeralContainer := corev1.EphemeralContainer{
 		EphemeralContainerCommon: corev1.EphemeralContainerCommon{
@@ -407,6 +545,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 			TTY:             true,
 			Env: []corev1.EnvVar{
 				{Name: "DEBUX_TARGET", Value: debuxTarget},
+				{Name: "DEBUX_CONTEXT", Value: displayContext},
 				{Name: "DEBUX_TARGET_ROOT", Value: "/proc/1/root"},
 				{Name: "DEBUX_DAEMON", Value: "1"},
 				{Name: "DEBUX_SECURITY_PROFILE", Value: opts.Profile},
@@ -478,10 +617,10 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	fmt.Printf("Debugging %s/%s (container: %s)\n", namespace, podName, debugContainerName)
 
 	// Exec into the daemon container to start an interactive shell
-	return execInPod(ctx, config, clientset, namespace, podName, debugContainerName, opts.Command)
+	return execInPodWithMetadata(ctx, config, clientset, namespace, podName, debugContainerName, debuxTarget, displayContext, opts.Command)
 }
 
-func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace string, sourcePod *corev1.Pod, targetContainer string, opts DebugOpts) error {
+func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace string, sourcePod *corev1.Pod, targetContainer string, opts DebugOpts, displayContext string) error {
 	spec := *sourcePod.Spec.DeepCopy()
 
 	// The copied pod should be scheduler-managed, not pinned to the original node.
@@ -516,7 +655,8 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 		Stdin:           true,
 		TTY:             true,
 		Env: []corev1.EnvVar{
-			{Name: "DEBUX_TARGET", Value: kubernetesDebugTargetLabel(opts.KubeContext, namespace, sourcePod.Name, targetContainer)},
+			{Name: "DEBUX_TARGET", Value: kubernetesDebugTargetLabel(displayContext, namespace, sourcePod.Name, targetContainer)},
+			{Name: "DEBUX_CONTEXT", Value: displayContext},
 			{Name: "DEBUX_DAEMON", Value: "1"},
 			{Name: "DEBUX_SECURITY_PROFILE", Value: opts.Profile},
 			{Name: "HOME", Value: "/root"},
@@ -587,6 +727,17 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 	fmt.Printf("Debugging copy %s/%s (container: %s, source: %s)\n", namespace, created.Name, debugContainerName, sourcePod.Name)
 
 	return execInPodWithCommand(ctx, config, clientset, namespace, created.Name, debugContainerName, copyPodShellCommand(targetContainerID, opts.Command))
+}
+
+func kubernetesDisplayContext(kubeconfig, kubeContext string) string {
+	if kubeContext != "" {
+		return kubeContext
+	}
+	current, err := KubernetesCurrentContext(kubeconfig)
+	if err != nil {
+		return ""
+	}
+	return current
 }
 
 func kubernetesDebugTargetLabel(kubeContext, namespace, podName, containerName string) string {
@@ -800,13 +951,13 @@ const debuxShellSetupCommand = `if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ] || [ !
 
 const debuxZshExecCommand = debuxShellSetupCommand + ` exec zsh`
 
-// execInPod starts a new interactive zsh session inside a running container
-// using the /exec subresource (unlike attachToPod which uses /attach).
-func execInPod(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string, command []string) error {
+func execInPodWithMetadata(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName, targetLabel, kubeContext string, command []string) error {
 	if err := bootstrapPodShell(ctx, config, clientset, namespace, podName, containerName); err != nil {
 		return fmt.Errorf("preparing debux shell config: %w", err)
 	}
-	return execInPodWithCommand(ctx, config, clientset, namespace, podName, containerName, debuxExecCommand(command))
+	cmd := debuxExecCommand(command)
+	cmd[2] = "export DEBUX_TARGET=" + shellQuote(targetLabel) + " DEBUX_CONTEXT=" + shellQuote(kubeContext) + "; " + cmd[2]
+	return execInPodWithCommand(ctx, config, clientset, namespace, podName, containerName, cmd)
 }
 
 func bootstrapPodShell(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string) error {
@@ -906,6 +1057,11 @@ func KubernetesPod(ctx context.Context, opts PodOpts) error {
 	}
 
 	podName := fmt.Sprintf("debux-%d", time.Now().Unix())
+	displayContext := kubernetesDisplayContext(opts.Kubeconfig, opts.KubeContext)
+	displayTarget := fmt.Sprintf("pod/%s", podName)
+	if displayContext != "" {
+		displayTarget = fmt.Sprintf("%s:%s", displayContext, displayTarget)
+	}
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -925,7 +1081,8 @@ func KubernetesPod(ctx context.Context, opts PodOpts) error {
 					Stdin:           true,
 					TTY:             true,
 					Env: []corev1.EnvVar{
-						{Name: "DEBUX_TARGET", Value: fmt.Sprintf("pod/%s", podName)},
+						{Name: "DEBUX_TARGET", Value: displayTarget},
+						{Name: "DEBUX_CONTEXT", Value: displayContext},
 						{Name: "DEBUX_SECURITY_PROFILE", Value: opts.Profile},
 						{Name: "HOME", Value: "/root"},
 						{Name: "ZDOTDIR", Value: "/tmp"},

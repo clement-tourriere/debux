@@ -90,6 +90,17 @@ Interactive picker:
 debux docker://
 ```
 
+Full-screen target browser with Docker, Kubernetes context/namespace navigation, recent sessions, option toggles, and optional new-terminal launch support:
+
+```bash
+debux tui
+# keys: / filter, enter open/drill down, ←/→ or tab cycle sources,
+#       d/k/y jump to Docker/Kubernetes/History,
+#       b back, s search pods, r reload
+```
+
+The dashboard presents source sections first. Kubernetes pods are loaded only after you pick a context and namespace, and the Kubernetes view includes a current context/default namespace shortcut so common cases are one click. `enter` opens in the current terminal and returns to the TUI when the shell exits. External launch with `t` is disabled unless you explicitly set `DEBUX_TERMINAL`.
+
 Even if the target image has no shell:
 
 ```bash
@@ -282,6 +293,9 @@ debux store clean
 # Run a one-shot command through the debug toolbox
 debux docker://my-app -- curl -I localhost
 debux k8s://my-namespace/my-pod/app -- ps aux
+
+# Browse Docker, Kubernetes, and recent sessions in the full-screen TUI
+debux tui
 
 # Diagnose local Docker/Kubernetes readiness
 debux doctor

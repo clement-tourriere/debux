@@ -12,6 +12,7 @@ func TestShellBootstrapScriptIncludesDebuxZshConfig(t *testing.T) {
 		"cat > /tmp/.zshrc << 'ZSHRC_EOF'",
 		"command_not_found_handler()",
 		"PS1=",
+		"DEBUX_CONTEXT",
 		"alias target='cd $DEBUX_TARGET_ROOT'",
 		"[[ \"$entry\" == *=* ]] || continue",
 		"rm -rf \"$wrapper_dir\"",

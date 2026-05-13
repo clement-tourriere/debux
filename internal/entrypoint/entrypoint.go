@@ -160,6 +160,9 @@ command_not_found_handler() {
 
 # Prompt
 target="${DEBUX_TARGET:-unknown}"
+if [[ -n "${DEBUX_CONTEXT:-}" && "$target" != "${DEBUX_CONTEXT}:"* && "$target" != "${DEBUX_CONTEXT}/"* ]]; then
+  target="${DEBUX_CONTEXT}:${target}"
+fi
 PS1="%F{cyan}[debux]%f %F{yellow}${target}%f %F{blue}%~%f %# "
 
 # Session banner

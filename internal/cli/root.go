@@ -114,6 +114,7 @@ func NewRootCmd() *cobra.Command {
 	addExecFlags(cmd)
 
 	cmd.AddCommand(newExecCmd())
+	cmd.AddCommand(newTUICmd())
 	cmd.AddCommand(newImageCmd())
 	cmd.AddCommand(newPodCmd())
 	cmd.AddCommand(newKillCmd())

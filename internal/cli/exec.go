@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/clement-tourriere/debux/internal/history"
 	"github.com/clement-tourriere/debux/internal/picker"
 	"github.com/clement-tourriere/debux/internal/runtime"
 	"github.com/spf13/cobra"
@@ -138,6 +139,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 		Profile:         profile,
 		Command:         command,
 	}
+
+	recordDebugHistory(target, opts)
 
 	switch target.Runtime {
 	case "docker":
@@ -308,4 +311,11 @@ func formatK8sPodLabel(p runtime.PodInfo, active bool) string {
 		label = "● " + label
 	}
 	return label
+}
+
+func recordDebugHistory(target *runtime.Target, opts runtime.DebugOpts) {
+	if target == nil || target.Name == "" {
+		return
+	}
+	_ = history.Append(history.NewEntry(target, formatTargetURI(target), opts, "cli"))
 }

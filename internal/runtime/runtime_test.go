@@ -92,6 +92,14 @@ func TestFindRunningDebuxContainerForTargetHonorsProfile(t *testing.T) {
 	}
 }
 
+func TestKubernetesDebugTargetLabelIncludesContext(t *testing.T) {
+	got := kubernetesDebugTargetLabel("prod-context", "gim", "api", "app")
+	want := "prod-context:gim/api/app"
+	if got != want {
+		t.Fatalf("kubernetesDebugTargetLabel() = %q, want %q", got, want)
+	}
+}
+
 func TestDebuxExecCommandQuotesOneShotCommand(t *testing.T) {
 	cmd := debuxExecCommand([]string{"sh", "-c", "echo 'hello world'"})
 	if len(cmd) != 3 || cmd[0] != "sh" || cmd[1] != "-c" {
