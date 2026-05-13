@@ -8,17 +8,23 @@
   <a href="https://github.com/clement-tourriere/debux/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/clement-tourriere/debux/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/clement-tourriere/debux/actions/workflows/docker.yml"><img alt="Docker" src="https://github.com/clement-tourriere/debux/actions/workflows/docker.yml/badge.svg"></a>
   <a href="https://github.com/clement-tourriere/debux/actions/workflows/pages.yml"><img alt="Docs" src="https://github.com/clement-tourriere/debux/actions/workflows/pages.yml/badge.svg"></a>
+  <a href="https://github.com/clement-tourriere/debux/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/clement-tourriere/debux?sort=semver"></a>
+  <a href="https://github.com/clement-tourriere/debux/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/clement-tourriere/debux"></a>
   <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
 </p>
 
 <p align="center">
   <a href="https://clement-tourriere.github.io/debux/"><strong>Read the docs</strong></a>
   ·
+  <a href="#why-debux">Why debux?</a>
+  ·
   <a href="#quick-start">Quick start</a>
   ·
   <a href="#kubernetes">Kubernetes</a>
   ·
   <a href="#troubleshooting">Troubleshooting</a>
+  ·
+  <a href="#community">Community</a>
 </p>
 
 ---
@@ -29,6 +35,8 @@ It starts a temporary debug toolbox next to your target container, shares useful
 
 📚 **Full documentation:** <https://clement-tourriere.github.io/debux/> — includes a `Ctrl`/`Cmd` + `K` search palette.
 
+If `debux` saves you a debugging session, a GitHub star helps other Docker and Kubernetes users find it.
+
 ## Why debux?
 
 - **Works when `docker exec` is useless** — distroless, scratch, Alpine, and tiny production images.
@@ -37,6 +45,22 @@ It starts a temporary debug toolbox next to your target container, shares useful
 - **Install tools on demand** — `dctl install <pkg>` pulls from nixpkgs during a debug session.
 - **Target-aware shell** — jump into the target root, inspect target processes, and reuse the target network namespace.
 - **Open source** — no paid Docker Desktop or OrbStack subscription required.
+
+## When to use it
+
+- You have a running container or pod, but the image has no shell or package manager.
+- You need incident-response tools without rebuilding or bloating production images.
+- You want one debugger for local Docker containers and Kubernetes workloads.
+- You need a free, open-source alternative to desktop-only container debugging features.
+
+## How debux is different
+
+| Usual option | Where it falls short | Debux approach |
+|---|---|---|
+| `docker exec` | Requires tools and a shell inside the target image. | Starts a separate toolbox and attaches it to the target. |
+| `kubectl debug` | Kubernetes-only, and you still need to curate a debug image. | Provides one Docker + Kubernetes workflow with a Nix toolbox. |
+| Rebuilding the app image | Slow during incidents and changes the artifact you are debugging. | Leaves the application image untouched. |
+| Shipping debug tools in prod | Increases image size and attack surface. | Keeps production images minimal and installs tools on demand. |
 
 ## Quick start
 
@@ -557,6 +581,13 @@ Verify with:
 kubectl exec -n my-namespace my-pod -- \
   stat -c '%A %a %u:%g %n' /app /app/manage.py
 ```
+
+## Community
+
+- Questions, ideas, and usage help: [GitHub Discussions](https://github.com/clement-tourriere/debux/discussions).
+- Bugs: [open an issue](https://github.com/clement-tourriere/debux/issues/new/choose) with the generated template.
+- Security reports: [open a private security advisory](https://github.com/clement-tourriere/debux/security/advisories/new) — see [`SECURITY.md`](SECURITY.md).
+- If Debux is useful to you, consider [starring the repo](https://github.com/clement-tourriere/debux/stargazers).
 
 ## License
 
