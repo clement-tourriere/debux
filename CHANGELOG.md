@@ -1,3 +1,9 @@
+## v0.4.0 (2026-05-13)
+
+### Feat
+
+- make release skill agent-neutral
+
 ## v0.3.0 (2026-05-13)
 
 ### Feat
