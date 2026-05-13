@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/clement-tourriere/debux/internal/history"
 	"github.com/clement-tourriere/debux/internal/picker"
 	"github.com/clement-tourriere/debux/internal/runtime"
 	"github.com/spf13/cobra"
@@ -31,9 +32,11 @@ Security: the default Kubernetes profile is root inside the pod. Use
   debux exec k8s://
   debux exec k8s://@eks-preprod-01/prod/api-pod/app
   debux exec k8s://prod/webapp-internal-api
+  debux exec k8s://api-pod/app --namespace prod
   debux exec k8s://prod/api-pod/app --context eks-preprod-01
   debux exec k8s://prod/api-pod/app --profile=restricted
   debux exec k8s://prod/api-pod/app --fresh --pull-policy=Always
+  debux exec k8s://prod/api-pod/app --read-only-volumes
   debux exec k8s://prod/api-pod/app --copy
   debux exec docker://my-app -- curl -I localhost
   debux exec k8s://prod/api-pod/app -- ps aux`,
@@ -74,6 +77,12 @@ func runExec(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	target.Context = kubeContext
+
+	kubeNamespace, err := resolveKubeNamespace(cmd, target.Namespace)
+	if err != nil {
+		return err
+	}
+	target.Namespace = kubeNamespace
 
 	// If name is empty, show interactive picker for the runtime.
 	if target.Name == "" {
@@ -118,17 +127,20 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}
 
 	opts := runtime.DebugOpts{
-		Image:        image,
-		Privileged:   flagPrivileged,
-		User:         flagUser,
-		AutoRemove:   flagRemove,
-		ShareVolumes: !flagNoVolumes,
-		PullPolicy:   pullPolicy,
-		Fresh:        flagFresh,
-		Copy:         flagCopy,
-		Profile:      profile,
-		Command:      command,
+		Image:           image,
+		Privileged:      flagPrivileged,
+		User:            flagUser,
+		AutoRemove:      flagRemove,
+		ShareVolumes:    !flagNoVolumes,
+		ReadOnlyVolumes: flagReadOnlyVolumes,
+		PullPolicy:      pullPolicy,
+		Fresh:           flagFresh,
+		Copy:            flagCopy,
+		Profile:         profile,
+		Command:         command,
 	}
+
+	recordDebugHistory(target, opts)
 
 	switch target.Runtime {
 	case "docker":
@@ -203,7 +215,7 @@ func validateExecFlags(cmd *cobra.Command, targetRuntime string) error {
 	}
 
 	var invalid []string
-	for _, name := range []string{"copy", "kubeconfig", "context", "profile"} {
+	for _, name := range []string{"copy", "kubeconfig", "context", "namespace", "profile"} {
 		if flagChanged(cmd, name) {
 			invalid = append(invalid, "--"+name)
 		}
@@ -299,4 +311,11 @@ func formatK8sPodLabel(p runtime.PodInfo, active bool) string {
 		label = "● " + label
 	}
 	return label
+}
+
+func recordDebugHistory(target *runtime.Target, opts runtime.DebugOpts) {
+	if target == nil || target.Name == "" {
+		return
+	}
+	_ = history.Append(history.NewEntry(target, formatTargetURI(target), opts, "cli"))
 }
