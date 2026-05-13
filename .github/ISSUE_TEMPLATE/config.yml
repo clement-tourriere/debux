@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions, ideas, and usage help
+    url: https://github.com/clement-tourriere/debux/discussions
+    about: Use GitHub Discussions for troubleshooting questions and design ideas.
+  - name: Documentation
+    url: https://clement-tourriere.github.io/debux/
+    about: Read the full debux documentation.
+  - name: Security vulnerability
+    url: https://github.com/clement-tourriere/debux/security/advisories/new
+    about: Please report vulnerabilities privately.

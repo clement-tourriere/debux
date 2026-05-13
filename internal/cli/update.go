@@ -30,6 +30,7 @@ with appropriate permissions or use the one-line installer with --bin-dir.`,
   debux update
   debux update --version v1.2.3
   debux update --install-path ~/.local/bin/debux`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()

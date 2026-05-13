@@ -1,3 +1,28 @@
+## v0.3.0 (2026-05-13)
+
+### Feat
+
+- add full-screen debug TUI
+- improve kubernetes debugging safety
+
+## v0.2.3 (2026-04-30)
+
+### Fix
+
+- ignore malformed target environments
+
+## v0.2.2 (2026-04-30)
+
+### Fix
+
+- support updated go dependencies
+
+## v0.2.1 (2026-04-30)
+
+### Fix
+
+- ignore non-release commits during bump
+
 ## v0.2.0 (2026-04-30)
 
 ### Feat
