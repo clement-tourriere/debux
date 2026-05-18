@@ -1,3 +1,9 @@
+## v0.5.0 (2026-05-18)
+
+### Feat
+
+- add live target completions
+
 ## v0.4.0 (2026-05-13)
 
 ### Feat
