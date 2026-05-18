@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	dbximage "github.com/clement-tourriere/debux/internal/image"
 	"github.com/clement-tourriere/debux/internal/store"
 	"github.com/docker/docker/api/types/container"
+	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
 	"github.com/moby/term"
@@ -39,6 +41,13 @@ type ContainerInfo struct {
 	Image           string
 	Status          string
 	HasDebuxSession bool // true if a debux sidecar is running for this container
+}
+
+// ImageInfo holds metadata about a local Docker image reference.
+type ImageInfo struct {
+	Ref        string
+	ID         string
+	Containers int64
 }
 
 // DockerList returns running Docker containers, excluding debux sidecars.
@@ -87,6 +96,47 @@ func DockerList(ctx context.Context) ([]ContainerInfo, error) {
 			HasDebuxSession: debuxTargetsByID[c.ID] || debuxTargetsByName[name],
 		})
 	}
+	return result, nil
+}
+
+// DockerImages returns locally available Docker image references.
+func DockerImages(ctx context.Context) ([]ImageInfo, error) {
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		return nil, fmt.Errorf("connecting to Docker: %w", err)
+	}
+	defer func() { _ = cli.Close() }()
+
+	images, err := cli.ImageList(ctx, dockerimage.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("listing images: %w", err)
+	}
+
+	seen := make(map[string]struct{})
+	var result []ImageInfo
+	for _, img := range images {
+		shortID := shortImageID(img.ID)
+		added := false
+		for _, ref := range img.RepoTags {
+			if ref == "" || ref == "<none>:<none>" {
+				continue
+			}
+			if _, ok := seen[ref]; ok {
+				continue
+			}
+			seen[ref] = struct{}{}
+			result = append(result, ImageInfo{Ref: ref, ID: shortID, Containers: img.Containers})
+			added = true
+		}
+		if !added && shortID != "" {
+			if _, ok := seen[shortID]; ok {
+				continue
+			}
+			seen[shortID] = struct{}{}
+			result = append(result, ImageInfo{Ref: shortID, ID: shortID, Containers: img.Containers})
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool { return result[i].Ref < result[j].Ref })
 	return result, nil
 }
 
@@ -162,6 +212,14 @@ func dockerContainerPrimaryName(c container.Summary) string {
 }
 
 func shortContainerID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+func shortImageID(id string) string {
+	id = strings.TrimPrefix(id, "sha256:")
 	if len(id) > 12 {
 		return id[:12]
 	}

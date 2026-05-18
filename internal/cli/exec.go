@@ -44,6 +44,7 @@ Security: the default Kubernetes profile is root inside the pod. Use
 		RunE: runExec,
 	}
 	addExecFlags(cmd)
+	configureTargetCompletion(cmd)
 	return cmd
 }
 

@@ -258,6 +258,26 @@ Persistence model:
 | `k8s://@<context>/<namespace>/<pod>` | Kubernetes | Debug a pod in a specific context and namespace. |
 | `k8s://@<context>/<namespace>/<pod>/<container>` | Kubernetes | Debug a specific container in a specific context. |
 
+### Shell completion
+
+Generated completions include live Docker and Kubernetes targets:
+
+- `docker://` suggests running containers; `--image` and `debux image` suggest local images.
+- `k8s://` suggests kube contexts, the default namespace, and pods from the selected namespace.
+- `k8s://<namespace>/` suggests pods in that namespace; `k8s://<namespace>/<pod>/` suggests containers.
+- Kubernetes pod completion is scoped and cached for speed. Typing 3+ characters also matches substrings, so `k8s://inte<Tab>` can find `webapp-internal-api-...`.
+
+```bash
+# zsh example
+debux completion zsh > ~/.zfunc/_debux
+
+# If you are replacing an older zsh completion script
+rm -f ~/.zcompdump*
+exec zsh
+```
+
+Use `debux completion <bash|zsh|fish|powershell>` for other shells.
+
 ### Common flags
 
 | Flag | Description |

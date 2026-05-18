@@ -112,6 +112,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.CompletionOptions.DisableDefaultCmd = true
 
 	addExecFlags(cmd)
+	configureTargetCompletion(cmd)
 
 	cmd.AddCommand(newExecCmd())
 	cmd.AddCommand(newTUICmd())
@@ -120,6 +121,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newKillCmd())
 	cmd.AddCommand(newStoreCmd())
 	cmd.AddCommand(newCompletionCmd(cmd))
+	cmd.AddCommand(newCompletionCacheCmd())
 	cmd.AddCommand(newDocsCmd())
 	cmd.AddCommand(newDoctorCmd())
 	cmd.AddCommand(newUpdateCmd())
@@ -143,6 +145,7 @@ func addExecFlags(cmd *cobra.Command) {
 	cmd.Flags().String("kubeconfig", "", "Kubernetes: kubeconfig path")
 	cmd.Flags().StringVar(&flagKubeContext, "context", "", "Kubernetes: kube context name")
 	cmd.Flags().StringVarP(&flagNamespace, "namespace", "n", "", "Kubernetes: namespace")
+	registerExecFlagCompletions(cmd)
 }
 
 func addImageFlags(cmd *cobra.Command) {
@@ -151,6 +154,7 @@ func addImageFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&flagRemove, "rm", true, "Remove the debug container after exit")
 	cmd.Flags().BoolVar(&flagPrivileged, "privileged", false, "Run debug container privileged")
 	cmd.Flags().StringVar(&flagUser, "user", "", "Run debug container as uid[:gid]")
+	registerImageFlagCompletion(cmd)
 }
 
 func addPodDebugFlags(cmd *cobra.Command) {
@@ -163,6 +167,10 @@ func addPodDebugFlags(cmd *cobra.Command) {
 		fmt.Sprintf("Security profile (%s)", strings.Join(runtime.ValidProfiles, ", ")))
 	cmd.Flags().String("kubeconfig", "", "Kubeconfig path")
 	cmd.Flags().StringVar(&flagKubeContext, "context", "", "Kube context name")
+	registerImageFlagCompletion(cmd)
+	registerKubeContextFlagCompletion(cmd)
+	registerPullPolicyFlagCompletion(cmd)
+	registerProfileFlagCompletion(cmd)
 }
 
 func addKubernetesFlags(cmd *cobra.Command) {
@@ -170,6 +178,7 @@ func addKubernetesFlags(cmd *cobra.Command) {
 	cmd.Flags().String("kubeconfig", "", "Kubeconfig path")
 	cmd.Flags().StringVar(&flagKubeContext, "context", "", "Kube context name")
 	cmd.Flags().StringVarP(&flagNamespace, "namespace", "n", "", "Kubernetes namespace")
+	registerKubernetesFlagCompletions(cmd)
 }
 
 func flagChanged(cmd *cobra.Command, name string) bool {

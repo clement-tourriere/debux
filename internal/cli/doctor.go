@@ -72,6 +72,8 @@ and checks common Kubernetes RBAC permissions for debug sessions.`,
 	}
 	addKubernetesFlags(cmd)
 	cmd.Flags().StringVar(&flagProfile, "profile", runtime.ProfileGeneral, "Kubernetes security profile to evaluate")
+	registerProfileFlagCompletion(cmd)
+	configureTargetCompletion(cmd)
 	cmd.Flags().BoolVar(&outputJSON, "json", false, "Print diagnostics as JSON")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero when any diagnostic check fails")
 	return cmd

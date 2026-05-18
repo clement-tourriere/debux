@@ -24,6 +24,7 @@ started. Its filesystem is copied into the debug container and exposed at /targe
 		RunE: runImage,
 	}
 	addImageFlags(cmd)
+	configureImageArgCompletion(cmd)
 	return cmd
 }
 

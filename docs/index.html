@@ -1121,6 +1121,34 @@ RUN NIX_CONFIG="experimental-features = nix-command flakes" \
           </div>
         </section>
 
+        <section id="completion" class="doc-section" data-search data-title="Shell completion autocomplete Docker Kubernetes pods namespaces containers">
+          <div class="section-heading">
+            <h2>Shell completion</h2>
+            <p>Generated completions provide live Docker and Kubernetes targets without turning Tab into a cluster-wide scan.</p>
+          </div>
+          <div class="grid two">
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code># zsh example
+debux completion zsh &gt; ~/.zfunc/_debux
+
+# If replacing an older zsh completion script
+rm -f ~/.zcompdump*
+exec zsh</code></pre>
+            </div>
+            <article class="card">
+              <h3>What it suggests</h3>
+              <ul>
+                <li><code>docker://</code>: running containers.</li>
+                <li><code>--image</code> and <code>debux image</code>: local Docker images.</li>
+                <li><code>k8s://</code>: kube contexts, the default namespace, and pods from the selected namespace.</li>
+                <li><code>k8s://namespace/</code>: pods in that namespace; <code>.../pod/</code>: containers.</li>
+              </ul>
+              <p class="note">Kubernetes pod completion is scoped and cached for speed. Typing 3+ characters also matches substrings, so <code>k8s://inte&lt;Tab&gt;</code> can find <code>webapp-internal-api-...</code>.</p>
+            </article>
+          </div>
+        </section>
+
         <section id="shell" class="doc-section" data-search data-title="Inside the debug shell dctl Nix tools target filesystem">
           <div class="section-heading">
             <h2>Inside the shell</h2>
@@ -1288,7 +1316,7 @@ debux store clean</code></pre>
                 <tr><td><code>debux image &lt;image&gt;</code></td><td>Debug a Docker image filesystem without starting it.</td></tr>
                 <tr><td><code>debux pod</code></td><td>Create a standalone Kubernetes debug pod.</td></tr>
                 <tr><td><code>debux kill [target]</code></td><td>Stop a running debux debug session.</td></tr>
-                <tr><td><code>debux completion</code></td><td>Generate shell completions for bash, zsh, fish, or PowerShell.</td></tr>
+                <tr><td><code>debux completion</code></td><td>Generate shell completions for bash, zsh, fish, or PowerShell with cached Docker/Kubernetes target suggestions.</td></tr>
                 <tr><td><code>debux docs</code></td><td>Print the documentation URL. Use <code>--open</code> to open it in a browser.</td></tr>
                 <tr><td><code>debux doctor</code></td><td>Diagnose Docker/Kubernetes connectivity, RBAC, target pod status, and selected security profile.</td></tr>
                 <tr><td><code>debux update</code></td><td>Check GitHub Releases and update the current debux binary in place.</td></tr>

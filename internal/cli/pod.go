@@ -28,6 +28,7 @@ to attach to a specific application pod.`,
 
 	addPodDebugFlags(cmd)
 	cmd.Flags().StringP("namespace", "n", "", "Kubernetes namespace (default: current kube-context namespace)")
+	registerNamespaceFlagCompletion(cmd)
 	cmd.Flags().Bool("keep", false, "Keep the debug pod after exit")
 	cmd.Flags().Bool("host-network", false, "Use host network for the debug pod")
 

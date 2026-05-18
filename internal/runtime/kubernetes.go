@@ -202,10 +202,15 @@ func KubernetesBrowsePods(ctx context.Context, kubeconfig, kubeContext, namespac
 	namespace = resolveTargetNamespace(namespace, kubeconfig, kubeContext)
 	query = strings.ToLower(strings.TrimSpace(query))
 
+	listLimit := int64(200)
+	if maxResults > 0 && maxResults < int(listLimit) {
+		listLimit = int64(maxResults)
+	}
+
 	var result []PodInfo
 	listOptions := metav1.ListOptions{
 		FieldSelector: "status.phase=Running",
-		Limit:         200,
+		Limit:         listLimit,
 	}
 	for {
 		pods, err := metadataClient.Resource(podsResource).Namespace(namespace).List(ctx, listOptions)

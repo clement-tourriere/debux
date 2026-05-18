@@ -45,6 +45,7 @@ cannot be removed from the pod spec, so debux terminates their process instead.`
 
 	addKubernetesFlags(cmd)
 	cmd.Flags().BoolVar(&flagKillAll, "all", false, "Kill all running debux sessions for the selected runtime")
+	configureTargetCompletion(cmd)
 
 	return cmd
 }
