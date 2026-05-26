@@ -1,10 +1,4 @@
 # Accepted govulncheck findings.
 #
-# GO-2026-4883 and GO-2026-4887 are Moby daemon/plugin vulnerabilities reported
-# against github.com/docker/docker. debux imports Docker client APIs only; it does
-# not embed or run the Moby daemon, plugins, or authorization plugin code paths.
-# The Go vulnerability database currently lists no fixed module version for these
-# findings, so CI filters them here while keeping govulncheck enabled for all
-# other vulnerabilities.
-GO-2026-4883
-GO-2026-4887
+# Keep this file empty unless a govulncheck finding is a documented false
+# positive for debux and has a clear justification.

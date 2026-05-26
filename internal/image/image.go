@@ -7,8 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/client"
 )
 
 // EnsureImage pulls the image if it's not already present locally.
@@ -47,7 +46,7 @@ func ImageExists(ctx context.Context, cli *client.Client, ref string) bool {
 // PullImage pulls ref from a registry.
 func PullImage(ctx context.Context, cli *client.Client, ref string) error {
 	fmt.Printf("Pulling image %s...\n", ref)
-	reader, err := cli.ImagePull(ctx, ref, image.PullOptions{})
+	reader, err := cli.ImagePull(ctx, ref, client.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("pulling image: %w", err)
 	}

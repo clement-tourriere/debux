@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/client"
 )
 
 const (
@@ -62,12 +60,12 @@ func EnsureVolumes(ctx context.Context, cli *client.Client, volumes VolumeSet) e
 }
 
 func ensureVolume(ctx context.Context, cli *client.Client, name, kind string) error {
-	_, err := cli.VolumeInspect(ctx, name)
+	_, err := cli.VolumeInspect(ctx, name, client.VolumeInspectOptions{})
 	if err == nil {
 		return nil
 	}
 
-	_, err = cli.VolumeCreate(ctx, volume.CreateOptions{
+	_, err = cli.VolumeCreate(ctx, client.VolumeCreateOptions{
 		Name: name,
 		Labels: map[string]string{
 			"managed-by":                        "debux",
@@ -83,25 +81,25 @@ func ensureVolume(ctx context.Context, cli *client.Client, name, kind string) er
 
 // Clean removes all persistent volumes managed by debux.
 func Clean(ctx context.Context) error {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return fmt.Errorf("connecting to Docker: %w", err)
 	}
 	defer func() { _ = cli.Close() }()
 
-	f := filters.NewArgs(filters.Arg("label", "managed-by=debux"))
-	list, err := cli.VolumeList(ctx, volume.ListOptions{Filters: f})
+	f := make(client.Filters).Add("label", "managed-by=debux")
+	list, err := cli.VolumeList(ctx, client.VolumeListOptions{Filters: f})
 	if err != nil {
 		return fmt.Errorf("listing volumes: %w", err)
 	}
 
-	if len(list.Volumes) == 0 {
+	if len(list.Items) == 0 {
 		fmt.Println("No debux store volumes found.")
 		return nil
 	}
 
-	for _, v := range list.Volumes {
-		if err := cli.VolumeRemove(ctx, v.Name, true); err != nil {
+	for _, v := range list.Items {
+		if _, err := cli.VolumeRemove(ctx, v.Name, client.VolumeRemoveOptions{Force: true}); err != nil {
 			return fmt.Errorf("removing volume %s: %w", v.Name, err)
 		}
 		fmt.Printf("Removed %s\n", v.Name)
@@ -111,25 +109,25 @@ func Clean(ctx context.Context) error {
 
 // Info prints information about the persistent Nix volumes.
 func Info(ctx context.Context) error {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return fmt.Errorf("connecting to Docker: %w", err)
 	}
 	defer func() { _ = cli.Close() }()
 
-	f := filters.NewArgs(filters.Arg("label", "managed-by=debux"))
-	list, err := cli.VolumeList(ctx, volume.ListOptions{Filters: f})
+	f := make(client.Filters).Add("label", "managed-by=debux")
+	list, err := cli.VolumeList(ctx, client.VolumeListOptions{Filters: f})
 	if err != nil {
 		return fmt.Errorf("listing volumes: %w", err)
 	}
 
-	if len(list.Volumes) == 0 {
+	if len(list.Items) == 0 {
 		fmt.Println("No debux store volumes found.")
 		return nil
 	}
 
 	fmt.Println("debux store volumes:")
-	for _, v := range list.Volumes {
+	for _, v := range list.Items {
 		fmt.Printf("  %s (driver: %s, mountpoint: %s)\n", v.Name, v.Driver, v.Mountpoint)
 		if v.UsageData != nil {
 			fmt.Printf("    size: %d MB, ref count: %d\n", v.UsageData.Size/(1024*1024), v.UsageData.RefCount)

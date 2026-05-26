@@ -5,8 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/client"
 	authv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -37,21 +36,21 @@ func fail(name, detail string) DoctorCheck {
 
 // DockerDoctor checks local Docker connectivity and debux-managed sessions.
 func DockerDoctor(ctx context.Context, targetName ...string) []DoctorCheck {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return []DoctorCheck{fail("Docker client", fmt.Sprintf("connecting to Docker: %v", err))}
 	}
 	defer func() { _ = cli.Close() }()
 
 	checks := []DoctorCheck{}
-	ping, err := cli.Ping(ctx)
+	ping, err := cli.Ping(ctx, client.PingOptions{})
 	if err != nil {
 		return append(checks, fail("Docker daemon", fmt.Sprintf("daemon is not reachable: %v", err)))
 	}
 	checks = append(checks, pass("Docker daemon", fmt.Sprintf("reachable (API %s)", ping.APIVersion)))
 
 	if len(targetName) > 0 && strings.TrimSpace(targetName[0]) != "" {
-		info, err := cli.ContainerInspect(ctx, targetName[0])
+		info, err := inspectDockerContainer(ctx, cli, targetName[0])
 		if err != nil {
 			checks = append(checks, fail("Target container", fmt.Sprintf("inspecting %q: %v", targetName[0], err)))
 		} else if info.State != nil && info.State.Running {
@@ -61,7 +60,7 @@ func DockerDoctor(ctx context.Context, targetName ...string) []DoctorCheck {
 		}
 	}
 
-	containers, err := cli.ContainerList(ctx, containertypes.ListOptions{})
+	containers, err := listDockerContainers(ctx, cli)
 	if err != nil {
 		checks = append(checks, warn("Docker containers", fmt.Sprintf("could not list containers: %v", err)))
 		return checks
