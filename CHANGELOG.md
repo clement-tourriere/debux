@@ -1,3 +1,9 @@
+## v0.5.1 (2026-05-26)
+
+### Fix
+
+- remove vulnerable Docker module
+
 ## v0.5.0 (2026-05-18)
 
 ### Feat
