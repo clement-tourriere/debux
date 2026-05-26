@@ -21,19 +21,26 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
-brews:
+homebrew_casks:
   - name: debux
+    binaries:
+      - debux
     skip_upload: "{{ if index .Env \"HOMEBREW_TAP_GITHUB_TOKEN\" }}false{{ else }}true{{ end }}"
     repository:
       owner: clement-tourriere
       name: homebrew-tap
       token: "{{ index .Env \"HOMEBREW_TAP_GITHUB_TOKEN\" }}"
-    directory: Formula
     homepage: "https://clement-tourriere.github.io/debux/"
     description: "Debug Docker and Kubernetes containers with a Nix-powered toolbox"
     license: MIT
-    test: |
-      system "#{bin}/debux", "--version"
+    url:
+      verified: github.com/clement-tourriere/debux
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/debux"]
+          end
 
 changelog:
   sort: asc
