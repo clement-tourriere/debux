@@ -24,10 +24,7 @@ The helper does the full safe path:
 3. Requires a clean `main` branch.
 4. Fetches `origin/main` and tags, then fast-forwards local `main` if needed.
 5. Runs release checks:
-   - `mise run tidy` + verifies `go.mod`/`go.sum` stayed unchanged
-   - `mise run test`
-   - `mise run check`
-   - `mise run vulncheck`
+   - `mise run check` (tidy diff, tests, lint, and vulnerability checks)
    - `mise run release:dry-run`
 6. Runs `mise run release:bump` to let Commitizen update `.cz.toml`, `CHANGELOG.md`, commit the bump, and create the annotated tag.
 7. Pushes `main` and tags with `mise run release:push`.
@@ -71,11 +68,7 @@ git status --short --branch
 git fetch origin main --tags
 git switch main
 git pull --ff-only origin main
-mise run tidy
-git diff --exit-code -- go.mod go.sum
-mise run test
 mise run check
-mise run vulncheck
 mise run release:dry-run
 mise run release:bump
 mise run release:push

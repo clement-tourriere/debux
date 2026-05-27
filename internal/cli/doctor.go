@@ -119,6 +119,7 @@ func buildDoctorReport(ctx context.Context, cmd *cobra.Command, args []string, p
 		}
 		report.Sections = append(report.Sections, doctorReportSection{Name: "Docker", Checks: runtime.DockerDoctor(ctx, target.Name)})
 	case "kubernetes":
+		applyKubeNamespaceFlagContainerShorthand(cmd, target)
 		kubeContext, err := resolveKubeContext(cmd, target.Context)
 		if err != nil {
 			return doctorReport{}, err

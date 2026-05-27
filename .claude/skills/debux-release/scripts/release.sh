@@ -273,11 +273,7 @@ fi
 require_clean_tree
 
 if [ "$skip_checks" -eq 0 ]; then
-  run mise run tidy
-  run git diff --exit-code -- go.mod go.sum
-  run mise run test
   run mise run check
-  run mise run vulncheck
   if [ "$skip_dry_run" -eq 0 ]; then
     run mise run release:dry-run
   else

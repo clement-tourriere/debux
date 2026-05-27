@@ -21,6 +21,18 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - --yes
+      - --output-signature=${signature}
+      - --output-certificate=${certificate}
+      - ${artifact}
+
 homebrew_casks:
   - name: debux
     binaries:

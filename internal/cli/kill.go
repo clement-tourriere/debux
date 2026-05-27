@@ -70,6 +70,7 @@ func runKill(cmd *cobra.Command, args []string) error {
 		if rt != "kubernetes" && kubernetesFlagsSet {
 			return fmt.Errorf("--context, --kubeconfig, and --namespace are only supported for Kubernetes targets; use k8s://... or remove the flag")
 		}
+		applyKubeNamespaceFlagContainerShorthand(cmd, target)
 
 		kubeContext, err := resolveKubeContext(cmd, target.Context)
 		if err != nil {

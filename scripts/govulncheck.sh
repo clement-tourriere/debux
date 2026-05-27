@@ -4,7 +4,8 @@ set -euo pipefail
 ALLOWLIST="${GOVULNCHECK_ALLOWLIST:-scripts/govulncheck-allowlist.txt}"
 OUT="$(mktemp)"
 ERR="$(mktemp)"
-trap 'rm -f "$OUT" "$ERR"' EXIT
+FINDINGS="$(mktemp)"
+trap 'rm -f "$OUT" "$ERR" "$FINDINGS"' EXIT
 
 patterns=("$@")
 if [[ ${#patterns[@]} -eq 0 ]]; then
@@ -18,13 +19,15 @@ set -e
 
 # govulncheck may use a non-zero exit status when vulnerabilities are found.
 # Parse the machine-readable output first so accepted findings can be filtered.
-python3 - "$OUT" "$ALLOWLIST" <<'PY'
+set +e
+python3 - "$OUT" "$ALLOWLIST" "$FINDINGS" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 out_path = Path(sys.argv[1])
 allow_path = Path(sys.argv[2])
+findings_path = Path(sys.argv[3])
 
 allowed = set()
 if allow_path.exists():
@@ -70,11 +73,13 @@ if unaccepted:
     sys.exit(1)
 
 if findings:
+    findings_path.write_text('1\n')
     print('govulncheck passed with only accepted findings.')
 else:
     print('govulncheck passed with no findings.')
 PY
 parse_status=$?
+set -e
 
 if [[ $parse_status -ne 0 ]]; then
   cat "$ERR" >&2
@@ -87,9 +92,10 @@ if [[ $status -ne 0 ]]; then
   if [[ -s "$ERR" ]]; then
     cat "$ERR" >&2
   fi
-  # JSON mode usually exits 0 for findings. If it exits non-zero but all findings
-  # were accepted and there was no stderr, keep CI green.
-  if [[ -s "$ERR" ]]; then
+  # JSON mode usually exits 0 for findings. If it exits non-zero but all parsed
+  # findings were accepted and there was no stderr, keep CI green; otherwise fail
+  # closed so infrastructure/tool failures are not masked.
+  if [[ -s "$ERR" || ! -s "$FINDINGS" ]]; then
     exit "$status"
   fi
 fi

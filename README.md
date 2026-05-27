@@ -73,6 +73,7 @@ debux docker://
 ```
 
 The installer supports Linux/macOS on amd64/arm64 and installs to `~/.local/bin` by default.
+Release assets are checksum-verified. If `cosign` is installed and the release includes signature assets, the installer also verifies `checksums.txt` before using it.
 
 ```bash
 # Pin a version
@@ -80,6 +81,9 @@ curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/instal
 
 # Choose another install directory
 curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh -s -- --bin-dir /usr/local/bin
+
+# Explicitly opt into a source build if a release asset is unavailable
+curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | DEBUX_ALLOW_SOURCE_BUILD=1 sh
 
 # Later, check or update from GitHub Releases
 debux update --check
@@ -239,6 +243,7 @@ Persistence model:
 - **Kubernetes:** ephemeral containers cannot add arbitrary new volumes, so debux cannot mount your local Docker toolbox/history into pods. Reusing the same debug container on the same pod keeps its tools and history; a fresh debug container starts from the debug image.
 - **Cross-pod Kubernetes toolbox:** bake common tools into a custom debug image and pass it with `--image`, or rebuild/push the default debug image and use `--pull-policy=Always`.
 - **Restricted Kubernetes profile:** `dctl install` works with the current debug image. If you see Nix lock-file permission errors, rebuild/push the image and start a fresh session.
+- **Pinned runtime installs:** `dctl install` uses the same pinned nixpkgs revision as the debug image unless you override `NIXPKGS_REF` in a custom image.
 
 ## Usage
 
@@ -252,6 +257,7 @@ Persistence model:
 | `k8s://` | Kubernetes | Open the pod picker in the current kube-context namespace. |
 | `k8s://<pod>` | Kubernetes | Debug a pod in the current kube-context namespace. |
 | `k8s://<namespace>/<pod>` | Kubernetes | Debug a pod in an explicit namespace (or use `--namespace` / `-n`). |
+| `k8s://<pod>/<container> --namespace <namespace>` | Kubernetes | Debug a specific container using the namespace flag. |
 | `k8s://<namespace>/<pod>/<container>` | Kubernetes | Debug a specific container. |
 | `k8s://@<context>` | Kubernetes | Open the pod picker in a specific kube context. |
 | `k8s://@<context>/<pod>` | Kubernetes | Debug a pod in a specific context and that context's namespace. |
@@ -385,6 +391,8 @@ It does **not** automatically grant:
 
 `--no-volumes` only disables direct volume mounts into the debug container, and `--read-only-volumes` makes those direct mounts read-only. Neither is a security boundary if the debug container can still access the target via `/proc/1/root`.
 
+Docker mode persists Nix tools and shell history in Debux-managed Docker volumes. Treat those volumes as trusted debug-session state: tools installed with `dctl` can affect later sessions using the same debug image, and `debux store clean` removes that state.
+
 RBAC implication: granting a user the ability to update `pods/ephemeralcontainers` and create `pods/exec` is effectively granting the ability to run code inside selected pods. Treat it like production shell access.
 
 Minimal namespace-scoped RBAC for ephemeral-container debugging:
@@ -462,7 +470,7 @@ mise run test           # go test ./...
 mise run tidy           # go mod tidy
 mise run lint           # golangci-lint run
 mise run vulncheck      # govulncheck with the project allowlist
-mise run check          # hk checks on all files
+mise run check          # tidy diff, tests, lint, and govulncheck
 mise run fix            # hk fixes on all files
 mise run hooks-install  # install hk git hooks with mise integration
 mise run image-build    # build debug image
@@ -480,9 +488,11 @@ debux docs --open       # open documentation in your browser
 
 The repository uses [hk](https://hk.jdx.dev/) for git hooks, [pkl](https://pkl-lang.org/) for hk configuration, and [Commitizen](https://commitizen-tools.github.io/commitizen/) for release bumps. Commitizen is installed by mise via `pipx:commitizen`.
 
+`mise run e2e:kubernetes` creates and deletes a namespace in your current kube-context. By default it only manages namespaces matching `debux-e2e-*`; set `DEBUX_E2E_ALLOW_ARBITRARY_NAMESPACE=1` only when you intentionally want to override that guard.
+
 ## Releases and distribution
 
-GitHub Releases publish prebuilt `debux` binaries for Linux and macOS on amd64/arm64 using GoReleaser. The one-line installer and `debux update` require `checksums.txt` and refuse to install unverifiable release assets.
+GitHub Releases publish prebuilt `debux` binaries for Linux and macOS on amd64/arm64 using GoReleaser. The one-line installer and `debux update` require `checksums.txt` and refuse to install unverifiable release assets. New releases also publish keyless cosign signatures for `checksums.txt`; clients verify them automatically when `cosign` is available.
 
 Release flow:
 
@@ -493,7 +503,7 @@ mise run release:push      # git push origin main --follow-tags
 
 If there are no commits since the latest version tag, or if the commits are not release-eligible conventional commits such as `ci:`/`docs:`, `mise run release:bump` exits successfully and tells you no bump is needed. If Commitizen already bumped the version but tag creation was interrupted, the task recreates the missing `vX.Y.Z` tag without GPG signing.
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, publishes the debug image to GHCR as `X.Y.Z`, `X.Y`, `X`, and `latest`, signs the image with keyless cosign, then creates the GitHub Release with checksummed CLI archives. Release binaries pin their default debug image to the matching `X.Y.Z` image tag; development builds keep using `latest`. You can also run the **Release** workflow manually for an existing pushed tag.
+Pushing a valid `vX.Y.Z` tag reachable from `main` runs `.github/workflows/release.yml`, publishes the debug image to GHCR as `X.Y.Z`, `X.Y`, `X`, and `latest`, signs the image with keyless cosign, then creates the GitHub Release with signed checksums and CLI archives. Release binaries pin their default debug image to the matching `X.Y.Z` image tag; development builds keep using `latest`. You can also run the **Release** workflow manually for an existing pushed tag.
 
 Verify a released image:
 

@@ -1,6 +1,10 @@
 name: E2E
 
 on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "37 4 * * 2"
   workflow_dispatch:
     inputs:
       debux_image:
@@ -27,11 +31,11 @@ jobs:
       - run: CGO_ENABLED=0 go build -o bin/debux ./cmd/debux
       - run: scripts/e2e-docker.sh
         env:
-          DEBUX_IMAGE: ${{ inputs.debux_image }}
+          DEBUX_IMAGE: ${{ inputs.debux_image || 'ghcr.io/clement-tourriere/debux:latest' }}
           DEBUX_PULL_POLICY: Always
 
   kubernetes:
-    if: inputs.run_kubernetes
+    if: github.event_name == 'workflow_dispatch' && inputs.run_kubernetes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -44,5 +48,5 @@ jobs:
       - run: CGO_ENABLED=0 go build -o bin/debux ./cmd/debux
       - run: scripts/e2e-kubernetes.sh
         env:
-          DEBUX_IMAGE: ${{ inputs.debux_image }}
+          DEBUX_IMAGE: ${{ inputs.debux_image || 'ghcr.io/clement-tourriere/debux:latest' }}
           DEBUX_PULL_POLICY: Always

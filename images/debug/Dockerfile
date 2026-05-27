@@ -57,6 +57,9 @@ RUN set -eux; \
 # whole store. The previous approach duplicated ~500 MB of base Nix store data.
 FROM builder
 
+ARG NIXPKGS_REV=1c3fe55ad329cbcb28471bb30f05c9827f724c76
+ENV NIXPKGS_REF="github:NixOS/nixpkgs/${NIXPKGS_REV}"
+
 # nixos/nix ships /etc/passwd and /etc/group as absolute symlinks into
 # /nix/store. Kubernetes/containerd opens those files through a constrained
 # rootfs mount while creating the container, and absolute symlinks fail with:
@@ -84,14 +87,17 @@ COPY images/debug/command-not-found-handler /etc/zsh/command-not-found-handler
 COPY images/debug/entrypoint.sh /entrypoint.sh
 
 # Allow the restricted Kubernetes profile (uid 65534, no extra capabilities) to
-# install ad-hoc tools with dctl. Only the Nix state/database and store directory
-# need to be writable; existing store paths remain immutable.
+# install ad-hoc tools with dctl without making persistent Nix state writable by
+# every UID that might run inside the debug container.
 RUN set -eux; \
     chmod +x /usr/local/bin/dctl /entrypoint.sh; \
     rm -rf /nix/var/debux-profile; \
-    chmod 1777 /tmp /nix/store /nix/var; \
-    find /nix/var/nix -xdev -exec chown 65534:65534 {} +; \
-    find /nix/var/nix -xdev -exec chmod a+rwX {} +
+    chmod 1777 /tmp; \
+    chown 65534:0 /nix/store /nix/var; \
+    chmod 0755 /nix/store /nix/var; \
+    find /nix/var/nix -xdev -exec chown 65534:0 {} +; \
+    find /nix/var/nix -xdev -type d -exec chmod 0755 {} +; \
+    find /nix/var/nix -xdev -type f -exec chmod 0644 {} +
 
 ENV PATH="/nix/var/debux-profile/bin:/usr/local/bin:/root/.nix-profile/bin:$PATH"
 

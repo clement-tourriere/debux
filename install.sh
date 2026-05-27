@@ -10,9 +10,8 @@ usage() {
   cat <<EOF
 Install debux from GitHub Releases.
 
-Release assets are verified against checksums.txt. If no release asset exists
-yet and Go is installed, the installer falls back to building from source with
-go install.
+Release assets are verified against checksums.txt. If cosign is installed and
+signature assets are present, checksums.txt is verified before use.
 
 Usage:
   curl -fsSL https://raw.githubusercontent.com/${repo}/main/install.sh | sh
@@ -27,6 +26,8 @@ Environment:
   DEBUX_INSTALL_DIR     Install directory
   DEBUX_VERSION         Version to install
   DEBUX_REPO            GitHub repo, owner/name (default: ${repo})
+  DEBUX_ALLOW_SOURCE_BUILD=1
+                         Allow fallback to go install if a release asset is missing
 EOF
 }
 
@@ -104,6 +105,37 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 
 archive_path="$tmp/$archive"
 checksums_path="$tmp/checksums.txt"
+checksums_sig_path="$tmp/checksums.txt.sig"
+checksums_cert_path="$tmp/checksums.txt.pem"
+
+verify_checksums_signature() {
+  if ! command -v cosign >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! download "${base_url}/checksums.txt.sig" "$checksums_sig_path" 2>/dev/null; then
+    echo "warning: cosign is installed but checksums.txt.sig was not found; continuing with checksum-only verification" >&2
+    return 0
+  fi
+  if ! download "${base_url}/checksums.txt.pem" "$checksums_cert_path" 2>/dev/null; then
+    echo "warning: cosign is installed but checksums.txt.pem was not found; continuing with checksum-only verification" >&2
+    return 0
+  fi
+  if [ "${tag:-}" != "" ]; then
+    cosign verify-blob \
+      --certificate "$checksums_cert_path" \
+      --signature "$checksums_sig_path" \
+      --certificate-identity "https://github.com/${repo}/.github/workflows/release.yml@refs/tags/${tag}" \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      "$checksums_path" >/dev/null
+  else
+    cosign verify-blob \
+      --certificate "$checksums_cert_path" \
+      --signature "$checksums_sig_path" \
+      --certificate-identity-regexp "^https://github[.]com/${repo}/[.]github/workflows/release[.]yml@refs/tags/v[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?$" \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      "$checksums_path" >/dev/null
+  fi
+}
 
 echo "Installing debux ${version} for ${os}/${arch}..."
 installed_from_source=0
@@ -112,14 +144,14 @@ install_path="$bin_dir/$binary"
 echo "Downloading ${archive}"
 if ! download "${base_url}/${archive}" "$archive_path"; then
   echo "warning: failed to download ${base_url}/${archive}" >&2
-  if command -v go >/dev/null 2>&1; then
+  if [ "${DEBUX_ALLOW_SOURCE_BUILD:-}" = "1" ] && command -v go >/dev/null 2>&1; then
     echo "No release asset found; falling back to source build with Go (${go_ref})." >&2
     mkdir -p "$bin_dir"
     GOBIN="$bin_dir" go install "github.com/${repo}/cmd/debux@${go_ref}"
     installed_from_source=1
   else
-    echo "error: no release asset exists for ${os}/${arch}, and Go is not installed for the source-build fallback." >&2
-    echo "Create a debux GitHub Release or install Go, then retry." >&2
+    echo "error: no release asset exists for ${os}/${arch}." >&2
+    echo "Set DEBUX_ALLOW_SOURCE_BUILD=1 to opt into building from source with Go." >&2
     exit 1
   fi
 fi
@@ -129,6 +161,7 @@ if [ "$installed_from_source" -eq 0 ]; then
     echo "error: checksums.txt not found for ${version}; refusing to install unverifiable release asset" >&2
     exit 1
   fi
+  verify_checksums_signature
   expected="$(awk -v file="$archive" '$2 == file {print $1; exit}' "$checksums_path")"
   if [ -z "$expected" ]; then
     echo "error: checksum for ${archive} not found in checksums.txt" >&2
@@ -151,21 +184,40 @@ if [ "$installed_from_source" -eq 0 ]; then
 fi
 
 if [ "$installed_from_source" -eq 0 ]; then
-  tar -xzf "$archive_path" -C "$tmp"
-  if [ ! -f "$tmp/$binary" ]; then
-    found="$(find "$tmp" -type f -name "$binary" 2>/dev/null | head -n 1 || true)"
-    if [ -z "$found" ]; then
-      echo "error: archive did not contain ${binary}" >&2
-      exit 1
-    fi
-  else
-    found="$tmp/$binary"
+  archive_member="$({ tar -tzf "$archive_path" 2>/dev/null || true; } | while IFS= read -r member; do
+    case "$member" in
+      "$binary"|*/"$binary")
+        case "$member" in
+          /*|../*|*/../*) continue ;;
+        esac
+        printf '%s\n' "$member"
+        break
+        ;;
+    esac
+  done)"
+  if [ -z "$archive_member" ]; then
+    echo "error: archive did not contain ${binary}" >&2
+    exit 1
+  fi
+  tar -xzf "$archive_path" -C "$tmp" "$archive_member"
+  if [ -L "$tmp/$archive_member" ]; then
+    echo "error: archive member ${archive_member} is a symlink" >&2
+    exit 1
+  fi
+  found="$tmp/$archive_member"
+  if [ ! -f "$found" ]; then
+    echo "error: archive member ${archive_member} did not extract to a regular file" >&2
+    exit 1
   fi
 
   mkdir -p "$bin_dir"
-  rm -f "$install_path"
-  cp "$found" "$install_path"
-  chmod 0755 "$install_path"
+  install_tmp="$(mktemp "${bin_dir}/.debux.XXXXXX")" || {
+    echo "error: failed to create temporary install file in ${bin_dir}" >&2
+    exit 1
+  }
+  cp "$found" "$install_tmp" || { rm -f "$install_tmp"; exit 1; }
+  chmod 0755 "$install_tmp" || { rm -f "$install_tmp"; exit 1; }
+  mv "$install_tmp" "$install_path" || { rm -f "$install_tmp"; exit 1; }
 fi
 
 # Downloads via curl/wget are normally not quarantined, but clear xattrs and

@@ -928,7 +928,7 @@ debux ui</code></pre>
               <div>
                 <h3>One-command install</h3>
                 <pre><code>curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh</code></pre>
-                <p>Installs to <code>~/.local/bin</code> by default and refuses unverifiable release assets without <code>checksums.txt</code>.</p>
+                <p>Installs to <code>~/.local/bin</code> by default, refuses unverifiable release assets without <code>checksums.txt</code>, and verifies signed checksums when <code>cosign</code> is available.</p>
               </div>
             </div>
             <div class="timeline-item card">
@@ -937,6 +937,8 @@ debux ui</code></pre>
                 <h3>Pin, move, or update</h3>
                 <pre><code>curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh -s -- --version v1.2.3
 curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | sh -s -- --bin-dir /usr/local/bin
+
+curl -fsSL https://raw.githubusercontent.com/clement-tourriere/debux/main/install.sh | DEBUX_ALLOW_SOURCE_BUILD=1 sh
 
 debux update --check
 debux update
@@ -960,7 +962,7 @@ mise run image-build</code></pre>
             </div>
           </div>
           <div class="callout info" style="margin-top: 1rem;">
-            <strong>Release flow:</strong> run <code>mise run release:bump</code>, then <code>mise run release:push</code>. If there are no commits since the latest version tag, or if the commits are not release-eligible conventional commits such as <code>ci:</code>/<code>docs:</code>, the bump task exits successfully and says no bump is needed. If Commitizen already bumped the version but tag creation was interrupted, the task recreates the missing <code>vX.Y.Z</code> tag without GPG signing. Pushing a <code>v*</code> tag runs the Release workflow, publishes and keyless-signs the GHCR debug image, then creates the GitHub Release with checksummed CLI archives. Release binaries pin their default debug image to the matching versioned image tag; dev builds use <code>latest</code>. The same workflow can also be run manually for an existing pushed tag.
+            <strong>Release flow:</strong> run <code>mise run release:bump</code>, then <code>mise run release:push</code>. If there are no commits since the latest version tag, or if the commits are not release-eligible conventional commits such as <code>ci:</code>/<code>docs:</code>, the bump task exits successfully and says no bump is needed. If Commitizen already bumped the version but tag creation was interrupted, the task recreates the missing <code>vX.Y.Z</code> tag without GPG signing. Pushing a valid <code>vX.Y.Z</code> tag reachable from <code>main</code> runs the Release workflow, publishes and keyless-signs the GHCR debug image, then creates the GitHub Release with signed checksums and CLI archives. Release binaries pin their default debug image to the matching versioned image tag; dev builds use <code>latest</code>. The same workflow can also be run manually for an existing pushed tag.
           </div>
         </section>
 
@@ -1025,7 +1027,7 @@ debux docker://my-nginx --read-only-volumes</code></pre>
           </div>
           <div class="card" style="margin-top: 1rem;">
             <h3>Persistent Nix store</h3>
-            <p>Docker mode uses image-specific Nix volumes such as <code>debux-nix-store-&lt;image-id&gt;</code>. This keeps installed packages persistent while avoiding stale store volumes after rebuilding the debug image.</p>
+            <p>Docker mode uses image-specific Nix volumes such as <code>debux-nix-store-&lt;image-id&gt;</code>. This keeps installed packages persistent while avoiding stale store volumes after rebuilding the debug image. Treat those volumes as trusted debug-session state; tools installed with <code>dctl</code> can affect later sessions using the same debug image.</p>
           </div>
         </section>
 
@@ -1111,6 +1113,7 @@ RUN NIX_CONFIG="experimental-features = nix-command flakes" \
                 <tr><td><code>k8s://</code></td><td>Kubernetes</td><td>Open the pod picker in the current kube-context namespace.</td></tr>
                 <tr><td><code>k8s://pod</code></td><td>Kubernetes</td><td>Debug a pod in the current kube-context namespace.</td></tr>
                 <tr><td><code>k8s://namespace/pod</code></td><td>Kubernetes</td><td>Debug a pod in an explicit namespace (or use <code>--namespace</code> / <code>-n</code>).</td></tr>
+                <tr><td><code>k8s://pod/container --namespace namespace</code></td><td>Kubernetes</td><td>Debug a specific container using the namespace flag.</td></tr>
                 <tr><td><code>k8s://namespace/pod/container</code></td><td>Kubernetes</td><td>Debug a specific container in a multi-container pod.</td></tr>
                 <tr><td><code>k8s://@context</code></td><td>Kubernetes</td><td>Open the pod picker in a specific kube context.</td></tr>
                 <tr><td><code>k8s://@context/pod</code></td><td>Kubernetes</td><td>Debug a pod in a specific context and that context's namespace.</td></tr>
@@ -1285,7 +1288,7 @@ debux k8s://prod/api/app \
         <section id="store" class="doc-section" data-search data-title="Persistent store volumes cleanup">
           <div class="section-heading">
             <h2>Store management</h2>
-            <p>Docker installed packages and shell history persist in image-specific Nix volumes. Use the store commands to inspect or clean those Docker stores.</p>
+            <p>Docker installed packages and shell history persist in image-specific Nix volumes. Use the store commands to inspect or clean those Docker stores. Runtime <code>dctl install</code> uses the debug image's pinned nixpkgs revision unless a custom image overrides <code>NIXPKGS_REF</code>.</p>
           </div>
           <div class="grid two">
             <div class="card code-card">

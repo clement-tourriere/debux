@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -173,6 +174,9 @@ func downloadReleaseBinary(ctx context.Context, repo, tag, archive string) (stri
 	if err := downloadFile(ctx, baseURL+"/checksums.txt", checksumsPath); err != nil {
 		return "", fmt.Errorf("downloading checksums: %w", err)
 	}
+	if err := verifyChecksumSignatureIfAvailable(ctx, repo, baseURL, checksumsPath, tmp); err != nil {
+		return "", err
+	}
 	if err := verifyChecksum(archivePath, checksumsPath, archive); err != nil {
 		return "", err
 	}
@@ -211,6 +215,36 @@ func downloadFile(ctx context.Context, url, path string) error {
 
 	if _, err := io.Copy(out, resp.Body); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	return nil
+}
+
+func verifyChecksumSignatureIfAvailable(ctx context.Context, repo, baseURL, checksumsPath, tmp string) error {
+	if _, err := exec.LookPath("cosign"); err != nil {
+		return nil
+	}
+
+	sigPath := filepath.Join(tmp, "checksums.txt.sig")
+	if err := downloadFile(ctx, baseURL+"/checksums.txt.sig", sigPath); err != nil {
+		return nil
+	}
+	certPath := filepath.Join(tmp, "checksums.txt.pem")
+	if err := downloadFile(ctx, baseURL+"/checksums.txt.pem", certPath); err != nil {
+		return nil
+	}
+
+	verifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	identityRegex := fmt.Sprintf(`^https://github\.com/%s/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`, regexp.QuoteMeta(repo))
+	cmd := exec.CommandContext(verifyCtx, "cosign", "verify-blob",
+		"--certificate", certPath,
+		"--signature", sigPath,
+		"--certificate-identity-regexp", identityRegex,
+		"--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
+		checksumsPath,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("verifying checksums signature: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
@@ -392,7 +426,7 @@ func normalizeTag(version string) string {
 }
 
 func sameVersion(current, target string) bool {
-	return normalizeVersion(current) == normalizeVersion(target)
+	return compareVersions(current, target) == 0
 }
 
 func isOutdated(current, latest string) bool {
@@ -412,19 +446,14 @@ func compareVersions(a, b string) int {
 		return 1
 	}
 
-	av, aok := parseVersion(a)
-	bv, bok := parseVersion(b)
+	av, aok := parseSemanticVersion(a)
+	bv, bok := parseSemanticVersion(b)
 	if !aok || !bok {
 		return strings.Compare(normalizeVersion(a), normalizeVersion(b))
 	}
-	for i := 0; i < len(av) || i < len(bv); i++ {
-		ai, bi := 0, 0
-		if i < len(av) {
-			ai = av[i]
-		}
-		if i < len(bv) {
-			bi = bv[i]
-		}
+	for i := range av.numbers {
+		ai := av.numbers[i]
+		bi := bv.numbers[i]
 		if ai < bi {
 			return -1
 		}
@@ -432,28 +461,88 @@ func compareVersions(a, b string) int {
 			return 1
 		}
 	}
+	return comparePrerelease(av.prerelease, bv.prerelease)
+}
+
+type semanticVersion struct {
+	numbers    [3]int
+	prerelease string
+}
+
+func parseSemanticVersion(v string) (semanticVersion, bool) {
+	v = normalizeVersion(v)
+	if v == "" || v == "dev" {
+		return semanticVersion{}, false
+	}
+	main, prerelease, _ := strings.Cut(v, "-")
+	main, _, _ = strings.Cut(main, "+")
+	prerelease, _, _ = strings.Cut(prerelease, "+")
+	parts := strings.Split(main, ".")
+	if len(parts) > 3 {
+		return semanticVersion{}, false
+	}
+	out := semanticVersion{prerelease: prerelease}
+	for i, part := range parts {
+		if part == "" {
+			return semanticVersion{}, false
+		}
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 0 {
+			return semanticVersion{}, false
+		}
+		out.numbers[i] = n
+	}
+	return out, len(parts) > 0
+}
+
+func comparePrerelease(a, b string) int {
+	if a == "" && b == "" {
+		return 0
+	}
+	if a == "" {
+		return 1
+	}
+	if b == "" {
+		return -1
+	}
+
+	aparts := strings.Split(a, ".")
+	bparts := strings.Split(b, ".")
+	for i := 0; i < len(aparts) || i < len(bparts); i++ {
+		if i >= len(aparts) {
+			return -1
+		}
+		if i >= len(bparts) {
+			return 1
+		}
+		cmp := comparePrereleaseIdentifier(aparts[i], bparts[i])
+		if cmp != 0 {
+			return cmp
+		}
+	}
 	return 0
 }
 
-func parseVersion(v string) ([]int, bool) {
-	v = normalizeVersion(v)
-	if v == "" || v == "dev" {
-		return nil, false
-	}
-	main, _, _ := strings.Cut(v, "-")
-	parts := strings.Split(main, ".")
-	out := make([]int, 0, len(parts))
-	for _, part := range parts {
-		if part == "" {
-			return nil, false
+func comparePrereleaseIdentifier(a, b string) int {
+	ai, aerr := strconv.Atoi(a)
+	bi, berr := strconv.Atoi(b)
+	if aerr == nil && berr == nil {
+		switch {
+		case ai < bi:
+			return -1
+		case ai > bi:
+			return 1
+		default:
+			return 0
 		}
-		n, err := strconv.Atoi(part)
-		if err != nil {
-			return nil, false
-		}
-		out = append(out, n)
 	}
-	return out, len(out) > 0
+	if aerr == nil {
+		return -1
+	}
+	if berr == nil {
+		return 1
+	}
+	return strings.Compare(a, b)
 }
 
 func normalizeVersion(v string) string {

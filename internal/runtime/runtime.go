@@ -148,6 +148,7 @@ type ImageOpts struct {
 //	nerdctl://<name>                → containerd
 //	k8s://<pod>                     → kubernetes (current kube-context namespace)
 //	k8s://<namespace>/<pod>         → kubernetes
+//	k8s://<pod>/<ctr> + --namespace → kubernetes (resolved by CLI flags)
 //	k8s://<namespace>/<pod>/<ctr>   → kubernetes (specific container)
 //	k8s://@<context>/<pod>          → kubernetes (specific context, current namespace)
 //	k8s://@<context>/<ns>/<pod>     → kubernetes (specific context and namespace)

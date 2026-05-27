@@ -42,6 +42,7 @@ Target formats:
   k8s://                          Kubernetes pod picker
   k8s://<pod>                     Pod in the current kube-context namespace
   k8s://<namespace>/<pod>         Pod in an explicit namespace (or use -n/--namespace)
+  k8s://<pod>/<ctr> -n <ns>       Specific container using namespace flag
   k8s://<namespace>/<pod>/<ctr>   Specific container in a pod
   k8s://@<context>                Pod picker in a specific kube context
   k8s://@<context>/<pod>          Pod in that context's namespace
@@ -194,6 +195,22 @@ func resolveKubeNamespace(cmd *cobra.Command, targetNamespace string) (string, e
 		return "", fmt.Errorf("conflicting Kubernetes namespaces: target uses %q but --namespace=%q", targetNamespace, flagNamespace)
 	}
 	return flagNamespace, nil
+}
+
+func applyKubeNamespaceFlagContainerShorthand(cmd *cobra.Command, target *runtime.Target) {
+	if target == nil || target.Runtime != "kubernetes" || !flagChanged(cmd, "namespace") || flagNamespace == "" {
+		return
+	}
+	if target.Namespace == "" || target.Name == "" || target.Container != "" || target.Namespace == flagNamespace {
+		return
+	}
+
+	// With --namespace, treat two URI segments as pod/container. This keeps
+	// k8s://namespace/pod unambiguous when no namespace flag is supplied while
+	// supporting the documented k8s://pod/container --namespace namespace form.
+	target.Container = target.Name
+	target.Name = target.Namespace
+	target.Namespace = ""
 }
 
 // resolveProfile resolves the security profile from --profile and --privileged flags.

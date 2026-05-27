@@ -4,8 +4,19 @@ set -euo pipefail
 DEBUX_BIN="${DEBUX_BIN:-./bin/debux}"
 DEBUX_IMAGE="${DEBUX_IMAGE:-ghcr.io/clement-tourriere/debux:latest}"
 DEBUX_PULL_POLICY="${DEBUX_PULL_POLICY:-IfNotPresent}"
-NAMESPACE="${DEBUX_E2E_NAMESPACE:-debux-e2e}"
+NAMESPACE="${DEBUX_E2E_NAMESPACE:-debux-e2e-default}"
 POD="${DEBUX_E2E_POD:-web}"
+
+case "$NAMESPACE" in
+  debux-e2e-*) ;;
+  *)
+    if [[ "${DEBUX_E2E_ALLOW_ARBITRARY_NAMESPACE:-}" != "1" ]]; then
+      echo "error: refusing to manage namespace '$NAMESPACE'" >&2
+      echo "Set DEBUX_E2E_NAMESPACE to a debux-e2e-* name or DEBUX_E2E_ALLOW_ARBITRARY_NAMESPACE=1 to override." >&2
+      exit 2
+    fi
+    ;;
+esac
 
 if [[ ! -x "$DEBUX_BIN" ]]; then
   echo "Building debux test binary at $DEBUX_BIN"

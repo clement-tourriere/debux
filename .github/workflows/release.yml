@@ -11,13 +11,13 @@ on:
         type: string
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
+  contents: read
 
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
@@ -28,25 +28,39 @@ jobs:
 
       - id: meta
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          semver_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
 
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            raw="${{ inputs.version }}"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            raw="$INPUT_VERSION"
             version="${raw#v}"
-            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            if [[ ! "$version" =~ $semver_re ]]; then
               echo "::error::Invalid version '$raw'. Expected X.Y.Z or vX.Y.Z"
               exit 1
             fi
             tag="v$version"
-            git fetch --force --tags origin
-            if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-              echo "::error::Tag $tag does not exist. Run mise run release:bump and push the tag first."
-              exit 1
-            fi
           else
             tag="${GITHUB_REF_NAME}"
             version="${tag#v}"
+            if [[ ! "$version" =~ $semver_re ]]; then
+              echo "::error::Invalid tag '$tag'. Expected vX.Y.Z"
+              exit 1
+            fi
+          fi
+
+          git fetch --force origin main --tags
+          if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::Tag $tag does not exist. Run mise run release:bump and push the tag first."
+            exit 1
+          fi
+          tag_sha="$(git rev-list -n 1 "$tag")"
+          if ! git merge-base --is-ancestor "$tag_sha" origin/main; then
+            echo "::error::Tag $tag ($tag_sha) is not reachable from origin/main"
+            exit 1
           fi
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -55,6 +69,9 @@ jobs:
   binaries:
     needs: [prepare, image]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -64,6 +81,8 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+
+      - uses: sigstore/cosign-installer@v3
 
       - uses: goreleaser/goreleaser-action@v7
         with:
@@ -75,6 +94,10 @@ jobs:
   image:
     needs: prepare
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v6
         with:

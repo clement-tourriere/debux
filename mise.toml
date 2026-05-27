@@ -85,9 +85,13 @@ run = "hk install --mise"
 description = "Run hk pre-commit checks"
 run = "hk run pre-commit"
 
+[tasks.verify]
+description = "Run the same lightweight checks expected before release"
+run = "bash -lc 'set -euo pipefail; go mod tidy; git diff --exit-code -- go.mod go.sum; go test ./...; golangci-lint run; scripts/govulncheck.sh ./...'"
+
 [tasks.check]
-description = "Run hk checks on all files"
-run = "hk check --all --check"
+description = "Run repository verification checks"
+run = "mise run verify"
 
 [tasks."release:bump"]
 description = "Bump version, changelog, and tag with Commitizen"
@@ -125,7 +129,7 @@ exit "$status"
 
 [tasks."release:dry-run"]
 description = "Build release artifacts locally without publishing"
-run = "goreleaser release --snapshot --clean"
+run = "goreleaser release --snapshot --clean --skip=sign"
 
 [tasks."release:push"]
 description = "Push main and tags to trigger the GitHub release workflow"

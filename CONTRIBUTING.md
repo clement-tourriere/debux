@@ -26,7 +26,7 @@ mise run build          # Build the CLI
 mise run install        # Build and install to ~/.local/bin
 mise run test           # Run Go tests
 mise run tidy           # Update go.mod/go.sum
-mise run check          # Run repository checks
+mise run check          # Run tidy diff, tests, lint, and govulncheck
 mise run fix            # Auto-fix supported checks
 mise run image-build    # Build the debug toolbox image
 mise run docs           # Serve docs locally

@@ -340,13 +340,18 @@ func completeKubernetesPath(cmd *cobra.Command, kubeconfig, kubeContext, base, p
 		}
 		return completions
 	case 2:
-		namespace := unescapeCompletionPart(parts[0])
-		if namespace == "" {
+		first := unescapeCompletionPart(parts[0])
+		if first == "" {
 			return nil
 		}
-		podPrefix := unescapeCompletionPart(parts[1])
-		podBase := base + url.PathEscape(namespace) + "/"
-		return completeKubernetesPods(kubeconfig, kubeContext, namespace, podBase, podPrefix, toComplete)
+		second := unescapeCompletionPart(parts[1])
+		selectedNamespace := completionSelectedNamespace(cmd, kubeconfig, kubeContext)
+		if completionNamespaceFlagChanged(cmd) && first != selectedNamespace {
+			podBase := base + url.PathEscape(first)
+			return completeKubernetesContainers(kubeconfig, kubeContext, selectedNamespace, first, podBase, second, toComplete)
+		}
+		podBase := base + url.PathEscape(first) + "/"
+		return completeKubernetesPods(kubeconfig, kubeContext, first, podBase, second, toComplete)
 	case 3:
 		namespace := unescapeCompletionPart(parts[0])
 		podName := unescapeCompletionPart(parts[1])

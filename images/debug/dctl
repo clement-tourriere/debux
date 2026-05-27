@@ -8,6 +8,7 @@ export NIX_CONFIG="experimental-features = nix-command flakes"
 
 # User-installed packages go in a separate nix profile (persisted in /nix/var volume)
 DEBUX_PROFILE="/nix/var/debux-profile"
+NIXPKGS_REF="${NIXPKGS_REF:-nixpkgs}"
 
 ensure_home() {
   if [[ -z "${HOME:-}" || ! -d "$HOME" || ! -w "$HOME" || ! -O "$HOME" ]]; then
@@ -117,7 +118,7 @@ case "${1:-}" in
         echo -e "\e[36m$pkg\e[0m → \e[32m$resolved\e[0m"
       fi
       echo "Installing $resolved..."
-      if nix profile add --profile "$DEBUX_PROFILE" "nixpkgs#$resolved"; then
+      if nix profile add --profile "$DEBUX_PROFILE" "$NIXPKGS_REF#$resolved"; then
         echo -e "\e[32mInstalled $resolved.\e[0m"
       else
         status=1
@@ -153,7 +154,7 @@ case "${1:-}" in
       echo "Usage: dctl search <query>" >&2
       exit 2
     fi
-    nix search nixpkgs "$1" 2>/dev/null || echo "Search failed. Try: nix search nixpkgs $1"
+    nix search "$NIXPKGS_REF" "$1" 2>/dev/null || echo "Search failed. Try: nix search $NIXPKGS_REF $1"
     ;;
   list)
     echo "Base packages (from image):"
@@ -164,7 +165,7 @@ case "${1:-}" in
     ;;
   update)
     ensure_nix_writable || exit 1
-    nix flake metadata --refresh nixpkgs >/dev/null
+    nix flake metadata --refresh "$NIXPKGS_REF" >/dev/null
     echo -e "\e[32mRefreshed nixpkgs flake metadata.\e[0m"
     ;;
   *)

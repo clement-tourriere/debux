@@ -379,8 +379,11 @@ func KubernetesKill(ctx context.Context, target *Target, kubeconfig string, kube
 		return fmt.Errorf("getting pod %s/%s: %w", namespace, target.Name, err)
 	}
 
-	containerName := findRunningDebuxContainer(pod)
+	containerName := findRunningDebuxContainerForKill(pod, target.Container)
 	if containerName == "" {
+		if target.Container != "" {
+			return fmt.Errorf("no running debux session found for container %q on pod %s/%s", target.Container, namespace, target.Name)
+		}
 		return fmt.Errorf("no running debux session found on pod %s/%s", namespace, target.Name)
 	}
 
@@ -414,15 +417,17 @@ func KubernetesKillAll(ctx context.Context, kubeconfig string, kubeContext strin
 		}
 
 		for _, pod := range pods.Items {
-			for _, cs := range pod.Status.EphemeralContainerStatuses {
-				if strings.HasPrefix(cs.Name, "debux-") && cs.State.Running != nil {
-					if err := killInContainer(ctx, config, clientset, namespace, pod.Name, cs.Name); err != nil {
-						fmt.Printf("Warning: failed to kill %s on %s/%s: %v\n", cs.Name, namespace, pod.Name, err)
-						continue
-					}
-					fmt.Printf("Killed %s on %s/%s\n", cs.Name, namespace, pod.Name)
-					killed++
+			running := runningDebuxEphemeralContainers(&pod)
+			for _, ec := range pod.Spec.EphemeralContainers {
+				if _, ok := running[ec.Name]; !ok || !debuxEphemeralContainerHasMetadata(ec) {
+					continue
 				}
+				if err := killInContainer(ctx, config, clientset, namespace, pod.Name, ec.Name); err != nil {
+					fmt.Printf("Warning: failed to kill %s on %s/%s: %v\n", ec.Name, namespace, pod.Name, err)
+					continue
+				}
+				fmt.Printf("Killed %s on %s/%s\n", ec.Name, namespace, pod.Name)
+				killed++
 			}
 		}
 
@@ -528,7 +533,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 
 	// Try to reuse an existing running debux container for the same target container.
 	if !opts.Fresh {
-		if existing := findRunningDebuxContainerForTarget(pod, targetContainer, opts.Profile); existing != "" {
+		if existing := findRunningDebuxContainerForTarget(pod, targetContainer, opts.Profile, opts.User); existing != "" {
 			fmt.Printf("Reusing debug container %q\n", existing)
 			fmt.Printf("Debugging %s/%s (container: %s)\n", namespace, podName, existing)
 			return execInPodWithMetadata(ctx, config, clientset, namespace, podName, existing, debuxTarget, displayContext, opts.Command)
@@ -554,6 +559,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 				{Name: "DEBUX_TARGET_ROOT", Value: "/proc/1/root"},
 				{Name: "DEBUX_DAEMON", Value: "1"},
 				{Name: "DEBUX_SECURITY_PROFILE", Value: opts.Profile},
+				{Name: "DEBUX_DEBUG_USER", Value: opts.User},
 				{Name: "HOME", Value: "/root"},
 				{Name: "ZDOTDIR", Value: "/tmp"},
 			},
@@ -664,6 +670,7 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 			{Name: "DEBUX_CONTEXT", Value: displayContext},
 			{Name: "DEBUX_DAEMON", Value: "1"},
 			{Name: "DEBUX_SECURITY_PROFILE", Value: opts.Profile},
+			{Name: "DEBUX_DEBUG_USER", Value: opts.User},
 			{Name: "HOME", Value: "/root"},
 			{Name: "ZDOTDIR", Value: "/tmp"},
 		},
@@ -898,32 +905,52 @@ func copyPodShellCommand(targetContainerID string, command []string) []string {
 	return []string{"sh", "-c", cmd}
 }
 
-// findRunningDebuxContainer looks for an existing running ephemeral container
-// with the "debux-" prefix on the given pod. Returns its name, or "" if none found.
+// findRunningDebuxContainer looks for an existing running Debux ephemeral
+// container on the given pod. Returns its name, or "" if none found.
 func findRunningDebuxContainer(pod *corev1.Pod) string {
-	for _, cs := range pod.Status.EphemeralContainerStatuses {
-		if strings.HasPrefix(cs.Name, "debux-") && cs.State.Running != nil {
-			return cs.Name
+	running := runningDebuxEphemeralContainers(pod)
+	for _, ec := range pod.Spec.EphemeralContainers {
+		if _, ok := running[ec.Name]; ok && debuxEphemeralContainerHasMetadata(ec) {
+			return ec.Name
+		}
+	}
+	return ""
+}
+
+func findRunningDebuxContainerForKill(pod *corev1.Pod, targetContainer string) string {
+	if targetContainer == "" {
+		return findRunningDebuxContainer(pod)
+	}
+
+	running := runningDebuxEphemeralContainers(pod)
+	for _, ec := range pod.Spec.EphemeralContainers {
+		if _, ok := running[ec.Name]; !ok {
+			continue
+		}
+		if !debuxEphemeralContainerHasMetadata(ec) {
+			continue
+		}
+		if ec.TargetContainerName == targetContainer {
+			return ec.Name
 		}
 	}
 	return ""
 }
 
 // findRunningDebuxContainerForTarget returns a running debux ephemeral container
-// that targets the same Kubernetes container and security profile. Reusing a
+// that targets the same Kubernetes container, security profile, and user. Reusing a
 // session created for a different target container would put the shell in the
 // wrong PID/root namespace; reusing a different profile would silently ignore
-// the user's requested security posture.
-func findRunningDebuxContainerForTarget(pod *corev1.Pod, targetContainer, profile string) string {
-	running := make(map[string]struct{})
-	for _, cs := range pod.Status.EphemeralContainerStatuses {
-		if strings.HasPrefix(cs.Name, "debux-") && cs.State.Running != nil {
-			running[cs.Name] = struct{}{}
-		}
-	}
+// the user's requested security posture, and reusing a different user would
+// silently ignore the requested UID/GID.
+func findRunningDebuxContainerForTarget(pod *corev1.Pod, targetContainer, profile, user string) string {
+	running := runningDebuxEphemeralContainers(pod)
 
 	for _, ec := range pod.Spec.EphemeralContainers {
 		if _, ok := running[ec.Name]; !ok {
+			continue
+		}
+		if !debuxEphemeralContainerHasMetadata(ec) {
 			continue
 		}
 		if targetContainer != "" && ec.TargetContainerName != targetContainer {
@@ -932,10 +959,35 @@ func findRunningDebuxContainerForTarget(pod *corev1.Pod, targetContainer, profil
 		if !debuxEphemeralContainerProfileMatches(ec, profile) {
 			continue
 		}
+		if !debuxEphemeralContainerUserMatches(ec, user) {
+			continue
+		}
 		return ec.Name
 	}
 
 	return ""
+}
+
+func runningDebuxEphemeralContainers(pod *corev1.Pod) map[string]struct{} {
+	running := make(map[string]struct{})
+	for _, cs := range pod.Status.EphemeralContainerStatuses {
+		if strings.HasPrefix(cs.Name, "debux-") && cs.State.Running != nil {
+			running[cs.Name] = struct{}{}
+		}
+	}
+	return running
+}
+
+func debuxEphemeralContainerHasMetadata(ec corev1.EphemeralContainer) bool {
+	if !strings.HasPrefix(ec.Name, "debux-") {
+		return false
+	}
+	for _, env := range ec.Env {
+		if env.Name == "DEBUX_TARGET" || env.Name == "DEBUX_DAEMON" {
+			return true
+		}
+	}
+	return false
 }
 
 func debuxEphemeralContainerProfileMatches(ec corev1.EphemeralContainer, requested string) bool {
@@ -950,6 +1002,17 @@ func debuxEphemeralContainerProfileMatches(ec corev1.EphemeralContainer, request
 	// Legacy debux containers did not record their profile. Treat them as the
 	// historical default only; never satisfy an explicit lower-privilege request.
 	return requested == ProfileGeneral
+}
+
+func debuxEphemeralContainerUserMatches(ec corev1.EphemeralContainer, requested string) bool {
+	for _, env := range ec.Env {
+		if env.Name == "DEBUX_DEBUG_USER" {
+			return env.Value == requested
+		}
+	}
+	// Legacy debux containers did not record --user. Reuse them only when the user
+	// did not request a specific identity.
+	return requested == ""
 }
 
 const debuxShellSetupCommand = `if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ] || [ ! -w "$HOME" ]; then debux_uid="$(id -u 2>/dev/null || echo 0)"; export HOME="/tmp/debux-home-$debux_uid"; mkdir -p "$HOME" 2>/dev/null || export HOME=/tmp; unset debux_uid; fi; export ZDOTDIR=/tmp;`
@@ -1089,6 +1152,7 @@ func KubernetesPod(ctx context.Context, opts PodOpts) error {
 						{Name: "DEBUX_TARGET", Value: displayTarget},
 						{Name: "DEBUX_CONTEXT", Value: displayContext},
 						{Name: "DEBUX_SECURITY_PROFILE", Value: opts.Profile},
+						{Name: "DEBUX_DEBUG_USER", Value: opts.User},
 						{Name: "HOME", Value: "/root"},
 						{Name: "ZDOTDIR", Value: "/tmp"},
 					},

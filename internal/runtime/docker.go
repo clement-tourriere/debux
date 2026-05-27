@@ -22,15 +22,18 @@ import (
 )
 
 const (
-	dockerLabelManagedBy     = "app.kubernetes.io/managed-by"
-	dockerLabelKind          = "debux.clement-tourriere/kind"
-	dockerLabelTargetID      = "debux.clement-tourriere/target-id"
-	dockerLabelTargetName    = "debux.clement-tourriere/target-name"
-	dockerLabelTargetImage   = "debux.clement-tourriere/target-image"
-	dockerLabelDebugImage    = "debux.clement-tourriere/debug-image"
-	dockerLabelManagedByVal  = "debux"
-	dockerLabelKindSidecar   = "docker-sidecar"
-	dockerLabelKindImageMode = "docker-image"
+	dockerLabelManagedBy       = "app.kubernetes.io/managed-by"
+	dockerLabelKind            = "debux.clement-tourriere/kind"
+	dockerLabelTargetID        = "debux.clement-tourriere/target-id"
+	dockerLabelTargetName      = "debux.clement-tourriere/target-name"
+	dockerLabelTargetImage     = "debux.clement-tourriere/target-image"
+	dockerLabelDebugImage      = "debux.clement-tourriere/debug-image"
+	dockerLabelDebugUser       = "debux.clement-tourriere/debug-user"
+	dockerLabelManagedByVal    = "debux"
+	dockerLabelKindSidecar     = "docker-sidecar"
+	dockerLabelKindImageMode   = "docker-image"
+	dockerLabelKindImageTarget = "docker-image-target"
+	dockerAnyDebugUser         = "\x00"
 )
 
 // ContainerInfo holds metadata about a running Docker container.
@@ -71,7 +74,7 @@ func DockerList(ctx context.Context) ([]ContainerInfo, error) {
 		if targetID := c.Labels[dockerLabelTargetID]; targetID != "" {
 			debuxTargetsByID[targetID] = true
 		}
-		if targetName := c.Labels[dockerLabelTargetName]; targetName != "" {
+		if targetName := c.Labels[dockerLabelTargetName]; targetName != "" && c.Labels[dockerLabelTargetID] == "" {
 			debuxTargetsByName[targetName] = true
 		}
 		// Legacy debux sidecars did not have labels. Keep marking them so users
@@ -83,7 +86,7 @@ func DockerList(ctx context.Context) ([]ContainerInfo, error) {
 
 	var result []ContainerInfo
 	for _, c := range containers {
-		if c.State != "running" || isDebuxDockerSidecar(c) {
+		if c.State != "running" || isDebuxDockerManagedContainer(c) {
 			continue
 		}
 		name := dockerContainerPrimaryName(c)
@@ -154,7 +157,7 @@ func DockerKill(ctx context.Context, targetName string) error {
 		resolvedName = strings.TrimPrefix(targetInfo.Name, "/")
 	}
 
-	debugID, debugName, err := findDockerDebugContainer(ctx, cli, containerID, resolvedName)
+	debugID, debugName, err := findDockerDebugContainer(ctx, cli, containerID, resolvedName, dockerAnyDebugUser)
 	if err != nil {
 		return err
 	}
@@ -248,7 +251,15 @@ func isDebuxDockerSidecar(c container.Summary) bool {
 	// Backward-compatible legacy detection: old debux sidecars were named
 	// debux-<target> but had no labels. Require the image reference to mention
 	// debux so an unrelated user container named debux-* is not removed/listed.
-	return strings.HasPrefix(dockerContainerPrimaryName(c), "debux-") && strings.Contains(strings.ToLower(c.Image), "debux")
+	name := dockerContainerPrimaryName(c)
+	return strings.HasPrefix(name, "debux-") && !strings.HasPrefix(name, "debux-image-") && strings.Contains(strings.ToLower(c.Image), "debux")
+}
+
+func isDebuxDockerManagedContainer(c container.Summary) bool {
+	if c.Labels[dockerLabelManagedBy] == dockerLabelManagedByVal && isDebuxDockerManagedKind(c.Labels[dockerLabelKind]) {
+		return true
+	}
+	return isDebuxDockerSidecar(c)
 }
 
 func removeDockerContainerNameIfManaged(ctx context.Context, cli *client.Client, name string) error {
@@ -259,8 +270,9 @@ func removeDockerContainerNameIfManaged(ctx context.Context, cli *client.Client,
 	managed := false
 	if info.Config != nil {
 		labels := info.Config.Labels
-		managed = labels[dockerLabelManagedBy] == dockerLabelManagedByVal && labels[dockerLabelKind] == dockerLabelKindSidecar
-		managed = managed || (strings.HasPrefix(strings.TrimPrefix(info.Name, "/"), "debux-") && strings.Contains(strings.ToLower(info.Config.Image), "debux"))
+		managed = labels[dockerLabelManagedBy] == dockerLabelManagedByVal && isDebuxDockerManagedKind(labels[dockerLabelKind])
+		name := strings.TrimPrefix(info.Name, "/")
+		managed = managed || (strings.HasPrefix(name, "debux-") && !strings.HasPrefix(name, "debux-image-") && strings.Contains(strings.ToLower(info.Config.Image), "debux"))
 	}
 	if !managed {
 		return fmt.Errorf("container name %q is already in use by a container not managed by debux", name)
@@ -269,7 +281,16 @@ func removeDockerContainerNameIfManaged(ctx context.Context, cli *client.Client,
 	return err
 }
 
-func findDockerDebugContainer(ctx context.Context, cli *client.Client, targetID, targetName string) (id, name string, err error) {
+func isDebuxDockerManagedKind(kind string) bool {
+	switch kind {
+	case dockerLabelKindSidecar, dockerLabelKindImageMode, dockerLabelKindImageTarget:
+		return true
+	default:
+		return false
+	}
+}
+
+func findDockerDebugContainer(ctx context.Context, cli *client.Client, targetID, targetName, requestedUser string) (id, name string, err error) {
 	containers, err := listDockerContainers(ctx, cli)
 	if err != nil {
 		return "", "", fmt.Errorf("listing containers: %w", err)
@@ -278,24 +299,44 @@ func findDockerDebugContainer(ctx context.Context, cli *client.Client, targetID,
 		if c.State != "running" || !isDebuxDockerSidecar(c) {
 			continue
 		}
+		if !dockerDebugContainerUserMatches(c, requestedUser) {
+			continue
+		}
 		if targetID != "" && c.Labels[dockerLabelTargetID] == targetID {
 			return c.ID, dockerContainerPrimaryName(c), nil
 		}
-		if targetName != "" && c.Labels[dockerLabelTargetName] == targetName {
+		if targetName != "" && c.Labels[dockerLabelTargetName] == targetName && (targetID == "" || c.Labels[dockerLabelTargetID] == "") {
 			return c.ID, dockerContainerPrimaryName(c), nil
 		}
 	}
 
 	// Legacy fallback by container name for sessions created before labels.
-	if targetName != "" {
+	if targetName != "" && (requestedUser == "" || requestedUser == dockerAnyDebugUser) {
 		legacyName := "debux-" + targetName
 		if info, err := inspectDockerContainer(ctx, cli, legacyName); err == nil && info.State != nil && info.State.Running {
+			if info.Config != nil && info.Config.Labels[dockerLabelManagedBy] == dockerLabelManagedByVal {
+				return "", "", nil
+			}
 			if info.Config == nil || strings.Contains(strings.ToLower(info.Config.Image), "debux") {
 				return info.ID, strings.TrimPrefix(info.Name, "/"), nil
 			}
 		}
 	}
 	return "", "", nil
+}
+
+func dockerDebugContainerUserMatches(c container.Summary, requestedUser string) bool {
+	if requestedUser == dockerAnyDebugUser {
+		return true
+	}
+	if c.Labels == nil {
+		return requestedUser == ""
+	}
+	user, ok := c.Labels[dockerLabelDebugUser]
+	if !ok {
+		return requestedUser == ""
+	}
+	return user == requestedUser
 }
 
 // DockerExec launches a debug sidecar sharing namespaces with the target container.
@@ -329,12 +370,17 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	// container. Labels avoid reusing stale sessions after a target container is
 	// recreated with the same name.
 	if !opts.Fresh {
-		if existingID, existingName, err := findDockerDebugContainer(ctx, cli, targetID, targetName); err != nil {
+		if existingID, existingName, err := findDockerDebugContainer(ctx, cli, targetID, targetName, opts.User); err != nil {
 			return err
 		} else if existingID != "" {
 			fmt.Printf("Reusing debug container %q\n", existingName)
 			fmt.Printf("Debugging %s (container: %s)\n", target.Name, existingName)
 			return execInContainer(ctx, cli, existingID, opts.Command)
+		}
+		if existingID, existingName, err := findDockerDebugContainer(ctx, cli, targetID, targetName, dockerAnyDebugUser); err != nil {
+			return err
+		} else if existingID != "" {
+			return fmt.Errorf("running debux session %q for %s uses a different --user; pass --fresh to replace it", existingName, target.Name)
 		}
 	}
 
@@ -365,6 +411,7 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 			dockerLabelTargetName:  targetName,
 			dockerLabelTargetImage: targetImage,
 			dockerLabelDebugImage:  opts.Image,
+			dockerLabelDebugUser:   opts.User,
 		},
 		Env: []string{
 			"HOME=/root",
@@ -552,13 +599,20 @@ func DockerImage(ctx context.Context, imageRef string, opts ImageOpts) error {
 	// Create a stopped container from the target image to access its filesystem.
 	// We use "true" as the command — it's never started, we just need the container layer.
 	targetName := fmt.Sprintf("debux-image-target-%s", sanitizeImageRef(imageRef))
-	_, _ = cli.ContainerRemove(ctx, targetName, client.ContainerRemoveOptions{Force: true})
+	if err := removeDockerContainerNameIfManaged(ctx, cli, targetName); err != nil {
+		return err
+	}
 
 	fmt.Printf("Creating target container from %s...\n", imageRef)
 	targetResp, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
 			Image: imageRef,
 			Cmd:   []string{"true"},
+			Labels: map[string]string{
+				dockerLabelManagedBy:  dockerLabelManagedByVal,
+				dockerLabelKind:       dockerLabelKindImageTarget,
+				dockerLabelTargetName: imageRef,
+			},
 		},
 		Name: targetName,
 	})
@@ -593,7 +647,9 @@ func DockerImage(ctx context.Context, imageRef string, opts ImageOpts) error {
 
 	// Create the debug container
 	debugName := fmt.Sprintf("debux-image-%s", sanitizeImageRef(imageRef))
-	_, _ = cli.ContainerRemove(ctx, debugName, client.ContainerRemoveOptions{Force: true})
+	if err := removeDockerContainerNameIfManaged(ctx, cli, debugName); err != nil {
+		return err
+	}
 
 	config := &container.Config{
 		Image:        opts.DebugImage,
@@ -608,6 +664,7 @@ func DockerImage(ctx context.Context, imageRef string, opts ImageOpts) error {
 			dockerLabelKind:       dockerLabelKindImageMode,
 			dockerLabelTargetName: imageRef,
 			dockerLabelDebugImage: opts.DebugImage,
+			dockerLabelDebugUser:  opts.User,
 		},
 		Env: []string{
 			"HOME=/root",

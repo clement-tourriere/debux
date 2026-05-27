@@ -34,3 +34,10 @@ Examples of useful reports include:
 ## Expected behavior
 
 By design, debux may expose the target filesystem, process namespace, network namespace, mounted secrets, and service-account files that the selected debug profile can access. See the README security model before reporting behavior that may be intentional.
+
+## Trust model and operational risks
+
+- Docker debug sessions persist Nix tools and shell history in Debux-managed Docker volumes. Treat those volumes as trusted state and run `debux store clean` if you want to discard installed tools.
+- The installer and self-updater require release checksums. When `cosign` is available and signature assets are present, they also verify `checksums.txt` with GitHub OIDC signatures.
+- The debug image is signed with keyless cosign in release workflows. Verify images before using them in high-trust environments.
+- Kubernetes e2e scripts operate on the current kube-context and delete their test namespace on exit. They refuse arbitrary namespace names unless `DEBUX_E2E_ALLOW_ARBITRARY_NAMESPACE=1` is set.

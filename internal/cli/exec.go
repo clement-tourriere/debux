@@ -72,6 +72,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 	if err := validateExecFlags(cmd, target.Runtime); err != nil {
 		return err
 	}
+	applyKubeNamespaceFlagContainerShorthand(cmd, target)
 
 	kubeContext, err := resolveKubeContext(cmd, target.Context)
 	if err != nil {

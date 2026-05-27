@@ -63,14 +63,20 @@ func TestFindRunningDebuxContainerForTargetHonorsProfile(t *testing.T) {
 				{
 					EphemeralContainerCommon: corev1.EphemeralContainerCommon{
 						Name: "debux-general",
-						Env:  []corev1.EnvVar{{Name: "DEBUX_SECURITY_PROFILE", Value: ProfileGeneral}},
+						Env: []corev1.EnvVar{
+							{Name: "DEBUX_TARGET", Value: "ctx:ns/pod/app"},
+							{Name: "DEBUX_SECURITY_PROFILE", Value: ProfileGeneral},
+						},
 					},
 					TargetContainerName: "app",
 				},
 				{
 					EphemeralContainerCommon: corev1.EphemeralContainerCommon{
 						Name: "debux-restricted",
-						Env:  []corev1.EnvVar{{Name: "DEBUX_SECURITY_PROFILE", Value: ProfileRestricted}},
+						Env: []corev1.EnvVar{
+							{Name: "DEBUX_TARGET", Value: "ctx:ns/pod/app"},
+							{Name: "DEBUX_SECURITY_PROFILE", Value: ProfileRestricted},
+						},
 					},
 					TargetContainerName: "app",
 				},
@@ -84,11 +90,77 @@ func TestFindRunningDebuxContainerForTargetHonorsProfile(t *testing.T) {
 		},
 	}
 
-	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileRestricted); got != "debux-restricted" {
+	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileRestricted, ""); got != "debux-restricted" {
 		t.Fatalf("restricted container = %q", got)
 	}
-	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileGeneral); got != "debux-general" {
+	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileGeneral, ""); got != "debux-general" {
 		t.Fatalf("general container = %q", got)
+	}
+}
+
+func TestFindRunningDebuxContainerForTargetHonorsUser(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{EphemeralContainers: []corev1.EphemeralContainer{
+			{
+				EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+					Name: "debux-root",
+					Env: []corev1.EnvVar{
+						{Name: "DEBUX_TARGET", Value: "ctx:ns/pod/app"},
+						{Name: "DEBUX_SECURITY_PROFILE", Value: ProfileGeneral},
+						{Name: "DEBUX_DEBUG_USER", Value: ""},
+					},
+				},
+				TargetContainerName: "app",
+			},
+			{
+				EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+					Name: "debux-user",
+					Env: []corev1.EnvVar{
+						{Name: "DEBUX_TARGET", Value: "ctx:ns/pod/app"},
+						{Name: "DEBUX_SECURITY_PROFILE", Value: ProfileGeneral},
+						{Name: "DEBUX_DEBUG_USER", Value: "1000:1000"},
+					},
+				},
+				TargetContainerName: "app",
+			},
+		}},
+		Status: corev1.PodStatus{EphemeralContainerStatuses: []corev1.ContainerStatus{
+			{Name: "debux-root", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			{Name: "debux-user", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+		}},
+	}
+
+	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileGeneral, "1000:1000"); got != "debux-user" {
+		t.Fatalf("user-specific container = %q", got)
+	}
+	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileGeneral, ""); got != "debux-root" {
+		t.Fatalf("default-user container = %q", got)
+	}
+}
+
+func TestFindRunningDebuxContainerForKillHonorsTargetContainer(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{EphemeralContainers: []corev1.EphemeralContainer{
+			{EphemeralContainerCommon: corev1.EphemeralContainerCommon{Name: "debux-api"}, TargetContainerName: "api"},
+			{
+				EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+					Name: "debux-worker",
+					Env:  []corev1.EnvVar{{Name: "DEBUX_TARGET", Value: "ctx:ns/pod/worker"}},
+				},
+				TargetContainerName: "worker",
+			},
+		}},
+		Status: corev1.PodStatus{EphemeralContainerStatuses: []corev1.ContainerStatus{
+			{Name: "debux-api", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			{Name: "debux-worker", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+		}},
+	}
+
+	if got := findRunningDebuxContainerForKill(pod, "worker"); got != "debux-worker" {
+		t.Fatalf("kill target container = %q", got)
+	}
+	if got := findRunningDebuxContainerForKill(pod, "api"); got != "" {
+		t.Fatalf("metadata-less container should not be killed, got %q", got)
 	}
 }
 
@@ -190,5 +262,45 @@ func TestIsDebuxDockerSidecarRequiresLabelOrDebuxImage(t *testing.T) {
 	legacy := container.Summary{ID: "abcdef123456", Names: []string{"/debux-api"}, Image: "ghcr.io/clement-tourriere/debux:latest"}
 	if !isDebuxDockerSidecar(legacy) {
 		t.Fatalf("legacy debux sidecar should be recognized")
+	}
+
+	imageMode := container.Summary{ID: "abcdef123456", Names: []string{"/debux-image-nginx"}, Image: "ghcr.io/clement-tourriere/debux:latest"}
+	if isDebuxDockerSidecar(imageMode) {
+		t.Fatalf("image-mode debug container should not be treated as a sidecar")
+	}
+}
+
+func TestDockerDebugContainerUserMatches(t *testing.T) {
+	unlabeled := container.Summary{}
+	if !dockerDebugContainerUserMatches(unlabeled, "") {
+		t.Fatalf("unlabeled legacy container should match default user")
+	}
+	if dockerDebugContainerUserMatches(unlabeled, "1000") {
+		t.Fatalf("unlabeled legacy container should not match requested user")
+	}
+
+	labeled := container.Summary{Labels: map[string]string{dockerLabelDebugUser: "1000"}}
+	if !dockerDebugContainerUserMatches(labeled, "1000") {
+		t.Fatalf("labeled container should match requested user")
+	}
+	if dockerDebugContainerUserMatches(labeled, "") {
+		t.Fatalf("labeled user container should not match default user")
+	}
+}
+
+func TestIsDebuxDockerManagedKindIncludesImageMode(t *testing.T) {
+	if !isDebuxDockerManagedKind(dockerLabelKindImageMode) || !isDebuxDockerManagedKind(dockerLabelKindImageTarget) {
+		t.Fatalf("image-mode containers should be debux-managed kinds")
+	}
+	if isDebuxDockerManagedKind("other") {
+		t.Fatalf("unknown container kind should not be debux-managed")
+	}
+
+	managedImageMode := container.Summary{Labels: map[string]string{
+		dockerLabelManagedBy: dockerLabelManagedByVal,
+		dockerLabelKind:      dockerLabelKindImageMode,
+	}}
+	if !isDebuxDockerManagedContainer(managedImageMode) {
+		t.Fatalf("image-mode container should be recognized as debux-managed")
 	}
 }
