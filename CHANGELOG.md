@@ -1,3 +1,9 @@
+## v0.5.2 (2026-05-27)
+
+### Fix
+
+- harden release and debug session safety
+
 ## v0.5.1 (2026-05-26)
 
 ### Fix
