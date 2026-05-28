@@ -16,6 +16,8 @@ func TestShellBootstrapScriptIncludesDebuxZshConfig(t *testing.T) {
 		"alias target='cd $DEBUX_TARGET_ROOT'",
 		"[[ \"$entry\" == *=* ]] || continue",
 		"rm -rf \"$wrapper_dir\"",
+		"export TERM=xterm",
+		"TERM=\"$target_term\" COLUMNS=\"${COLUMNS:-80}\" LINES=\"${LINES:-24}\"",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("ShellBootstrapScript() missing %q", want)

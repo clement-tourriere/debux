@@ -68,6 +68,14 @@ cat > /tmp/.zshrc << 'ZSHRC_EOF'
 export PATH="/nix/var/debux-profile/bin:/usr/local/bin:${HOME:-/tmp}/.nix-profile/bin:${PATH}"
 export DEBUX_TARGET_ROOT="${DEBUX_TARGET_ROOT:-/proc/1/root}"
 
+# Ensure terminal-aware programs have a usable terminal type. Docker/Kubernetes
+# exec sessions and target process environments do not always provide TERM.
+if [[ -z "${TERM:-}" || "$TERM" == "dumb" ]]; then
+  export TERM=xterm
+else
+  export TERM
+fi
+
 # Enable syntax highlighting
 if [[ -f "${HOME:-/tmp}/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]]; then
   source "${HOME:-/tmp}/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
@@ -125,7 +133,9 @@ command_not_found_handler() {
         target_env+=("$entry")
       done < "${DEBUX_TARGET_ENVIRON:-/proc/1/environ}" 2>/dev/null
       local chroot_bin=$(command -v chroot)
-      env -i "${target_env[@]}" TERM="$TERM" \
+      local target_term="${TERM:-xterm}"
+      [[ "$target_term" == "dumb" ]] && target_term=xterm
+      env -i "${target_env[@]}" TERM="$target_term" COLUMNS="${COLUMNS:-80}" LINES="${LINES:-24}" \
         "$chroot_bin" --skip-chdir "$DEBUX_TARGET_ROOT" "$target_bin" "$@"
       local ret=$?
       cd "$save_dir" 2>/dev/null || true
@@ -313,7 +323,9 @@ while IFS= read -r -d '' entry; do
   [[ "$env_key" =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]] || continue
   target_env+=("$entry")
 done < "${DEBUX_TARGET_ENVIRON:-/proc/1/environ}" 2>/dev/null
-exec env -i "${target_env[@]}" "$CHROOT" --skip-chdir "$TARGET_ROOT" "$cmd" "$@"
+target_term="${TERM:-xterm}"
+[ "$target_term" = "dumb" ] && target_term=xterm
+exec env -i "${target_env[@]}" TERM="$target_term" COLUMNS="${COLUMNS:-80}" LINES="${LINES:-24}" "$CHROOT" --skip-chdir "$TARGET_ROOT" "$cmd" "$@"
 HELPER_EOF
   chmod +x "$wrapper_dir/.chroot-exec"
 
@@ -462,6 +474,13 @@ mkdir -p "${HOME:-/tmp}/.config" 2>/dev/null || true
 # Write shell configuration (ZDOTDIR not used for image debugging)
 cat > "${HOME:-/tmp}/.zshrc" << 'ZSHRC_EOF'
 # debux shell configuration
+
+# Ensure terminal-aware programs have a usable terminal type.
+if [[ -z "${TERM:-}" || "$TERM" == "dumb" ]]; then
+  export TERM=xterm
+else
+  export TERM
+fi
 
 # Enable syntax highlighting
 if [[ -f "${HOME:-/tmp}/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]]; then

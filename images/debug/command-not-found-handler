@@ -43,7 +43,9 @@ command_not_found_handler() {
         target_env+=("$entry")
       done < "${DEBUX_TARGET_ENVIRON:-/proc/1/environ}" 2>/dev/null
       local chroot_bin=$(command -v chroot)
-      env -i "${target_env[@]}" TERM="$TERM" \
+      local target_term="${TERM:-xterm}"
+      [[ "$target_term" == "dumb" ]] && target_term=xterm
+      env -i "${target_env[@]}" TERM="$target_term" COLUMNS="${COLUMNS:-80}" LINES="${LINES:-24}" \
         "$chroot_bin" --skip-chdir "$DEBUX_TARGET_ROOT" "$target_bin" "$@"
       local ret=$?
       cd "$save_dir" 2>/dev/null || true

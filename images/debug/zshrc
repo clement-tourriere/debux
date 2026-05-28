@@ -10,6 +10,13 @@ if [[ "$_debux_current_zshrc" != "/tmp/.zshrc" && -f /tmp/.zshrc ]]; then
 fi
 unset _debux_current_zshrc
 
+# Ensure terminal-aware programs have a usable terminal type.
+if [[ -z "${TERM:-}" || "$TERM" == "dumb" ]]; then
+  export TERM=xterm
+else
+  export TERM
+fi
+
 # Enable syntax highlighting
 if [[ -f /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]]; then
   source /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
