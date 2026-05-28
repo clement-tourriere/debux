@@ -1,3 +1,9 @@
+## v0.5.3 (2026-05-28)
+
+### Fix
+
+- set usable TERM for target commands
+
 ## v0.5.2 (2026-05-27)
 
 ### Fix
