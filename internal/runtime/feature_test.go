@@ -200,10 +200,22 @@ func TestKillScriptTargetsDaemonNotPid1(t *testing.T) {
 	if strings.Contains(killDebuxDaemonScript, `kill 1`) && !strings.Contains(killDebuxDaemonScript, `kill "$pid"`) {
 		t.Fatal("kill script must signal the daemon PID, never PID 1")
 	}
-	for _, marker := range []string{"/tmp/.debux-daemon.pid", "DEBUX_DAEMON=1", `[ "$p" = "1" ] && continue`} {
+	// Required guards: the pidfile, a PID-1 exclusion in the scan, a final
+	// PID-1/empty guard before kill, and cmdline-based matching (not the
+	// DEBUX_DAEMON env marker, which the sleep child inherits).
+	for _, marker := range []string{
+		"/tmp/.debux-daemon.pid",
+		`[ "$p" = "1" ] && continue`,
+		"DEBUX_TARGET_ROOT",
+		`/proc/[0-9]*`,
+	} {
 		if !strings.Contains(killDebuxDaemonScript, marker) {
 			t.Fatalf("kill script is missing %q", marker)
 		}
+	}
+	// Must not match the daemon by an env marker the sleep child inherits.
+	if strings.Contains(killDebuxDaemonScript, "DEBUX_DAEMON=1") {
+		t.Fatal("kill script must not match the daemon by DEBUX_DAEMON=1 (inherited by the sleep child)")
 	}
 }
 

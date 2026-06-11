@@ -455,26 +455,33 @@ func KubernetesKillAll(ctx context.Context, kubeconfig string, kubeContext strin
 // killDebuxDaemonScript locates and signals the debux daemon process inside a
 // debug container. The debug container shares the TARGET container's PID
 // namespace, so PID 1 there is the target application's init process —
-// signaling it would stop (and restart) the production container. The daemon
-// records its in-namespace PID in /tmp/.debux-daemon.pid (private to the debug
-// container); for sessions created by older debux versions, fall back to
-// scanning /proc for the DEBUX_DAEMON environment marker. The /proc glob is
-// expanded before this script's own helper children exist, so they cannot
-// match themselves.
+// signaling it would stop (and restart) the production container.
+//
+// The daemon records its own PID in /tmp/.debux-daemon.pid (private to the
+// debug container). For sessions from older debux versions, or if the file is
+// unusable, fall back to scanning /proc for the daemon shell matched by its
+// entrypoint cmdline — NOT by the DEBUX_DAEMON environment marker, which the
+// daemon's sleep child inherits; killing that child only makes the daemon
+// respawn it and survive.
 const killDebuxDaemonScript = `pid="$(cat /tmp/.debux-daemon.pid 2>/dev/null || true)"
-if [ -z "$pid" ] || [ "$pid" = "1" ] || ! kill -0 "$pid" 2>/dev/null; then
+case "$pid" in
+  ''|*[!0-9]*) pid="" ;;
+esac
+if [ -n "$pid" ] && { [ "$pid" = "1" ] || ! kill -0 "$pid" 2>/dev/null; }; then
   pid=""
+fi
+if [ -z "$pid" ]; then
   for d in /proc/[0-9]*; do
     p="${d##*/}"
     [ "$p" = "$$" ] && continue
     [ "$p" = "1" ] && continue
-    if tr '\0' '\n' < "$d/environ" 2>/dev/null | grep -qx 'DEBUX_DAEMON=1'; then
+    if tr '\0' ' ' < "$d/cmdline" 2>/dev/null | grep -q 'DEBUX_TARGET_ROOT'; then
       pid="$p"
       break
     fi
   done
 fi
-if [ -z "$pid" ]; then
+if [ -z "$pid" ] || [ "$pid" = "1" ]; then
   echo "debux daemon process not found in this container" >&2
   exit 1
 fi

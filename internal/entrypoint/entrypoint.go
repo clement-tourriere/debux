@@ -417,9 +417,13 @@ echo ""
 # Launch shell (or daemon mode for k8s container reuse)
 if [ "${DEBUX_DAEMON:-}" = "1" ]; then
   # Record the daemon PID (as seen in the shared PID namespace) so debux kill
-  # can signal the daemon instead of the target's PID 1.
-  echo "$$" > /tmp/.debux-daemon.pid 2>/dev/null || true
-  trap 'exit 0' TERM INT; while :; do sleep 86400 & wait; done
+  # can signal the daemon instead of the target's PID 1. Use $BASHPID, not $$:
+  # Kubernetes collapses a literal $$ to $ during command substitution, and the
+  # image's /bin/sh is bash. ${BASHPID:-$$} keeps Docker (no substitution)
+  # working even on a non-bash shell.
+  echo "${BASHPID:-$$}" > /tmp/.debux-daemon.pid 2>/dev/null || true
+  trap 'exit 0' TERM INT
+  while :; do sleep 2147483647 & wait $!; done
 fi
 exec zsh
 `

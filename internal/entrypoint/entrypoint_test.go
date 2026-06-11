@@ -5,6 +5,20 @@ import (
 	"testing"
 )
 
+func TestDaemonRecordsPidWithBashpid(t *testing.T) {
+	// Kubernetes collapses a literal $$ to $ in container commands, so the
+	// daemon must use $BASHPID to record a usable PID for `debux kill`.
+	if !strings.Contains(Script, "/tmp/.debux-daemon.pid") {
+		t.Fatal("daemon must write a pidfile")
+	}
+	if !strings.Contains(Script, "BASHPID") {
+		t.Fatal("daemon must record its PID via $BASHPID, not $$ (Kubernetes mangles $$ to $)")
+	}
+	if strings.Contains(Script, `echo "$$" > /tmp/.debux-daemon.pid`) {
+		t.Fatal("daemon must not write the pidfile with a bare $$ (Kubernetes collapses it to $)")
+	}
+}
+
 func TestShellBootstrapScriptIncludesDebuxZshConfig(t *testing.T) {
 	script := ShellBootstrapScript()
 	for _, want := range []string{
