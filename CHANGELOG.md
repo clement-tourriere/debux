@@ -1,3 +1,9 @@
+## v0.7.0 (2026-06-11)
+
+### Feat
+
+- add --keep/--ttl copy pod lifecycle with Karpenter protection
+
 ## v0.6.0 (2026-06-11)
 
 ### Feat
