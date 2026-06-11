@@ -15,6 +15,16 @@
       content="A free, open-source debugging shell for Docker and Kubernetes containers. Works with distroless and scratch images."
     />
     <meta property="og:type" content="website" />
+    <script>
+      // Set the theme before first paint to avoid a flash.
+      (function () {
+        try {
+          var t = localStorage.getItem("debux-theme");
+          if (!t) t = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+          if (t === "light") document.documentElement.setAttribute("data-theme", "light");
+        } catch (e) {}
+      })();
+    </script>
     <style>
       :root {
         color-scheme: dark;
@@ -172,6 +182,12 @@
         gap: 1rem;
       }
 
+      .topbar-left {
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+      }
+
       .brand {
         display: inline-flex;
         align-items: center;
@@ -238,7 +254,7 @@
         margin: 0 auto;
         padding: 6rem 0 3.5rem;
         display: grid;
-        grid-template-columns: 1.05fr 0.95fr;
+        grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
         gap: 3rem;
         align-items: center;
       }
@@ -386,7 +402,7 @@
         width: min(var(--max), calc(100% - 2rem));
         margin: 0 auto 4rem;
         display: grid;
-        grid-template-columns: repeat(4, 1fr);
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 1rem;
       }
 
@@ -411,6 +427,14 @@
       main {
         width: min(var(--max), calc(100% - 2rem));
         margin: 0 auto;
+        display: grid;
+        grid-template-columns: 232px minmax(0, 1fr);
+        gap: 2.6rem;
+        align-items: start;
+      }
+
+      .docs-content {
+        min-width: 0;
       }
 
       section.doc-section {
@@ -418,9 +442,212 @@
         margin: 0 0 4rem;
       }
 
+      /* Sticky table-of-contents sidebar (desktop) */
+      .sidebar {
+        position: sticky;
+        top: 88px;
+        align-self: start;
+        max-height: calc(100vh - 104px);
+        overflow-y: auto;
+        padding-right: 0.4rem;
+        overscroll-behavior: contain;
+      }
+
+      .sidebar-title {
+        margin: 0 0 0.55rem;
+        padding-left: 0.85rem;
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--muted-2);
+      }
+
+      .sidebar-nav {
+        display: flex;
+        flex-direction: column;
+        gap: 0.05rem;
+      }
+
+      .sidebar-nav a {
+        padding: 0.4rem 0.85rem;
+        border-left: 2px solid transparent;
+        border-radius: 0 8px 8px 0;
+        color: var(--muted);
+        font-size: 0.92rem;
+        line-height: 1.35;
+      }
+
+      .sidebar-nav a:hover {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.05);
+      }
+
+      .sidebar-nav a.active {
+        color: var(--text);
+        font-weight: 700;
+        border-left-color: var(--cyan);
+        background: linear-gradient(90deg, rgba(103, 232, 249, 0.12), transparent);
+      }
+
+      .sidebar-scrim {
+        display: none;
+      }
+
+      .theme-toggle {
+        display: inline-grid;
+        place-items: center;
+        width: 40px;
+        min-width: 40px;
+        height: 40px;
+        padding: 0;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--muted);
+        cursor: pointer;
+      }
+
+      .theme-toggle:hover {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.1);
+      }
+
+      .theme-toggle .sun {
+        display: none;
+      }
+      :root[data-theme="light"] .theme-toggle .sun {
+        display: block;
+      }
+      :root[data-theme="light"] .theme-toggle .moon {
+        display: none;
+      }
+
+      .mobile-nav-toggle {
+        display: none;
+        place-items: center;
+        width: 40px;
+        height: 40px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--text);
+        cursor: pointer;
+      }
+
+      /* Light theme: override the design tokens and the few hard-coded
+         light-on-dark text colors. Code blocks intentionally stay dark in
+         both themes (they read like terminals). */
+      :root[data-theme="light"] {
+        color-scheme: light;
+        --bg: #f6f8fc;
+        --bg-2: #eaf0f9;
+        --panel: rgba(255, 255, 255, 0.82);
+        --panel-strong: rgba(255, 255, 255, 0.97);
+        --text: #101c33;
+        --muted: #475569;
+        --muted-2: #64748b;
+        --line: rgba(15, 27, 48, 0.14);
+        --cyan: #0e7490;
+        --blue: #2563eb;
+        --purple: #7c3aed;
+        --green: #15803d;
+        --amber: #b45309;
+        --red: #be123c;
+        --shadow: 0 24px 60px rgba(20, 40, 80, 0.13);
+      }
+
+      :root[data-theme="light"] body {
+        background:
+          radial-gradient(circle at 8% 12%, rgba(14, 116, 144, 0.1), transparent 28rem),
+          radial-gradient(circle at 72% 2%, rgba(124, 58, 237, 0.1), transparent 30rem),
+          radial-gradient(circle at 52% 72%, rgba(37, 99, 235, 0.08), transparent 30rem),
+          linear-gradient(180deg, var(--bg), #ffffff 45%, var(--bg));
+      }
+
+      :root[data-theme="light"] body::before {
+        background-image:
+          linear-gradient(rgba(15, 27, 48, 0.05) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(15, 27, 48, 0.05) 1px, transparent 1px);
+      }
+
+      :root[data-theme="light"] code {
+        background: rgba(15, 27, 48, 0.06);
+        color: #0b4f63;
+      }
+
+      :root[data-theme="light"] .gradient-text {
+        background: linear-gradient(90deg, #101c33, var(--cyan), var(--purple));
+        -webkit-background-clip: text;
+        background-clip: text;
+      }
+
+      :root[data-theme="light"] .eyebrow {
+        color: #0c5566;
+      }
+      :root[data-theme="light"] .hero-lead {
+        color: #41526b;
+      }
+      :root[data-theme="light"] .stat strong {
+        color: var(--text);
+      }
+      :root[data-theme="light"] .callout {
+        color: #6b4a05;
+      }
+      :root[data-theme="light"] .callout.info {
+        color: #0c4a5a;
+      }
+      :root[data-theme="light"] .button.primary {
+        color: #f8fdff;
+      }
+      :root[data-theme="light"] .sidebar-nav a:hover {
+        background: rgba(15, 27, 48, 0.05);
+      }
+
+      /* Hide the sticky sidebar below the docs breakpoint; it becomes a
+         slide-in drawer toggled by the hamburger. */
+      @media (max-width: 1080px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+
+        .mobile-nav-toggle {
+          display: inline-grid;
+        }
+
+        .sidebar {
+          position: fixed;
+          top: 0;
+          left: 0;
+          z-index: 60;
+          width: min(300px, 82vw);
+          max-height: none;
+          height: 100dvh;
+          margin: 0;
+          padding: 5.5rem 1.1rem 1.5rem;
+          background: var(--panel-strong);
+          border-right: 1px solid var(--line);
+          backdrop-filter: blur(18px);
+          transform: translateX(-105%);
+          transition: transform 0.22s ease;
+        }
+
+        .sidebar.open {
+          transform: none;
+        }
+
+        .sidebar-scrim.open {
+          display: block;
+          position: fixed;
+          inset: 0;
+          z-index: 50;
+          background: rgba(2, 6, 14, 0.55);
+        }
+      }
+
       .section-heading {
         display: grid;
-        grid-template-columns: 0.75fr 1fr;
+        grid-template-columns: minmax(0, 0.75fr) minmax(0, 1fr);
         gap: 2rem;
         align-items: end;
         margin-bottom: 1.3rem;
@@ -443,14 +670,15 @@
       }
 
       .grid.two {
-        grid-template-columns: repeat(2, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
       .grid.three {
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(3, minmax(0, 1fr));
       }
 
       .card {
+        min-width: 0;
         padding: 1.25rem;
         border: 1px solid var(--line);
         border-radius: var(--radius);
@@ -570,7 +798,7 @@
 
       .timeline-item {
         display: grid;
-        grid-template-columns: 46px 1fr;
+        grid-template-columns: 46px minmax(0, 1fr);
         gap: 1rem;
       }
 
@@ -716,7 +944,7 @@
         .stats,
         .grid.three,
         .grid.two {
-          grid-template-columns: 1fr 1fr;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 
         .nav a.hide-md {
@@ -745,7 +973,7 @@
         .stats,
         .grid.three,
         .grid.two {
-          grid-template-columns: 1fr;
+          grid-template-columns: minmax(0, 1fr);
         }
 
         .footer-inner {
@@ -760,10 +988,13 @@
     <div class="shell">
       <header class="topbar" aria-label="Primary navigation">
         <div class="topbar-inner">
-          <a class="brand" href="#top" aria-label="debux home">
-            <span class="logo" aria-hidden="true">⌁</span>
-            <span>debux</span>
-          </a>
+          <div class="topbar-left">
+            <button class="mobile-nav-toggle" id="navToggle" type="button" aria-label="Open section menu" aria-expanded="false" aria-controls="sidebar">☰</button>
+            <a class="brand" href="#top" aria-label="debux home">
+              <span class="logo" aria-hidden="true">⌁</span>
+              <span>debux</span>
+            </a>
+          </div>
           <nav class="nav" aria-label="Docs navigation">
             <a href="#install">Install</a>
             <a href="#tui">TUI</a>
@@ -776,6 +1007,10 @@
             <button class="search-trigger" type="button" aria-label="Open search">
               <span class="label">Search</span>
               <kbd>Ctrl</kbd><kbd>K</kbd>
+            </button>
+            <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle light and dark theme">
+              <span class="moon" aria-hidden="true">☾</span>
+              <span class="sun" aria-hidden="true">☀</span>
             </button>
             <a class="github-link" href="https://github.com/clement-tourriere/debux" aria-label="GitHub repository">
               <span>GitHub</span> ↗
@@ -821,7 +1056,33 @@
         <div class="stat"><strong>Open source</strong><span>no paid desktop subscription required</span></div>
       </div>
 
+      <div class="sidebar-scrim" id="navScrim"></div>
       <main id="main">
+        <aside class="sidebar" id="sidebar" aria-label="On this page">
+          <p class="sidebar-title">On this page</p>
+          <nav class="sidebar-nav" aria-label="Section navigation">
+            <a href="#why">Why debux</a>
+            <a href="#quickstart">Quick start</a>
+            <a href="#tui">Full-screen TUI</a>
+            <a href="#install">Install</a>
+            <a href="#mental-model">Mental model</a>
+            <a href="#docker">Docker</a>
+            <a href="#kubernetes">Kubernetes</a>
+            <a href="#targets">Target formats</a>
+            <a href="#completion">Shell completion</a>
+            <a href="#shell">Inside the shell</a>
+            <a href="#image-debug">Debug an image</a>
+            <a href="#ports-files">Ports &amp; files</a>
+            <a href="#scripting">Scripting &amp; CI</a>
+            <a href="#config">Configuration</a>
+            <a href="#security">Security</a>
+            <a href="#store">Store management</a>
+            <a href="#cli">CLI reference</a>
+            <a href="#troubleshooting">Troubleshooting</a>
+            <a href="#faq">FAQ</a>
+          </nav>
+        </aside>
+        <div class="docs-content">
         <section id="why" class="doc-section" data-search data-title="Why debux">
           <div class="section-heading">
             <h2>Why debux?</h2>
@@ -897,10 +1158,10 @@ debux ui</code></pre>
               <h3>Useful keys</h3>
               <ul class="clean-list">
                 <li><code>/</code> filter the current list</li>
-                <li><code>left</code> / <code>right</code> or <code>tab</code> cycle sources; <code>d</code>, <code>k</code>, <code>y</code> jump to Docker, Kubernetes and History</li>
-                <li><code>1</code>-<code>3</code> still work as optional source shortcuts</li>
+                <li><code>tab</code> / <code>shift</code>+<code>tab</code> cycle between the Docker, Kubernetes and History sources</li>
+                <li><code>1</code> / <code>2</code> / <code>3</code> jump straight to Docker, Kubernetes or History</li>
                 <li><code>enter</code> drill into source/context/namespace lists or open a selected target</li>
-                <li><code>b</code> go back in Kubernetes navigation</li>
+                <li><code>b</code> or <code>esc</code> go back in Kubernetes navigation (<code>esc</code> first clears an active filter)</li>
                 <li><code>s</code> search pods across the selected namespace when the initial pod list is too large</li>
                 <li><code>t</code> open externally only when <code>DEBUX_TERMINAL</code> is explicitly configured</li>
                 <li><code>r</code> reload the current view</li>
@@ -964,7 +1225,7 @@ mise run image-build</code></pre>
             </div>
           </div>
           <div class="callout info" style="margin-top: 1rem;">
-            <strong>Release flow:</strong> run <code>mise run release:bump</code>, then <code>mise run release:push</code>. If there are no commits since the latest version tag, or if the commits are not release-eligible conventional commits such as <code>ci:</code>/<code>docs:</code>, the bump task exits successfully and says no bump is needed. If Commitizen already bumped the version but tag creation was interrupted, the task recreates the missing <code>vX.Y.Z</code> tag without GPG signing. Pushing a valid <code>vX.Y.Z</code> tag reachable from <code>main</code> runs the Release workflow, publishes and keyless-signs the GHCR debug image, then creates the GitHub Release with signed checksums and CLI archives. Release binaries pin their default debug image to the matching versioned image tag; dev builds use <code>latest</code>. The same workflow can also be run manually for an existing pushed tag.
+            <strong>Release flow:</strong> <code>mise run release:bump</code> then <code>mise run release:push</code>. Pushing a <code>vX.Y.Z</code> tag reachable from <code>main</code> runs the Release workflow, which keyless-signs and publishes the GHCR debug image and creates the GitHub Release with signed checksums and CLI archives. The bump is a no-op when there are no release-eligible conventional commits. Release binaries pin the matching versioned debug image; dev builds use <code>latest</code>.
           </div>
         </section>
 
@@ -1568,6 +1829,7 @@ debux k8s://prod/api/app \
             </article>
           </div>
         </section>
+        </div>
       </main>
 
       <footer class="footer">
@@ -1743,6 +2005,55 @@ debux k8s://prod/api/app \
           }
         });
       });
+
+      // Theme toggle — persisted, defaults to the OS preference.
+      const root = document.documentElement;
+      const themeToggle = $('#themeToggle');
+      function applyTheme(theme) {
+        if (theme === 'light') root.setAttribute('data-theme', 'light');
+        else root.removeAttribute('data-theme');
+      }
+      const storedTheme = localStorage.getItem('debux-theme');
+      applyTheme(storedTheme || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
+      themeToggle?.addEventListener('click', () => {
+        const next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        applyTheme(next);
+        localStorage.setItem('debux-theme', next);
+      });
+
+      // Mobile section drawer.
+      const sidebar = $('#sidebar');
+      const navToggle = $('#navToggle');
+      const navScrim = $('#navScrim');
+      function setDrawer(open) {
+        sidebar?.classList.toggle('open', open);
+        navScrim?.classList.toggle('open', open);
+        navToggle?.setAttribute('aria-expanded', String(open));
+      }
+      navToggle?.addEventListener('click', () => setDrawer(!sidebar.classList.contains('open')));
+      navScrim?.addEventListener('click', () => setDrawer(false));
+      sidebar && $$('a', sidebar).forEach((link) => link.addEventListener('click', () => setDrawer(false)));
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && sidebar?.classList.contains('open')) setDrawer(false);
+      });
+
+      // Scroll-spy: highlight the current section in the sidebar.
+      const tocLinks = new Map($$('.sidebar-nav a').map((a) => [a.getAttribute('href').slice(1), a]));
+      if (tocLinks.size) {
+        const spy = new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              if (!entry.isIntersecting) continue;
+              const link = tocLinks.get(entry.target.id);
+              if (!link) continue;
+              $$('.sidebar-nav a.active').forEach((el) => el.classList.remove('active'));
+              link.classList.add('active');
+            }
+          },
+          { rootMargin: '-96px 0px -70% 0px', threshold: 0 },
+        );
+        $$('main .doc-section').forEach((section) => spy.observe(section));
+      }
     </script>
   </body>
 </html>
