@@ -1,3 +1,14 @@
+## v0.6.0 (2026-06-11)
+
+### Feat
+
+- add forward/cp/node commands, stopped-container debug, and fix review findings
+
+### Fix
+
+- make k8s kill actually terminate the debug daemon
+- resolve compose:// targets without opening the picker
+
 ## v0.5.3 (2026-05-28)
 
 ### Fix
