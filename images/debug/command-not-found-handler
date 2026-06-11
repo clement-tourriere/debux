@@ -19,13 +19,19 @@ command_not_found_handler() {
       done < "${DEBUX_TARGET_ENVIRON:-/proc/1/environ}" 2>/dev/null
     fi
     [[ -z "$target_path" ]] && target_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    # Split on ':' with zsh-native expansion. A read -d ':' loop over a
+    # here-string leaves a trailing newline on the last component, so binaries
+    # in the final PATH dir (commonly /bin) were never found.
     local search_dir
-    while IFS= read -r -d ':' search_dir || [[ -n "$search_dir" ]]; do
+    local -a path_dirs
+    path_dirs=(${(s.:.)target_path})
+    for search_dir in "${path_dirs[@]}"; do
+      [[ -n "$search_dir" ]] || continue
       if [[ -x "${DEBUX_TARGET_ROOT}${search_dir}/${cmd}" || -L "${DEBUX_TARGET_ROOT}${search_dir}/${cmd}" ]]; then
         target_bin="${search_dir}/${cmd}"
         break
       fi
-    done <<< "$target_path"
+    done
 
     if [[ -n "$target_bin" ]]; then
       # Run via chroot with target's full original environment (same as docker exec)

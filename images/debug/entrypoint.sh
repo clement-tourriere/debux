@@ -52,6 +52,11 @@ mkdir -p /nix/var/debux-data 2>/dev/null || mkdir -p /tmp/debux-data
 
 # Launch shell (or daemon mode for k8s container reuse)
 if [ "${DEBUX_DAEMON:-}" = "1" ]; then
-  exec tail -f /dev/null
+  # Stay PID 1 and exit promptly on docker stop: tail -f /dev/null ignores
+  # SIGTERM, so park the shell with a trap instead (same pattern as the
+  # Go-generated daemon script).
+  echo $$ > /tmp/.debux-daemon.pid
+  trap 'exit 0' TERM INT
+  while :; do sleep 86400 & wait $!; done
 fi
 exec zsh

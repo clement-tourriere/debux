@@ -68,10 +68,17 @@ func Load() ([]Entry, error) {
 }
 
 // Append records a session, most-recent first, and caps the file size.
+// A corrupt history file is moved aside and recording starts over — refusing
+// to append forever because one write was torn would silently disable history.
 func Append(entry Entry) error {
 	entries, err := Load()
 	if err != nil {
-		return err
+		path, pathErr := Path()
+		if pathErr != nil {
+			return err
+		}
+		_ = os.Rename(path, path+".corrupt")
+		entries = nil
 	}
 	if entry.StartedAt.IsZero() {
 		entry.StartedAt = time.Now()
@@ -93,7 +100,25 @@ func Append(entry Entry) error {
 		return fmt.Errorf("encoding history: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+
+	// Write atomically (temp file + rename): concurrent debux sessions append
+	// too, and an in-place truncate-and-write can tear the file mid-crash.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".history-*")
+	if err != nil {
+		return fmt.Errorf("writing history: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("writing history: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("writing history: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("writing history: %w", err)
 	}
 	return nil

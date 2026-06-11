@@ -43,6 +43,7 @@ RUN set -eux; \
       nixpkgs.tcpdump \
       nixpkgs.dig \
       nixpkgs.nmap \
+      nixpkgs.socat \
       nixpkgs.openssh \
       nixpkgs.git \
       nixpkgs.zsh-autosuggestions \

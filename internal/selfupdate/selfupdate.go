@@ -96,6 +96,17 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		result.InstallPath = path
 	}
 
+	// Resolve symlinks before replacing anything: blindly renaming over a
+	// Homebrew-managed symlink turns it into a regular file and breaks brew's
+	// bookkeeping; for other symlinks, the real binary is what must change.
+	if resolved, err := filepath.EvalSymlinks(opts.InstallPath); err == nil {
+		if isHomebrewManagedPath(resolved) {
+			return Result{}, fmt.Errorf("%s is managed by Homebrew (resolves to %s); run `brew upgrade debux` instead, or pass --install-path to install a copy elsewhere", opts.InstallPath, resolved)
+		}
+		opts.InstallPath = resolved
+		result.InstallPath = resolved
+	}
+
 	_, _ = fmt.Fprintf(opts.Stdout, "Downloading debux %s for %s/%s...\n", tag, runtime.GOOS, runtime.GOARCH)
 	binaryPath, err := downloadReleaseBinary(ctx, opts.Repo, tag, result.Archive)
 	if err != nil {
@@ -105,6 +116,9 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 
 	if err := smokeTestBinary(ctx, binaryPath); err != nil {
 		return Result{}, fmt.Errorf("downloaded binary failed smoke test: %w", err)
+	}
+	if err := verifyBinaryVersion(ctx, binaryPath, tag); err != nil {
+		return Result{}, err
 	}
 
 	if err := replaceExecutable(binaryPath, opts.InstallPath); err != nil {
@@ -127,6 +141,9 @@ func resolveTag(ctx context.Context, repo, targetVersion string) (string, error)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "debux-updater")
+	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := httpClient().Do(req)
 	if err != nil {
@@ -138,6 +155,9 @@ func resolveTag(ctx context.Context, repo, targetVersion string) (string, error)
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if resp.StatusCode == http.StatusNotFound {
 			return "", fmt.Errorf("no GitHub Releases found for %s yet; create a release tag before using debux update", repo)
+		}
+		if resp.StatusCode == http.StatusForbidden && strings.Contains(strings.ToLower(string(body)), "rate limit") {
+			return "", fmt.Errorf("GitHub API rate limit exceeded (unauthenticated clients get 60 requests/hour per IP); retry later or set GITHUB_TOKEN")
 		}
 		return "", fmt.Errorf("checking latest release: GitHub returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
@@ -174,7 +194,7 @@ func downloadReleaseBinary(ctx context.Context, repo, tag, archive string) (stri
 	if err := downloadFile(ctx, baseURL+"/checksums.txt", checksumsPath); err != nil {
 		return "", fmt.Errorf("downloading checksums: %w", err)
 	}
-	if err := verifyChecksumSignatureIfAvailable(ctx, repo, baseURL, checksumsPath, tmp); err != nil {
+	if err := verifyChecksumSignatureIfAvailable(ctx, repo, tag, baseURL, checksumsPath, tmp); err != nil {
 		return "", err
 	}
 	if err := verifyChecksum(archivePath, checksumsPath, archive); err != nil {
@@ -219,23 +239,41 @@ func downloadFile(ctx context.Context, url, path string) error {
 	return nil
 }
 
-func verifyChecksumSignatureIfAvailable(ctx context.Context, repo, baseURL, checksumsPath, tmp string) error {
+func verifyChecksumSignatureIfAvailable(ctx context.Context, repo, tag, baseURL, checksumsPath, tmp string) error {
 	if _, err := exec.LookPath("cosign"); err != nil {
 		return nil
 	}
 
+	// With cosign available, missing signature assets must fail closed: an
+	// attacker who can tamper with release assets (the exact threat cosign
+	// addresses) could otherwise just strip the .sig/.pem to skip
+	// verification silently.
+	allowUnsigned := os.Getenv("DEBUX_UPDATE_ALLOW_UNSIGNED") == "1"
+	signatureFetchFailed := func(asset string, err error) error {
+		if allowUnsigned {
+			fmt.Fprintf(os.Stderr, "Warning: skipping signature verification (%s unavailable: %v); DEBUX_UPDATE_ALLOW_UNSIGNED=1 is set\n", asset, err)
+			return nil
+		}
+		return fmt.Errorf("release %s is expected to be signed but %s could not be fetched: %w\nSet DEBUX_UPDATE_ALLOW_UNSIGNED=1 to skip verification for releases published without signatures", tag, asset, err)
+	}
+
 	sigPath := filepath.Join(tmp, "checksums.txt.sig")
 	if err := downloadFile(ctx, baseURL+"/checksums.txt.sig", sigPath); err != nil {
-		return nil
+		return signatureFetchFailed("checksums.txt.sig", err)
 	}
 	certPath := filepath.Join(tmp, "checksums.txt.pem")
 	if err := downloadFile(ctx, baseURL+"/checksums.txt.pem", certPath); err != nil {
-		return nil
+		return signatureFetchFailed("checksums.txt.pem", err)
 	}
 
 	verifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	identityRegex := fmt.Sprintf(`^https://github\.com/%s/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`, regexp.QuoteMeta(repo))
+	// Pin the certificate identity to the exact resolved tag. A
+	// version-agnostic pattern would accept any release's signed assets,
+	// allowing a signed-downgrade swap (old archive + old checksums.txt
+	// served under the new tag's URLs).
+	identityRegex := fmt.Sprintf(`^https://github\.com/%s/\.github/workflows/release\.yml@refs/tags/%s$`,
+		regexp.QuoteMeta(repo), regexp.QuoteMeta(tag))
 	cmd := exec.CommandContext(verifyCtx, "cosign", "verify-blob",
 		"--certificate", certPath,
 		"--signature", sigPath,
@@ -335,6 +373,35 @@ func smokeTestBinary(ctx context.Context, path string) error {
 		return fmt.Errorf("%s --help: %w: %s", path, err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// verifyBinaryVersion checks that the downloaded binary actually reports the
+// resolved tag's version. Checksums and signatures only prove the assets
+// belong to *some* release; this binds them to the release the user asked
+// for, closing the signed-downgrade gap.
+func verifyBinaryVersion(ctx context.Context, path, tag string) error {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "--version").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("checking downloaded binary version: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	want := normalizeVersion(tag)
+	if want != "" && !strings.Contains(string(out), want) {
+		return fmt.Errorf("downloaded binary reports %q but %s was requested — the release assets may be stale or tampered with", strings.TrimSpace(string(out)), tag)
+	}
+	return nil
+}
+
+// isHomebrewManagedPath reports whether a resolved binary path lives inside a
+// Homebrew prefix, where brew owns upgrades.
+func isHomebrewManagedPath(path string) bool {
+	for _, marker := range []string{"/Cellar/", "/Caskroom/", "/Homebrew/", "/linuxbrew/"} {
+		if strings.Contains(path, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func replaceExecutable(src, dst string) error {
@@ -474,9 +541,10 @@ func parseSemanticVersion(v string) (semanticVersion, bool) {
 	if v == "" || v == "dev" {
 		return semanticVersion{}, false
 	}
+	// Strip build metadata before splitting on "-": semver allows hyphens in
+	// metadata (1.0.0+build-x), which is not a prerelease.
+	v, _, _ = strings.Cut(v, "+")
 	main, prerelease, _ := strings.Cut(v, "-")
-	main, _, _ = strings.Cut(main, "+")
-	prerelease, _, _ = strings.Cut(prerelease, "+")
 	parts := strings.Split(main, ".")
 	if len(parts) > 3 {
 		return semanticVersion{}, false

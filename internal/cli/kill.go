@@ -3,9 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os/signal"
 	"sort"
-	"syscall"
+	"strings"
 
 	"github.com/clement-tourriere/debux/internal/picker"
 	"github.com/clement-tourriere/debux/internal/runtime"
@@ -51,7 +50,7 @@ cannot be removed from the pod spec, so debux terminates their process instead.`
 }
 
 func runKill(cmd *cobra.Command, args []string) error {
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := signalContext()
 	defer cancel()
 
 	// Determine runtime from args or default to Docker. If Kubernetes-only flags
@@ -83,7 +82,19 @@ func runKill(cmd *cobra.Command, args []string) error {
 		target.Namespace = kubeNamespace
 
 		if flagKillAll {
+			// --all kills every session in scope; combining it with a specific
+			// target name would silently ignore the name and kill far more
+			// than the user asked for.
+			if target.Name != "" {
+				return fmt.Errorf("--all kills every session in scope and cannot be combined with target %q; drop the target name (e.g. k8s://<namespace>/ --all) or remove --all", target.Name)
+			}
 			return killAll(ctx, cmd, rt, kubeContext, target.Namespace)
+		}
+
+		// An empty target name (docker:// or k8s://ns/) opens the session
+		// picker scoped to that runtime and namespace.
+		if target.Name == "" {
+			return killInteractive(ctx, cmd, rt, kubeContext, target.Namespace)
 		}
 
 		// Kill specific target
@@ -103,7 +114,7 @@ func runKill(cmd *cobra.Command, args []string) error {
 	}
 
 	// No target, no --all: show interactive picker
-	return killInteractive(ctx, cmd)
+	return killInteractive(ctx, cmd, "", flagKubeContext, flagNamespace)
 }
 
 func killAll(ctx context.Context, cmd *cobra.Command, rt string, kubeContext string, namespace string) error {
@@ -118,12 +129,18 @@ func killAll(ctx context.Context, cmd *cobra.Command, rt string, kubeContext str
 	}
 }
 
-func killInteractive(ctx context.Context, cmd *cobra.Command) error {
-	preferKubernetes := flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig") || flagChanged(cmd, "namespace")
+// killInteractive shows a picker over active debug sessions. rt scopes the
+// search to one runtime ("docker"/"kubernetes"); empty tries Docker first,
+// then Kubernetes (or Kubernetes first when kube flags were passed).
+func killInteractive(ctx context.Context, cmd *cobra.Command, rt, kubeContext, namespace string) error {
+	preferKubernetes := rt == "kubernetes" ||
+		flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig") || flagChanged(cmd, "namespace")
 
-	// Try Docker first unless the user selected a Kubernetes context/config.
-	if !preferKubernetes {
-		containers, dockerErr := runtime.DockerList(ctx)
+	var dockerErr, k8sErr error
+
+	if rt != "kubernetes" && !preferKubernetes {
+		var containers []runtime.ContainerInfo
+		containers, dockerErr = runtime.DockerList(ctx)
 		if dockerErr == nil {
 			// Filter to only containers with active debux sessions
 			var active []runtime.ContainerInfo
@@ -155,39 +172,52 @@ func killInteractive(ctx context.Context, cmd *cobra.Command) error {
 		}
 	}
 
-	// Try K8s
-	kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
-	pods, k8sErr := runtime.KubernetesList(ctx, kubeconfig, flagKubeContext, flagNamespace)
-	if k8sErr == nil {
-		var active []runtime.PodInfo
-		for _, p := range pods {
-			if p.HasDebuxSession {
-				active = append(active, p)
-			}
-		}
-
-		if len(active) > 0 {
-			items := make([]picker.Item, len(active))
-			for i, p := range active {
-				items[i] = picker.Item{
-					Label: formatK8sPodLabel(p, true),
-					Value: p.Name,
+	if rt == "" || rt == "kubernetes" {
+		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
+		var pods []runtime.PodInfo
+		pods, k8sErr = runtime.KubernetesList(ctx, kubeconfig, kubeContext, namespace)
+		if k8sErr == nil {
+			var active []runtime.PodInfo
+			for _, p := range pods {
+				if p.HasDebuxSession {
+					active = append(active, p)
 				}
 			}
 
-			name, err := picker.Pick("Select a debug session to kill", items)
-			if err != nil {
-				return err
+			if len(active) > 0 {
+				items := make([]picker.Item, len(active))
+				for i, p := range active {
+					items[i] = picker.Item{
+						Label: formatK8sPodLabel(p, true),
+						Value: p.Name,
+					}
+				}
+
+				name, err := picker.Pick("Select a debug session to kill", items)
+				if err != nil {
+					return err
+				}
+				target := &runtime.Target{
+					Runtime:   "kubernetes",
+					Context:   kubeContext,
+					Namespace: namespace,
+					Name:      name,
+				}
+				return runtime.KubernetesKill(ctx, target, kubeconfig, kubeContext)
 			}
-			target := &runtime.Target{
-				Runtime:   "kubernetes",
-				Context:   flagKubeContext,
-				Namespace: flagNamespace,
-				Name:      name,
-			}
-			return runtime.KubernetesKill(ctx, target, kubeconfig, flagKubeContext)
 		}
 	}
 
+	// Distinguish "looked and found nothing" from "could not look at all".
+	var problems []string
+	if dockerErr != nil {
+		problems = append(problems, fmt.Sprintf("Docker: %v", dockerErr))
+	}
+	if k8sErr != nil {
+		problems = append(problems, fmt.Sprintf("Kubernetes: %v", k8sErr))
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("no running debux sessions found, but some runtimes could not be checked:\n  %s", strings.Join(problems, "\n  "))
+	}
 	return fmt.Errorf("no running debux sessions found")
 }

@@ -69,17 +69,32 @@ func genZshCompletionWithSubstringMatching(root *cobra.Command, cmd *cobra.Comma
 }
 
 func patchZshCompletionForSubstringMatches(script string) string {
+	patched, ok := tryPatchZshCompletionForSubstringMatches(script)
+	if !ok {
+		// A cobra upgrade moved the anchors this patch targets. Serving the
+		// stock script keeps every completion working with normal prefix
+		// matching; a half-applied patch would break ALL dynamic zsh
+		// completions silently.
+		return script
+	}
+	return patched
+}
+
+func tryPatchZshCompletionForSubstringMatches(script string) (string, bool) {
 	// Cobra's stock zsh script feeds candidates to _describe. _describe asks zsh
 	// to apply normal prefix matching, so it hides intentional pod substring
 	// matches such as `k8s://inter` -> `k8s://webapp-internal-api-...`.
 	// Capture raw values/descriptions and use compadd -U instead. The Go
 	// completion code remains responsible for filtering candidates.
-	script = strings.Replace(script,
+	var ok bool
+	script, ok = replaceExactlyOnce(script,
 		"local -a completions",
 		"local -a completions completionValues completionDescriptions",
-		1,
 	)
-	script = strings.Replace(script,
+	if !ok {
+		return "", false
+	}
+	script, ok = replaceExactlyOnce(script,
 		`            # If requested, completions are returned with a description.
             # The description is preceded by a TAB character.
             # For zsh's _describe, we need to use a : instead of a TAB.
@@ -111,9 +126,11 @@ func patchZshCompletionForSubstringMatches(script string) string {
             __debux_debug "Adding completion: ${comp}"
             completions+=${comp}
             lastComp=$comp`,
-		1,
 	)
-	script = strings.Replace(script,
+	if !ok {
+		return "", false
+	}
+	script, ok = replaceExactlyOnce(script,
 		"        __debux_debug \"Calling _describe\"\n        if eval _describe $keepOrder \"completions\" completions $flagPrefix $noSpace; then",
 		`        __debux_debug "Calling compadd for dynamic completions"
         local -a completionDisplayValues
@@ -126,11 +143,23 @@ func patchZshCompletionForSubstringMatches(script string) string {
             fi
         done
         if [ ${#completionValues} -ne 0 ] && eval compadd -U -V completions -d completionDisplayValues $flagPrefix $noSpace -a completionValues; then`,
-		1,
 	)
+	if !ok {
+		return "", false
+	}
 	script = strings.ReplaceAll(script, `__debux_debug "_describe found some completions"`, `__debux_debug "compadd found some completions"`)
 	script = strings.ReplaceAll(script, `__debux_debug "_describe did not find completions."`, `__debux_debug "compadd did not find completions."`)
-	return script
+	return script, true
+}
+
+// replaceExactlyOnce replaces old with new and reports whether the anchor was
+// actually found, so template drift in a dependency fails loudly instead of
+// producing a half-patched script.
+func replaceExactlyOnce(s, old, new string) (string, bool) {
+	if !strings.Contains(s, old) {
+		return s, false
+	}
+	return strings.Replace(s, old, new, 1), true
 }
 
 func configureTargetCompletion(cmd *cobra.Command) {
@@ -435,7 +464,11 @@ func completeKubernetesPods(kubeconfig, kubeContext, namespace, base, query, toC
 	}
 	displayContext := completionDisplayKubeContext(kubeconfig, kubeContext)
 
-	if cache, ok := readCompletionPodCache(kubeconfig, kubeContext, namespace); ok {
+	// A limited (truncated) cache cannot answer substring queries
+	// authoritatively: matches beyond the cached page would stay hidden for
+	// the cache's lifetime. Use it only for blank-query browsing and fall
+	// through to a live lookup otherwise.
+	if cache, ok := readCompletionPodCache(kubeconfig, kubeContext, namespace); ok && (!cache.Limited || strings.TrimSpace(query) == "") {
 		pods := filterAndSortPodsForCompletion(cache.Pods, namespace, query)
 		if len(pods) > 0 || strings.TrimSpace(query) == "" {
 			completions := appendKubernetesPodScopeHelp(nil, displayContext, namespace)

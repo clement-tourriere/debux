@@ -1,10 +1,6 @@
 package cli
 
 import (
-	"context"
-	"os/signal"
-	"syscall"
-
 	"github.com/clement-tourriere/debux/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -33,7 +29,7 @@ func newStoreCleanCmd() *cobra.Command {
 		Short: "Remove all debux store volumes",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			ctx, cancel := signalContext()
 			defer cancel()
 
 			return store.Clean(ctx)
@@ -47,7 +43,7 @@ func newStoreInfoCmd() *cobra.Command {
 		Short: "Show debux store volumes",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			ctx, cancel := signalContext()
 			defer cancel()
 
 			return store.Info(ctx)

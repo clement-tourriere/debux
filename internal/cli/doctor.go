@@ -4,8 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/signal"
-	"syscall"
+	"strings"
 
 	"github.com/clement-tourriere/debux/internal/runtime"
 	"github.com/clement-tourriere/debux/internal/version"
@@ -48,7 +47,7 @@ and checks common Kubernetes RBAC permissions for debug sessions.`,
 				return err
 			}
 
-			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			ctx, cancel := signalContext()
 			defer cancel()
 
 			report, err := buildDoctorReport(ctx, cmd, args, profile)
@@ -98,13 +97,13 @@ func buildDoctorReport(ctx context.Context, cmd *cobra.Command, args []string, p
 	})
 
 	if len(args) == 0 {
-		report.Sections = append(report.Sections, doctorReportSection{Name: "Docker", Checks: runtime.DockerDoctor(ctx)})
+		report.Sections = append(report.Sections, doctorReportSection{Name: "Docker", Checks: downgradeUnavailableRuntime(runtime.DockerDoctor(ctx))})
 		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
 		kubeNamespace, err := resolveKubeNamespace(cmd, "")
 		if err != nil {
 			return doctorReport{}, err
 		}
-		report.Sections = append(report.Sections, doctorReportSection{Name: "Kubernetes", Checks: runtime.KubernetesDoctor(ctx, kubeconfig, flagKubeContext, kubeNamespace, "", "", profile)})
+		report.Sections = append(report.Sections, doctorReportSection{Name: "Kubernetes", Checks: downgradeUnavailableRuntime(runtime.KubernetesDoctor(ctx, kubeconfig, flagKubeContext, kubeNamespace, "", "", profile))})
 		return report, nil
 	}
 
@@ -141,6 +140,26 @@ func buildDoctorReport(ctx context.Context, cmd *cobra.Command, args []string, p
 
 func doctorKubernetesFlagsChanged(cmd *cobra.Command) bool {
 	return flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig") || flagChanged(cmd, "namespace") || flagChanged(cmd, "profile")
+}
+
+// downgradeUnavailableRuntime softens "runtime not configured/reachable" from
+// fail to warn. Without a target, a single-runtime machine (Docker-only
+// laptop, k8s-only CI) is healthy — keeping these as failures makes
+// `doctor --strict` exit non-zero everywhere. With a target, the runtime is
+// required and its checks stay fatal.
+func downgradeUnavailableRuntime(checks []runtime.DoctorCheck) []runtime.DoctorCheck {
+	out := append([]runtime.DoctorCheck(nil), checks...)
+	for i, check := range out {
+		if check.Status != runtime.CheckFail {
+			continue
+		}
+		switch check.Name {
+		case "Docker client", "Docker daemon", "Kubernetes client":
+			out[i].Status = runtime.CheckWarn
+			out[i].Detail = strings.TrimSpace(check.Detail + " (not required without a target)")
+		}
+	}
+	return out
 }
 
 func printDoctorReport(cmd *cobra.Command, report doctorReport) {

@@ -2,6 +2,7 @@ package picker
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,10 @@ import (
 
 	"github.com/charmbracelet/huh"
 )
+
+// ErrCancelled is returned when the user aborts an interactive selection.
+// The CLI exits quietly (status 130) instead of printing an error.
+var ErrCancelled = errors.New("selection cancelled")
 
 // Item represents a selectable entry in the picker.
 type Item struct {
@@ -39,6 +44,9 @@ func Pick(title string, items []Item) (string, error) {
 		Value(&selected).
 		Run()
 	if err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			return "", ErrCancelled
+		}
 		return "", fmt.Errorf("selection cancelled: %w", err)
 	}
 
@@ -98,8 +106,13 @@ func pickTextFromReader(title string, items []Item, input io.Reader, output io.W
 			return "", fmt.Errorf("reading selection: %w", err)
 		}
 		choice := strings.TrimSpace(line)
+		if err == io.EOF && choice == "" {
+			// Input closed without a selection; don't loop forever re-printing
+			// the menu.
+			return "", ErrCancelled
+		}
 		if strings.EqualFold(choice, "q") || strings.EqualFold(choice, "quit") {
-			return "", fmt.Errorf("selection cancelled")
+			return "", ErrCancelled
 		}
 		if choice == "" {
 			if len(matches) == 1 {

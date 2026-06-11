@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -28,6 +29,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
+	k8sexec "k8s.io/client-go/util/exec"
 	"k8s.io/streaming/pkg/httpstream"
 )
 
@@ -357,6 +359,11 @@ func KubernetesRunningContainers(ctx context.Context, kubeconfig, kubeContext, n
 			containers = append(containers, c.Name)
 		}
 	}
+	for _, sidecar := range podSidecarContainerNames(pod) {
+		if podContainerRunning(pod, sidecar) {
+			containers = append(containers, sidecar)
+		}
+	}
 	if len(containers) == 0 {
 		return nil, fmt.Errorf("pod %s/%s has no running regular containers to target (available: %s)", namespace, podName, strings.Join(podContainerNames(pod), ", "))
 	}
@@ -445,7 +452,38 @@ func KubernetesKillAll(ctx context.Context, kubeconfig string, kubeContext strin
 	return nil
 }
 
-// killInContainer execs "kill 1" inside a container to terminate PID 1.
+// killDebuxDaemonScript locates and signals the debux daemon process inside a
+// debug container. The debug container shares the TARGET container's PID
+// namespace, so PID 1 there is the target application's init process —
+// signaling it would stop (and restart) the production container. The daemon
+// records its in-namespace PID in /tmp/.debux-daemon.pid (private to the debug
+// container); for sessions created by older debux versions, fall back to
+// scanning /proc for the DEBUX_DAEMON environment marker. The /proc glob is
+// expanded before this script's own helper children exist, so they cannot
+// match themselves.
+const killDebuxDaemonScript = `pid="$(cat /tmp/.debux-daemon.pid 2>/dev/null || true)"
+if [ -z "$pid" ] || [ "$pid" = "1" ] || ! kill -0 "$pid" 2>/dev/null; then
+  pid=""
+  for d in /proc/[0-9]*; do
+    p="${d##*/}"
+    [ "$p" = "$$" ] && continue
+    [ "$p" = "1" ] && continue
+    if tr '\0' '\n' < "$d/environ" 2>/dev/null | grep -qx 'DEBUX_DAEMON=1'; then
+      pid="$p"
+      break
+    fi
+  done
+fi
+if [ -z "$pid" ]; then
+  echo "debux daemon process not found in this container" >&2
+  exit 1
+fi
+kill "$pid"
+`
+
+// killInContainer terminates the debux daemon process inside a debug
+// container. It must never signal PID 1: in the shared PID namespace that is
+// the target application's process, not the debug daemon.
 func killInContainer(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string) error {
 	req := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
@@ -454,7 +492,7 @@ func killInContainer(ctx context.Context, config *rest.Config, clientset *kubern
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: containerName,
-			Command:   []string{"kill", "1"},
+			Command:   []string{"/bin/sh", "-c", killDebuxDaemonScript},
 			Stdout:    true,
 			Stderr:    true,
 		}, scheme.ParameterCodec)
@@ -464,10 +502,17 @@ func killInContainer(ctx context.Context, config *rest.Config, clientset *kubern
 		return fmt.Errorf("creating executor: %w", err)
 	}
 
-	return exec.StreamWithContext(ctx, remotecommand.StreamOptions{
-		Stdout: &bytes.Buffer{},
-		Stderr: &bytes.Buffer{},
-	})
+	var stdout, stderr bytes.Buffer
+	if err := exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	}); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("%s: %w", msg, err)
+		}
+		return err
+	}
+	return nil
 }
 
 func newRemoteExecutor(config *rest.Config, reqURL *url.URL) (remotecommand.Executor, error) {
@@ -518,25 +563,54 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		return fmt.Errorf("getting pod %s/%s: %w", namespace, podName, err)
 	}
 
-	// Determine the target container name. Prefer a running container so PID/root
-	// namespace targeting works even when the first spec container is not ready.
-	targetContainer, err := selectKubernetesTargetContainer(pod, target.Container)
+	// Pod-copy mode only needs the source container's spec (mounts, env), not
+	// a live process — so crash-looping pods, its main rescue scenario, work.
+	if opts.Copy {
+		targetContainer, err := selectKubernetesCopyTargetContainer(pod, target.Container)
+		if err != nil {
+			return err
+		}
+		return kubernetesExecWithPodCopy(ctx, config, clientset, namespace, pod, targetContainer, opts, displayContext)
+	}
+
+	containerName, debuxTarget, err := ensureKubernetesDebugContainer(ctx, clientset, namespace, pod, target.Container, displayContext, opts)
 	if err != nil {
 		return err
 	}
 
-	debuxTarget := kubernetesDebugTargetLabel(displayContext, namespace, podName, targetContainer)
+	fmt.Printf("Debugging %s/%s (container: %s)\n", namespace, podName, containerName)
 
-	if opts.Copy {
-		return kubernetesExecWithPodCopy(ctx, config, clientset, namespace, pod, targetContainer, opts, displayContext)
+	// Exec into the daemon container to start an interactive shell
+	return execInPodWithMetadata(ctx, config, clientset, namespace, podName, containerName, debuxTarget, displayContext, opts.Command)
+}
+
+// ensureKubernetesDebugContainer reuses a matching running debux ephemeral
+// container or creates a new daemon one and waits for it to start. It returns
+// the debug container name and the display label for the session.
+func ensureKubernetesDebugContainer(ctx context.Context, clientset *kubernetes.Clientset, namespace string, pod *corev1.Pod, requestedContainer, displayContext string, opts DebugOpts) (string, string, error) {
+	podName := pod.Name
+
+	if pod.DeletionTimestamp != nil {
+		return "", "", fmt.Errorf("pod %s/%s is terminating; wait for the replacement pod or pick another target", namespace, podName)
 	}
+
+	// Determine the target container name. Prefer a running container so PID/root
+	// namespace targeting works even when the first spec container is not ready.
+	targetContainer, err := selectKubernetesTargetContainer(pod, requestedContainer)
+	if err != nil {
+		return "", "", err
+	}
+
+	debuxTarget := kubernetesDebugTargetLabel(displayContext, namespace, podName, targetContainer)
 
 	// Try to reuse an existing running debux container for the same target container.
 	if !opts.Fresh {
-		if existing := findRunningDebuxContainerForTarget(pod, targetContainer, opts.Profile, opts.User); existing != "" {
+		if existing := findRunningDebuxContainerForTarget(pod, targetContainer, opts.Profile, opts.User, opts.Image); existing != "" {
 			fmt.Printf("Reusing debug container %q\n", existing)
-			fmt.Printf("Debugging %s/%s (container: %s)\n", namespace, podName, existing)
-			return execInPodWithMetadata(ctx, config, clientset, namespace, podName, existing, debuxTarget, displayContext, opts.Command)
+			return existing, debuxTarget, nil
+		}
+		if other := findRunningDebuxContainerForTarget(pod, targetContainer, opts.Profile, opts.User, ""); other != "" {
+			fmt.Printf("Existing debug container %q uses a different image; creating a new one with %s\n", other, opts.Image)
 		}
 	}
 
@@ -566,6 +640,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		},
 		TargetContainerName: targetContainer,
 	}
+	ephemeralContainer.Env = append(ephemeralContainer.Env, kubernetesEnvVars(debugExtraEnv(opts.Env, opts.Tools))...)
 
 	// Share target container's volume mounts (skip ones with SubPath, not allowed on ephemeral containers).
 	if opts.ShareVolumes {
@@ -574,27 +649,24 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 
 	sc, err := SecurityContextForProfile(opts.Profile)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	if opts.User != "" {
 		sc, err = applyKubernetesUser(sc, opts.User)
 		if err != nil {
-			return err
+			return "", "", err
 		}
 	}
+	sc = applyExtraCapabilities(sc, opts.CapAdd)
 	if sc != nil {
 		ephemeralContainer.SecurityContext = sc
 	}
 
 	// Add the ephemeral container to the pod spec and update via the
 	// ephemeralcontainers subresource (PUT), matching kubectl debug behavior.
-	pod.Spec.EphemeralContainers = append(pod.Spec.EphemeralContainers, ephemeralContainer)
-	patchedPod, err := clientset.CoreV1().Pods(namespace).UpdateEphemeralContainers(ctx, podName, pod, metav1.UpdateOptions{})
+	patchedPod, err := updateEphemeralContainersWithRetry(ctx, clientset, namespace, podName, pod, ephemeralContainer)
 	if err != nil {
-		if k8serrors.IsForbidden(err) {
-			return fmt.Errorf("updating ephemeral containers: %w\nHint: your RBAC may not allow pods/ephemeralcontainers. Retry with --copy to use pod-copy debug mode", err)
-		}
-		return fmt.Errorf("updating ephemeral containers: %w", err)
+		return "", "", err
 	}
 
 	// Verify the ephemeral container actually appears in the patched pod.
@@ -607,7 +679,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		}
 	}
 	if !found {
-		return fmt.Errorf("ephemeral container %q was not created — the API server accepted the patch but the container is missing from the pod spec.\n"+
+		return "", "", fmt.Errorf("ephemeral container %q was not created — the API server accepted the patch but the container is missing from the pod spec.\n"+
 			"This typically means an admission webhook or policy (e.g. Gatekeeper, Kyverno, PodSecurity) stripped it.\n"+
 			"Check cluster events and webhook configurations:\n"+
 			"  kubectl get events -n %s --field-selector involvedObject.name=%s\n"+
@@ -622,13 +694,34 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	// from the right point and we don't miss status changes that happen
 	// between the update and the watch setup.
 	if err := waitForEphemeralContainer(ctx, clientset, namespace, podName, debugContainerName, patchedPod.ResourceVersion); err != nil {
-		return err
+		return "", "", err
 	}
 
-	fmt.Printf("Debugging %s/%s (container: %s)\n", namespace, podName, debugContainerName)
+	return debugContainerName, debuxTarget, nil
+}
 
-	// Exec into the daemon container to start an interactive shell
-	return execInPodWithMetadata(ctx, config, clientset, namespace, podName, debugContainerName, debuxTarget, displayContext, opts.Command)
+// updateEphemeralContainersWithRetry handles 409 Conflicts from controllers
+// touching the pod between our Get and the update by refetching the pod and
+// reapplying the ephemeral container.
+func updateEphemeralContainersWithRetry(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName string, pod *corev1.Pod, ec corev1.EphemeralContainer) (*corev1.Pod, error) {
+	for attempt := 0; ; attempt++ {
+		pod.Spec.EphemeralContainers = append(pod.Spec.EphemeralContainers, ec)
+		patched, err := clientset.CoreV1().Pods(namespace).UpdateEphemeralContainers(ctx, podName, pod, metav1.UpdateOptions{})
+		if err == nil {
+			return patched, nil
+		}
+		if k8serrors.IsConflict(err) && attempt < 2 {
+			refreshed, getErr := clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+			if getErr == nil {
+				pod = refreshed
+				continue
+			}
+		}
+		if k8serrors.IsForbidden(err) {
+			return nil, fmt.Errorf("updating ephemeral containers: %w\nHint: your RBAC may not allow pods/ephemeralcontainers. Retry with --copy to use pod-copy debug mode", err)
+		}
+		return nil, fmt.Errorf("updating ephemeral containers: %w", err)
+	}
 }
 
 func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace string, sourcePod *corev1.Pod, targetContainer string, opts DebugOpts, displayContext string) error {
@@ -675,6 +768,7 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 			{Name: "ZDOTDIR", Value: "/tmp"},
 		},
 	}
+	debugContainer.Env = append(debugContainer.Env, kubernetesEnvVars(debugExtraEnv(opts.Env, opts.Tools))...)
 
 	if opts.ShareVolumes {
 		debugContainer.VolumeMounts = targetKubernetesVolumeMounts(sourcePod, targetContainer, opts.ReadOnlyVolumes, true)
@@ -690,6 +784,7 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 			return err
 		}
 	}
+	sc = applyExtraCapabilities(sc, opts.CapAdd)
 	if sc != nil {
 		debugContainer.SecurityContext = sc
 	}
@@ -760,6 +855,41 @@ func kubernetesDebugTargetLabel(kubeContext, namespace, podName, containerName s
 	return label
 }
 
+// kubernetesEnvVars converts KEY=VALUE entries (already validated by the CLI)
+// into Kubernetes EnvVars.
+func kubernetesEnvVars(env []string) []corev1.EnvVar {
+	out := make([]corev1.EnvVar, 0, len(env))
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || key == "" {
+			continue
+		}
+		out = append(out, corev1.EnvVar{Name: key, Value: value})
+	}
+	return out
+}
+
+// applyExtraCapabilities merges --cap-add capabilities into a profile's
+// security context.
+func applyExtraCapabilities(sc *corev1.SecurityContext, caps []string) *corev1.SecurityContext {
+	caps = normalizeCapabilities(caps)
+	if len(caps) == 0 {
+		return sc
+	}
+	if sc != nil {
+		sc = sc.DeepCopy()
+	} else {
+		sc = &corev1.SecurityContext{}
+	}
+	if sc.Capabilities == nil {
+		sc.Capabilities = &corev1.Capabilities{}
+	}
+	for _, c := range caps {
+		sc.Capabilities.Add = append(sc.Capabilities.Add, corev1.Capability(c))
+	}
+	return sc
+}
+
 func applyKubernetesUser(sc *corev1.SecurityContext, user string) (*corev1.SecurityContext, error) {
 	parts := strings.Split(user, ":")
 	if len(parts) > 2 || parts[0] == "" {
@@ -795,7 +925,12 @@ func applyKubernetesUser(sc *corev1.SecurityContext, user string) (*corev1.Secur
 
 func isReservedDebugMountPath(mountPath string) bool {
 	switch mountPath {
-	case "/nix", "/nix/store", "/nix/var":
+	// /tmp and /root hold the debug shell's own state (ZDOTDIR, HOME).
+	// Mounting target volumes there breaks sessions on pods that keep an
+	// emptyDir at /tmp (standard with readOnlyRootFilesystem) and writes
+	// debux files into target data. The target's /tmp stays reachable via
+	// $DEBUX_TARGET_ROOT/tmp.
+	case "/nix", "/nix/store", "/nix/var", "/tmp", "/root":
 		return true
 	default:
 		return false
@@ -826,6 +961,29 @@ func targetKubernetesVolumeMounts(pod *corev1.Pod, targetContainer string, readO
 	return nil
 }
 
+// selectKubernetesCopyTargetContainer picks the target container for pod-copy
+// mode. The copy only needs the source container's spec, so containers that
+// are not running (CrashLoopBackOff — the main --copy rescue case) are valid.
+func selectKubernetesCopyTargetContainer(pod *corev1.Pod, requested string) (string, error) {
+	if len(pod.Spec.Containers) == 0 {
+		return "", fmt.Errorf("pod %s/%s has no regular containers to target", pod.Namespace, pod.Name)
+	}
+	if requested != "" {
+		if !podHasContainer(pod, requested) {
+			return "", fmt.Errorf("pod %s/%s has no container %q (available: %s)",
+				pod.Namespace, pod.Name, requested, strings.Join(podContainerNames(pod), ", "))
+		}
+		return requested, nil
+	}
+	// Prefer a running container, fall back to the first one in the spec.
+	for _, c := range pod.Spec.Containers {
+		if podContainerRunning(pod, c.Name) {
+			return c.Name, nil
+		}
+	}
+	return pod.Spec.Containers[0].Name, nil
+}
+
 func selectKubernetesTargetContainer(pod *corev1.Pod, requested string) (string, error) {
 	if len(pod.Spec.Containers) == 0 {
 		return "", fmt.Errorf("pod %s/%s has no regular containers to target", pod.Namespace, pod.Name)
@@ -853,9 +1011,26 @@ func selectKubernetesTargetContainer(pod *corev1.Pod, requested string) (string,
 		pod.Namespace, pod.Name, strings.Join(podContainerNames(pod), ", "))
 }
 
+// podSidecarContainerNames returns native sidecars (restartable init
+// containers); they run for the pod's lifetime and are valid debug targets.
+func podSidecarContainerNames(pod *corev1.Pod) []string {
+	var names []string
+	for _, c := range pod.Spec.InitContainers {
+		if c.RestartPolicy != nil && *c.RestartPolicy == corev1.ContainerRestartPolicyAlways {
+			names = append(names, c.Name)
+		}
+	}
+	return names
+}
+
 func podHasContainer(pod *corev1.Pod, name string) bool {
 	for _, c := range pod.Spec.Containers {
 		if c.Name == name {
+			return true
+		}
+	}
+	for _, sidecar := range podSidecarContainerNames(pod) {
+		if sidecar == name {
 			return true
 		}
 	}
@@ -868,6 +1043,11 @@ func podContainerRunning(pod *corev1.Pod, name string) bool {
 			return cs.State.Running != nil
 		}
 	}
+	for _, cs := range pod.Status.InitContainerStatuses {
+		if cs.Name == name {
+			return cs.State.Running != nil
+		}
+	}
 	return false
 }
 
@@ -876,6 +1056,7 @@ func podContainerNames(pod *corev1.Pod) []string {
 	for _, c := range pod.Spec.Containers {
 		names = append(names, c.Name)
 	}
+	names = append(names, podSidecarContainerNames(pod)...)
 	return names
 }
 
@@ -938,12 +1119,12 @@ func findRunningDebuxContainerForKill(pod *corev1.Pod, targetContainer string) s
 }
 
 // findRunningDebuxContainerForTarget returns a running debux ephemeral container
-// that targets the same Kubernetes container, security profile, and user. Reusing a
-// session created for a different target container would put the shell in the
-// wrong PID/root namespace; reusing a different profile would silently ignore
-// the user's requested security posture, and reusing a different user would
-// silently ignore the requested UID/GID.
-func findRunningDebuxContainerForTarget(pod *corev1.Pod, targetContainer, profile, user string) string {
+// that targets the same Kubernetes container, security profile, user, and debug
+// image. Reusing a session created for a different target container would put
+// the shell in the wrong PID/root namespace; reusing a different profile, user,
+// or image would silently ignore the flags the user passed. An empty image
+// matches any (used to detect image-mismatched sessions for messaging).
+func findRunningDebuxContainerForTarget(pod *corev1.Pod, targetContainer, profile, user, image string) string {
 	running := runningDebuxEphemeralContainers(pod)
 
 	for _, ec := range pod.Spec.EphemeralContainers {
@@ -954,6 +1135,9 @@ func findRunningDebuxContainerForTarget(pod *corev1.Pod, targetContainer, profil
 			continue
 		}
 		if targetContainer != "" && ec.TargetContainerName != targetContainer {
+			continue
+		}
+		if image != "" && ec.Image != image {
 			continue
 		}
 		if !debuxEphemeralContainerProfileMatches(ec, profile) {
@@ -1065,7 +1249,25 @@ func bootstrapPodShell(ctx context.Context, config *rest.Config, clientset *kube
 	return nil
 }
 
+// kubernetesExecError converts the remote command's exit status into the
+// typed ExitError so the CLI propagates the real code instead of printing a
+// spurious "command terminated with exit code N".
+func kubernetesExecError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var codeErr k8sexec.CodeExitError
+	if errors.As(err, &codeErr) {
+		return &ExitError{Code: codeErr.Code}
+	}
+	return err
+}
+
 func execInPodWithCommand(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string, command []string) error {
+	// Allocate a remote TTY only when stdio is a terminal, mirroring kubectl:
+	// piped one-shot commands must not get CRLF-mangled, echo-polluted output.
+	tty := stdioIsTTY()
+
 	req := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).
@@ -1076,8 +1278,8 @@ func execInPodWithCommand(ctx context.Context, config *rest.Config, clientset *k
 			Command:   command,
 			Stdin:     true,
 			Stdout:    true,
-			Stderr:    true,
-			TTY:       true,
+			Stderr:    !tty, // TTY merges stderr into stdout
+			TTY:       tty,
 		}, scheme.ParameterCodec)
 
 	exec, err := newRemoteExecutor(config, req.URL())
@@ -1085,32 +1287,30 @@ func execInPodWithCommand(ctx context.Context, config *rest.Config, clientset *k
 		return fmt.Errorf("creating executor: %w", err)
 	}
 
-	// Set terminal to raw mode
-	stdinFd, isTerminal := term.GetFdInfo(os.Stdin)
-	if isTerminal {
-		oldState, err := term.SetRawTerminal(stdinFd)
-		if err == nil {
+	streamOpts := remotecommand.StreamOptions{
+		Stdin:  os.Stdin,
+		Stdout: os.Stdout,
+		Tty:    tty,
+	}
+
+	if tty {
+		stdinFd, _ := term.GetFdInfo(os.Stdin)
+		oldState, rawErr := term.SetRawTerminal(stdinFd)
+		if rawErr == nil {
 			defer func() {
 				_ = term.RestoreTerminal(stdinFd, oldState)
 				resetTerminalEmulator()
 			}()
 		}
-	}
-
-	streamOpts := remotecommand.StreamOptions{
-		Stdin:  os.Stdin,
-		Stdout: os.Stdout,
-		Stderr: &bytes.Buffer{}, // TTY merges stderr into stdout
-		Tty:    true,
-	}
-
-	if isTerminal {
 		tsq := newTerminalSizeQueue(stdinFd)
 		defer tsq.Close()
 		streamOpts.TerminalSizeQueue = tsq
+		streamOpts.Stderr = &bytes.Buffer{}
+	} else {
+		streamOpts.Stderr = os.Stderr
 	}
 
-	return exec.StreamWithContext(ctx, streamOpts)
+	return kubernetesExecError(exec.StreamWithContext(ctx, streamOpts))
 }
 
 // KubernetesPod creates a standalone debug pod.
@@ -1124,13 +1324,16 @@ func KubernetesPod(ctx context.Context, opts PodOpts) error {
 		opts.Namespace = resolveNamespace(opts.Kubeconfig, opts.KubeContext)
 	}
 
-	podName := fmt.Sprintf("debux-%d", time.Now().Unix())
+	// Nanosecond resolution avoids name collisions when several debug pods
+	// are created in the same namespace within the same second.
+	podName := fmt.Sprintf("debux-%d", time.Now().UnixNano())
 	displayContext := kubernetesDisplayContext(opts.Kubeconfig, opts.KubeContext)
 	displayTarget := fmt.Sprintf("pod/%s", podName)
 	if displayContext != "" {
 		displayTarget = fmt.Sprintf("%s:%s", displayContext, displayTarget)
 	}
 
+	tty := stdioIsTTY()
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
@@ -1147,7 +1350,7 @@ func KubernetesPod(ctx context.Context, opts PodOpts) error {
 					ImagePullPolicy: corev1.PullPolicy(opts.PullPolicy),
 					Command:         []string{"/bin/sh", "-c", entrypoint.Script},
 					Stdin:           true,
-					TTY:             true,
+					TTY:             tty,
 					Env: []corev1.EnvVar{
 						{Name: "DEBUX_TARGET", Value: displayTarget},
 						{Name: "DEBUX_CONTEXT", Value: displayContext},
@@ -1162,6 +1365,7 @@ func KubernetesPod(ctx context.Context, opts PodOpts) error {
 			HostNetwork:   opts.HostNetwork,
 		},
 	}
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, kubernetesEnvVars(debugExtraEnv(opts.Env, opts.Tools))...)
 
 	sc, err := SecurityContextForProfile(opts.Profile)
 	if err != nil {
@@ -1173,6 +1377,7 @@ func KubernetesPod(ctx context.Context, opts PodOpts) error {
 			return err
 		}
 	}
+	sc = applyExtraCapabilities(sc, opts.CapAdd)
 	if sc != nil {
 		pod.Spec.Containers[0].SecurityContext = sc
 	}
@@ -1201,7 +1406,7 @@ func KubernetesPod(ctx context.Context, opts PodOpts) error {
 
 	fmt.Printf("Attached to debug pod %s/%s\n", opts.Namespace, podName)
 
-	return attachToPod(ctx, config, clientset, opts.Namespace, podName, "debug")
+	return attachToPod(ctx, config, clientset, opts.Namespace, podName, "debug", tty)
 }
 
 // resolveNamespace returns the namespace from the current kubeconfig context,
@@ -1281,7 +1486,13 @@ func waitForEphemeralContainer(ctx context.Context, clientset *kubernetes.Client
 				return fmt.Errorf("watch closed while waiting for ephemeral container %q to start\n%s",
 					containerName, describeContainerFailure(ctx, clientset, namespace, podName, containerName))
 			}
-			if event.Type == watch.Modified {
+			switch event.Type {
+			case watch.Deleted:
+				return fmt.Errorf("pod %q was deleted while waiting for debug container %q to start (rollout or eviction?)", podName, containerName)
+			case watch.Error:
+				return fmt.Errorf("watch error while waiting for debug container %q: %v", containerName, k8serrors.FromObject(event.Object))
+			}
+			if event.Type == watch.Modified || event.Type == watch.Added {
 				pod, ok := event.Object.(*corev1.Pod)
 				if !ok {
 					continue
@@ -1342,6 +1553,12 @@ func waitForContainerRunning(ctx context.Context, clientset *kubernetes.Clientse
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
 				return fmt.Errorf("watch closed while waiting for debug container %q in copy pod %q to start", containerName, podName)
+			}
+			switch event.Type {
+			case watch.Deleted:
+				return fmt.Errorf("copy pod %q was deleted while waiting for debug container %q to start", podName, containerName)
+			case watch.Error:
+				return fmt.Errorf("watch error while waiting for debug container %q in copy pod %q: %v", containerName, podName, k8serrors.FromObject(event.Object))
 			}
 			if event.Type != watch.Modified && event.Type != watch.Added {
 				continue
@@ -1443,21 +1660,7 @@ func describeContainerFailure(ctx context.Context, clientset *kubernetes.Clients
 		}
 	}
 
-	// Fetch recent events for the pod
-	events, err := clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{
-		FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Pod", podName),
-	})
-	if err == nil && len(events.Items) > 0 {
-		details = append(details, "  Recent pod events:")
-		// Show last 5 events
-		start := 0
-		if len(events.Items) > 5 {
-			start = len(events.Items) - 5
-		}
-		for _, ev := range events.Items[start:] {
-			details = append(details, fmt.Sprintf("    %s: %s: %s", ev.Type, ev.Reason, ev.Message))
-		}
-	}
+	details = append(details, podEventDetails(ctx, clientset, namespace, podName)...)
 
 	if len(details) == 0 {
 		return "  No additional diagnostic information available"
@@ -1474,31 +1677,114 @@ func waitForPodRunning(ctx context.Context, clientset *kubernetes.Clientset, nam
 	}
 	defer watcher.Stop()
 
+	var lastReason string
 	timeout := time.After(2 * time.Minute)
 	for {
 		select {
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
-				return fmt.Errorf("watch closed while waiting for pod %q to start", podName)
+				return fmt.Errorf("watch closed while waiting for pod %q to start\n%s",
+					podName, describePodFailure(ctx, clientset, namespace, podName))
 			}
-			if event.Type == watch.Modified || event.Type == watch.Added {
-				pod, ok := event.Object.(*corev1.Pod)
-				if !ok {
-					continue
+			switch event.Type {
+			case watch.Deleted:
+				return fmt.Errorf("pod %q was deleted while waiting for it to start", podName)
+			case watch.Error:
+				return fmt.Errorf("watch error while waiting for pod %q: %v", podName, k8serrors.FromObject(event.Object))
+			case watch.Modified, watch.Added:
+			default:
+				continue
+			}
+			pod, ok := event.Object.(*corev1.Pod)
+			if !ok {
+				continue
+			}
+			switch pod.Status.Phase {
+			case corev1.PodRunning:
+				return nil
+			case corev1.PodFailed, corev1.PodSucceeded:
+				return fmt.Errorf("pod %q ended with phase %s before becoming ready\n%s",
+					podName, pod.Status.Phase, describePodFailure(ctx, clientset, namespace, podName))
+			}
+			for _, cs := range pod.Status.ContainerStatuses {
+				if cs.State.Terminated != nil {
+					return fmt.Errorf("container %q in pod %q terminated: %s (exit code %d)",
+						cs.Name, podName, cs.State.Terminated.Reason, cs.State.Terminated.ExitCode)
 				}
-				if pod.Status.Phase == corev1.PodRunning {
-					return nil
+				if w := cs.State.Waiting; w != nil {
+					switch w.Reason {
+					case "ImagePullBackOff", "ErrImagePull", "InvalidImageName",
+						"CrashLoopBackOff", "RunContainerError", "CreateContainerError",
+						"CreateContainerConfigError":
+						return containerStartFailureError(fmt.Sprintf("container %q in pod %q", cs.Name, podName), w.Reason, w.Message)
+					}
+					if w.Reason != "" && w.Reason != lastReason {
+						fmt.Printf("  Container status: %s", w.Reason)
+						if w.Message != "" {
+							fmt.Printf(" (%s)", w.Message)
+						}
+						fmt.Println()
+						lastReason = w.Reason
+					}
 				}
 			}
 		case <-timeout:
-			return fmt.Errorf("timeout waiting for pod %q to start", podName)
+			return fmt.Errorf("timeout waiting for pod %q to start\n%s",
+				podName, describePodFailure(ctx, clientset, namespace, podName))
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
 }
 
-func attachToPod(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string) error {
+// describePodFailure summarizes the pod's container states and recent events
+// to diagnose why a debug pod failed to start — printed before the pod is
+// deleted so the evidence is not destroyed with it.
+func describePodFailure(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName string) string {
+	var details []string
+
+	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		details = append(details, fmt.Sprintf("  (could not fetch pod status: %v)", err))
+	} else {
+		details = append(details, fmt.Sprintf("  Pod phase: %s", pod.Status.Phase))
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Waiting != nil {
+				details = append(details, fmt.Sprintf("  Container %s is waiting: %s: %s", cs.Name, cs.State.Waiting.Reason, cs.State.Waiting.Message))
+			} else if cs.State.Terminated != nil {
+				details = append(details, fmt.Sprintf("  Container %s terminated: %s (exit code %d)", cs.Name, cs.State.Terminated.Reason, cs.State.Terminated.ExitCode))
+			}
+		}
+	}
+
+	details = append(details, podEventDetails(ctx, clientset, namespace, podName)...)
+
+	if len(details) == 0 {
+		return "  No additional diagnostic information available"
+	}
+	return strings.Join(details, "\n")
+}
+
+// podEventDetails returns the last few Kubernetes events for a pod.
+func podEventDetails(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName string) []string {
+	events, err := clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Pod", podName),
+	})
+	if err != nil || len(events.Items) == 0 {
+		return nil
+	}
+	details := []string{"  Recent pod events:"}
+	start := 0
+	if len(events.Items) > 5 {
+		start = len(events.Items) - 5
+	}
+	for _, ev := range events.Items[start:] {
+		details = append(details, fmt.Sprintf("    %s: %s: %s", ev.Type, ev.Reason, ev.Message))
+	}
+	return details
+}
+
+func attachToPod(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string, tty bool) error {
 	req := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).
@@ -1508,8 +1794,8 @@ func attachToPod(ctx context.Context, config *rest.Config, clientset *kubernetes
 			Container: containerName,
 			Stdin:     true,
 			Stdout:    true,
-			Stderr:    true,
-			TTY:       true,
+			Stderr:    !tty, // TTY merges stderr into stdout
+			TTY:       tty,
 		}, scheme.ParameterCodec)
 
 	exec, err := newRemoteExecutor(config, req.URL())
@@ -1517,32 +1803,30 @@ func attachToPod(ctx context.Context, config *rest.Config, clientset *kubernetes
 		return fmt.Errorf("creating executor: %w", err)
 	}
 
-	// Set terminal to raw mode
-	stdinFd, isTerminal := term.GetFdInfo(os.Stdin)
-	if isTerminal {
-		oldState, err := term.SetRawTerminal(stdinFd)
-		if err == nil {
+	streamOpts := remotecommand.StreamOptions{
+		Stdin:  os.Stdin,
+		Stdout: os.Stdout,
+		Tty:    tty,
+	}
+
+	if tty {
+		stdinFd, _ := term.GetFdInfo(os.Stdin)
+		oldState, rawErr := term.SetRawTerminal(stdinFd)
+		if rawErr == nil {
 			defer func() {
 				_ = term.RestoreTerminal(stdinFd, oldState)
 				resetTerminalEmulator()
 			}()
 		}
-	}
-
-	streamOpts := remotecommand.StreamOptions{
-		Stdin:  os.Stdin,
-		Stdout: os.Stdout,
-		Stderr: &bytes.Buffer{}, // TTY merges stderr into stdout
-		Tty:    true,
-	}
-
-	if isTerminal {
 		tsq := newTerminalSizeQueue(stdinFd)
 		defer tsq.Close()
 		streamOpts.TerminalSizeQueue = tsq
+		streamOpts.Stderr = &bytes.Buffer{}
+	} else {
+		streamOpts.Stderr = os.Stderr
 	}
 
-	return exec.StreamWithContext(ctx, streamOpts)
+	return kubernetesExecError(exec.StreamWithContext(ctx, streamOpts))
 }
 
 type terminalSizeQueue struct {
@@ -1632,6 +1916,18 @@ func (t *terminalSizeQueue) monitorSize(fd uintptr) {
 			case <-t.stopResizing:
 				return
 			default:
+				// Queue full during a resize burst: drop the stale size so
+				// the final window geometry always reaches the server.
+				select {
+				case <-t.resizeChan:
+				default:
+				}
+				select {
+				case t.resizeChan <- size:
+				case <-t.stopResizing:
+					return
+				default:
+				}
 			}
 		case <-t.stopResizing:
 			return

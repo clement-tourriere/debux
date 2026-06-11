@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/clement-tourriere/debux/internal/config"
 	"github.com/clement-tourriere/debux/internal/runtime"
 	"github.com/clement-tourriere/debux/internal/version"
 	"github.com/spf13/cobra"
@@ -25,6 +26,9 @@ var (
 	flagFresh           bool
 	flagCopy            bool
 	flagProfile         string
+	flagEnv             []string
+	flagCapAdd          []string
+	flagTools           []string
 )
 
 const rootLong = `debux starts a rich Nix-powered debug container next to your target.
@@ -119,6 +123,9 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newTUICmd())
 	cmd.AddCommand(newImageCmd())
 	cmd.AddCommand(newPodCmd())
+	cmd.AddCommand(newNodeCmd())
+	cmd.AddCommand(newForwardCmd())
+	cmd.AddCommand(newCpCmd())
 	cmd.AddCommand(newKillCmd())
 	cmd.AddCommand(newStoreCmd())
 	cmd.AddCommand(newCompletionCmd(cmd))
@@ -143,6 +150,9 @@ func addExecFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&flagPullPolicy, "pull-policy", "", "Image pull policy for the debug image (Always, IfNotPresent, Never)")
 	cmd.Flags().StringVar(&flagProfile, "profile", runtime.ProfileGeneral,
 		fmt.Sprintf("Kubernetes: security profile (%s)", strings.Join(runtime.ValidProfiles, ", ")))
+	cmd.Flags().StringArrayVar(&flagEnv, "env", nil, "Extra KEY=VALUE environment for the debug container (repeatable)")
+	cmd.Flags().StringArrayVar(&flagCapAdd, "cap-add", nil, "Extra Linux capability for the debug container (repeatable)")
+	cmd.Flags().StringArrayVar(&flagTools, "tools", nil, "Tool set name from the config file, or nixpkgs packages, auto-installed at session start (repeatable)")
 	cmd.Flags().String("kubeconfig", "", "Kubernetes: kubeconfig path")
 	cmd.Flags().StringVar(&flagKubeContext, "context", "", "Kubernetes: kube context name")
 	cmd.Flags().StringVarP(&flagNamespace, "namespace", "n", "", "Kubernetes: namespace")
@@ -166,6 +176,9 @@ func addPodDebugFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&flagPullPolicy, "pull-policy", "", "Image pull policy (Always, IfNotPresent, Never)")
 	cmd.Flags().StringVar(&flagProfile, "profile", runtime.ProfileGeneral,
 		fmt.Sprintf("Security profile (%s)", strings.Join(runtime.ValidProfiles, ", ")))
+	cmd.Flags().StringArrayVar(&flagEnv, "env", nil, "Extra KEY=VALUE environment for the debug container (repeatable)")
+	cmd.Flags().StringArrayVar(&flagCapAdd, "cap-add", nil, "Extra Linux capability for the debug container (repeatable)")
+	cmd.Flags().StringArrayVar(&flagTools, "tools", nil, "Tool set name from the config file, or nixpkgs packages, auto-installed at session start (repeatable)")
 	cmd.Flags().String("kubeconfig", "", "Kubeconfig path")
 	cmd.Flags().StringVar(&flagKubeContext, "context", "", "Kube context name")
 	registerImageFlagCompletion(cmd)
@@ -228,21 +241,50 @@ func resolveProfile(cmd *cobra.Command) (string, error) {
 	}
 
 	if profileSet {
-		// Validate profile
-		valid := false
-		for _, p := range runtime.ValidProfiles {
-			if flagProfile == p {
-				valid = true
-				break
-			}
-		}
-		if !valid {
-			return "", fmt.Errorf("invalid profile %q: must be one of %s", flagProfile, strings.Join(runtime.ValidProfiles, ", "))
+		if err := validateProfile(flagProfile); err != nil {
+			return "", err
 		}
 		return flagProfile, nil
 	}
 
+	// Fall back to the config file's default profile before the built-in one.
+	if cfgProfile := strings.TrimSpace(config.Get().Profile); cfgProfile != "" {
+		if err := validateProfile(cfgProfile); err != nil {
+			return "", fmt.Errorf("config file: %w", err)
+		}
+		return cfgProfile, nil
+	}
+
 	return runtime.ProfileGeneral, nil
+}
+
+func validateProfile(profile string) error {
+	for _, p := range runtime.ValidProfiles {
+		if profile == p {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid profile %q: must be one of %s", profile, strings.Join(runtime.ValidProfiles, ", "))
+}
+
+// resolveImage applies the image precedence: --image flag, config file,
+// built-in default.
+func resolveImage(flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	if cfg := strings.TrimSpace(config.Get().Image); cfg != "" {
+		return cfg
+	}
+	return runtime.DefaultImage
+}
+
+// configuredPullPolicy applies the pull-policy precedence: flag, config file.
+func configuredPullPolicy(flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	return strings.TrimSpace(config.Get().PullPolicy)
 }
 
 func resolvePullPolicy(policy string) (string, error) {

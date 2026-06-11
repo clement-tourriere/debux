@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/clement-tourriere/debux/internal/dockerclient"
 	"github.com/moby/moby/client"
 	authv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,7 +37,7 @@ func fail(name, detail string) DoctorCheck {
 
 // DockerDoctor checks local Docker connectivity and debux-managed sessions.
 func DockerDoctor(ctx context.Context, targetName ...string) []DoctorCheck {
-	cli, err := client.New(client.FromEnv)
+	cli, err := dockerclient.New()
 	if err != nil {
 		return []DoctorCheck{fail("Docker client", fmt.Sprintf("connecting to Docker: %v", err))}
 	}

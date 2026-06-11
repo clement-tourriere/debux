@@ -52,7 +52,10 @@ func PullImage(ctx context.Context, cli *client.Client, ref string) error {
 	}
 	defer func() { _ = reader.Close() }()
 
-	// Consume the pull output (docker requires reading the response)
+	// Consume the pull output (docker requires reading the response). The
+	// daemon reports failures (missing manifest, auth denied, layer errors)
+	// as in-band JSON messages on an HTTP 200 stream — surface them instead
+	// of silently "succeeding" with a stale or missing image.
 	dec := json.NewDecoder(reader)
 	for {
 		var msg map[string]any
@@ -61,6 +64,16 @@ func PullImage(ctx context.Context, cli *client.Client, ref string) error {
 				break
 			}
 			return fmt.Errorf("reading pull response: %w", err)
+		}
+		if errMsg, ok := msg["error"].(string); ok && errMsg != "" {
+			fmt.Println()
+			return fmt.Errorf("pulling image %s: %s", ref, errMsg)
+		}
+		if detail, ok := msg["errorDetail"].(map[string]any); ok {
+			if errMsg, ok := detail["message"].(string); ok && errMsg != "" {
+				fmt.Println()
+				return fmt.Errorf("pulling image %s: %s", ref, errMsg)
+			}
 		}
 		if status, ok := msg["status"].(string); ok {
 			if progress, ok := msg["progress"].(string); ok && progress != "" {

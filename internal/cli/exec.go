@@ -3,11 +3,10 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os/signal"
 	"sort"
 	"strings"
-	"syscall"
 
+	"github.com/clement-tourriere/debux/internal/config"
 	"github.com/clement-tourriere/debux/internal/history"
 	"github.com/clement-tourriere/debux/internal/picker"
 	"github.com/clement-tourriere/debux/internal/runtime"
@@ -49,24 +48,35 @@ Security: the default Kubernetes profile is root inside the pod. Use
 }
 
 func runExec(cmd *cobra.Command, args []string) error {
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := signalContext()
 	defer cancel()
 
 	var target *runtime.Target
 	var command []string
 
-	if len(args) == 0 {
-		// No args: default to Docker, show picker
+	// Honor the documented `debux [target] [-- command...]` form: everything
+	// after -- is the command, even when the target is omitted.
+	targetArgs := args
+	if dash := cmd.ArgsLenAtDash(); dash >= 0 {
+		targetArgs = args[:dash]
+		command = args[dash:]
+	} else if len(args) > 1 {
+		targetArgs = args[:1]
+		command = args[1:]
+	}
+
+	switch len(targetArgs) {
+	case 0:
+		// No target: default to Docker, show picker
 		target = &runtime.Target{Runtime: "docker"}
-	} else {
+	case 1:
 		var err error
-		target, err = runtime.ParseTarget(args[0])
+		target, err = runtime.ParseTarget(targetArgs[0])
 		if err != nil {
 			return fmt.Errorf("invalid target: %w", err)
 		}
-		if len(args) > 1 {
-			command = args[1:]
-		}
+	default:
+		return fmt.Errorf("expected at most one target before --, got %d arguments", len(targetArgs))
 	}
 
 	if err := validateExecFlags(cmd, target.Runtime); err != nil {
@@ -101,7 +111,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 		target.Name = name
 	}
 
-	if target.Runtime == "kubernetes" && target.Container == "" {
+	// In copy mode the runtime resolves the container from the pod spec, so a
+	// crash-looping pod (no running containers) is still a valid target.
+	if target.Runtime == "kubernetes" && target.Container == "" && !flagCopy {
 		containerName, err := resolveK8sContainerName(ctx, cmd, target, kubeContext)
 		if err != nil {
 			return err
@@ -118,21 +130,19 @@ func runExec(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	pullPolicy, err := resolvePullPolicy(flagPullPolicy)
+	pullPolicy, err := resolvePullPolicy(configuredPullPolicy(flagPullPolicy))
 	if err != nil {
 		return err
 	}
 
-	image := flagImage
-	if image == "" {
-		image = runtime.DefaultImage
+	if err := runtime.ValidateEnvVars(flagEnv); err != nil {
+		return err
 	}
 
 	opts := runtime.DebugOpts{
-		Image:           image,
+		Image:           resolveImage(flagImage),
 		Privileged:      flagPrivileged,
 		User:            flagUser,
-		AutoRemove:      flagRemove,
 		ShareVolumes:    !flagNoVolumes,
 		ReadOnlyVolumes: flagReadOnlyVolumes,
 		PullPolicy:      pullPolicy,
@@ -140,6 +150,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 		Copy:            flagCopy,
 		Profile:         profile,
 		Command:         command,
+		Env:             flagEnv,
+		CapAdd:          flagCapAdd,
+		Tools:           config.ResolveTools(flagTools),
 	}
 
 	recordDebugHistory(target, opts)

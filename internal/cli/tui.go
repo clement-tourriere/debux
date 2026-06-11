@@ -7,18 +7,18 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/clement-tourriere/debux/internal/config"
 	"github.com/clement-tourriere/debux/internal/history"
 	"github.com/clement-tourriere/debux/internal/runtime"
 	"github.com/spf13/cobra"
@@ -108,10 +108,13 @@ func (i tuiItem) Title() string { return i.title }
 func (i tuiItem) Description() string { return i.desc }
 
 func (i tuiItem) FilterValue() string {
-	return strings.Join([]string{string(i.kind), string(i.source), i.title, i.desc, i.target, i.context, i.namespace}, " ")
+	// Filter on identifying fields only. Including kind/source/desc makes
+	// generic words ("docker", "pod", "kubernetes") match every row.
+	return strings.Join([]string{i.title, i.target, i.context, i.namespace}, " ")
 }
 
 type tuiDashboardLoadedMsg struct {
+	gen        int
 	docker     []tuiItem
 	contexts   []tuiItem
 	history    []tuiItem
@@ -122,12 +125,14 @@ type tuiDashboardLoadedMsg struct {
 }
 
 type tuiNamespacesLoadedMsg struct {
+	gen        int
 	context    string
 	namespaces []tuiItem
 	err        error
 }
 
 type tuiPodsLoadedMsg struct {
+	gen       int
 	context   string
 	namespace string
 	query     string
@@ -142,6 +147,13 @@ type tuiModel struct {
 	width  int
 	height int
 	result *tuiLaunch
+
+	// loadGen sequences async loads: a result whose generation does not match
+	// is from an abandoned request and must not overwrite newer state.
+	loadGen int
+	// lastAppliedView tracks the view the list was last populated for, so the
+	// cursor and filter reset on view switches but survive in-view reloads.
+	lastAppliedView tuiView
 
 	dockerItems    []tuiItem
 	contextItems   []tuiItem
@@ -178,26 +190,34 @@ type tuiModel struct {
 	kubeconfig      string
 }
 
+// The palette adapts to the terminal background so text stays readable on
+// light themes, not only dark ones.
 var (
-	tuiAccent       = lipgloss.Color("#8B5CF6")
-	tuiAccent2      = lipgloss.Color("#06B6D4")
-	tuiMuted        = lipgloss.Color("#7C7C86")
-	tuiText         = lipgloss.Color("#E5E7EB")
-	tuiTitleStyle   = lipgloss.NewStyle().Bold(true).Foreground(tuiText)
-	tuiLogoStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(tuiAccent).Padding(0, 1)
-	tuiHeaderStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(tuiAccent).Padding(0, 1)
-	tuiTabStyle     = lipgloss.NewStyle().Padding(0, 1).Foreground(tuiMuted)
-	tuiActiveTab    = tuiTabStyle.Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(tuiAccent)
-	tuiHintStyle    = lipgloss.NewStyle().Foreground(tuiMuted)
-	tuiWarnStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B"))
-	tuiSuccessStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#22C55E"))
-	tuiPanelStyle   = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color("#2D2D35")).Padding(0, 1)
-	tuiPillStyle    = lipgloss.NewStyle().Padding(0, 1).Foreground(tuiText).Background(lipgloss.Color("#27272A"))
-	tuiPillOnStyle  = tuiPillStyle.Foreground(lipgloss.Color("#FFFFFF")).Background(tuiAccent)
+	tuiAccent         = lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#8B5CF6"}
+	tuiAccent2        = lipgloss.AdaptiveColor{Light: "#0E7490", Dark: "#06B6D4"}
+	tuiMuted          = lipgloss.AdaptiveColor{Light: "#6B7280", Dark: "#7C7C86"}
+	tuiText           = lipgloss.AdaptiveColor{Light: "#1F2937", Dark: "#E5E7EB"}
+	tuiSelectedText   = lipgloss.AdaptiveColor{Light: "#111827", Dark: "#FFFFFF"}
+	tuiSelectedDesc   = lipgloss.AdaptiveColor{Light: "#6D28D9", Dark: "#C4B5FD"}
+	tuiSelectedBg     = lipgloss.AdaptiveColor{Light: "#EDE9FE", Dark: "#1E1B2E"}
+	tuiActiveTitle    = lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#FDE68A"}
+	tuiPanelBorder    = lipgloss.AdaptiveColor{Light: "#D1D5DB", Dark: "#2D2D35"}
+	tuiPillBackground = lipgloss.AdaptiveColor{Light: "#E5E7EB", Dark: "#27272A"}
+	tuiTitleStyle     = lipgloss.NewStyle().Bold(true).Foreground(tuiText)
+	tuiLogoStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(tuiAccent).Padding(0, 1)
+	tuiHeaderStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(tuiAccent).Padding(0, 1)
+	tuiTabStyle       = lipgloss.NewStyle().Padding(0, 1).Foreground(tuiMuted)
+	tuiActiveTab      = tuiTabStyle.Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(tuiAccent)
+	tuiHintStyle      = lipgloss.NewStyle().Foreground(tuiMuted)
+	tuiWarnStyle      = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#F59E0B"})
+	tuiSuccessStyle   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#15803D", Dark: "#22C55E"})
+	tuiPanelStyle     = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(tuiPanelBorder).Padding(0, 1)
+	tuiPillStyle      = lipgloss.NewStyle().Padding(0, 1).Foreground(tuiText).Background(tuiPillBackground)
+	tuiPillOnStyle    = tuiPillStyle.Foreground(lipgloss.Color("#FFFFFF")).Background(tuiAccent)
 )
 
 func runTUI(cmd *cobra.Command, _ []string) error {
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := signalContext()
 	defer cancel()
 
 	profile := runtime.ProfileGeneral
@@ -208,14 +228,11 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
-	pullPolicy, err := resolvePullPolicy(flagPullPolicy)
+	pullPolicy, err := resolvePullPolicy(configuredPullPolicy(flagPullPolicy))
 	if err != nil {
 		return err
 	}
-	image := flagImage
-	if image == "" {
-		image = runtime.DefaultImage
-	}
+	image := resolveImage(flagImage)
 	kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
 
 	baseLaunch := tuiLaunch{
@@ -230,12 +247,22 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 		readOnlyVolumes: flagReadOnlyVolumes,
 	}
 
+	// Carry the navigation scope and any launch error across loop iterations
+	// so the next TUI reopens where the user left off and shows what failed.
+	kubeCtx, kubeNs := flagKubeContext, flagNamespace
+	startupNotice := ""
 	for {
 		launch := baseLaunch
-		m := newTUIModel(&launch, kubeconfig, flagKubeContext, flagNamespace)
-		p := tea.NewProgram(m, tea.WithAltScreen())
-		if _, err := p.Run(); err != nil {
+		m := newTUIModel(&launch, kubeconfig, kubeCtx, kubeNs)
+		m.notice = startupNotice
+		startupNotice = ""
+		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+		finalModel, err := p.Run()
+		if err != nil {
 			return err
+		}
+		if fm, ok := finalModel.(tuiModel); ok {
+			kubeCtx, kubeNs = fm.selectedContext, fm.selectedNamespace
 		}
 		if launch.target == "" {
 			return nil
@@ -250,6 +277,12 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 		flagPrivileged = launch.privileged
 		flagNoVolumes = !launch.shareVolumes
 		flagReadOnlyVolumes = launch.readOnlyVolumes
+		// resolveProfile honors --profile only when cobra marks it as changed;
+		// without this, a profile toggled in the TUI silently launches the
+		// default profile.
+		if strings.HasPrefix(launch.target, "k8s://") && launch.profile != "" && !launch.privileged {
+			_ = cmd.Flags().Set("profile", launch.profile)
+		}
 		baseLaunch = launch
 		baseLaunch.target = ""
 		baseLaunch.mode = ""
@@ -257,7 +290,7 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 		prepareTerminalForDebugSession()
 		if launch.mode == tuiLaunchTerminal {
 			if err := openInTerminal(ctx, cmd, launch); err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, err)
+				startupNotice = "External launch failed: " + err.Error()
 			}
 			continue
 		}
@@ -278,7 +311,14 @@ func newTUIModel(result *tuiLaunch, kubeconfig, kubeContext, namespace string) t
 	l := list.New(nil, tuiItemDelegate{}, 0, 0)
 	l.Title = "targets"
 	l.SetShowTitle(false)
+	// The custom footer is the single source of truth for key help; the
+	// list's built-in help would advertise conflicting bindings.
+	l.SetShowHelp(false)
 	l.SetStatusBarItemName("entry", "entries")
+	// Free the letter aliases (h/l/f/d/b/u) that collide with debux's own
+	// keys (toggles, back); arrows and pgup/pgdown keep paginating.
+	l.KeyMap.PrevPage = key.NewBinding(key.WithKeys("left", "pgup"))
+	l.KeyMap.NextPage = key.NewBinding(key.WithKeys("right", "pgdown"))
 	l.Styles.StatusBar = l.Styles.StatusBar.Foreground(tuiMuted)
 	l.Styles.FilterPrompt = l.Styles.FilterPrompt.Foreground(tuiAccent2)
 	l.Styles.FilterCursor = l.Styles.FilterCursor.Foreground(tuiAccent2)
@@ -295,6 +335,8 @@ func newTUIModel(result *tuiLaunch, kubeconfig, kubeContext, namespace string) t
 	return tuiModel{
 		list:              l,
 		view:              tuiViewDashboard,
+		lastAppliedView:   tuiViewDashboard,
+		loadGen:           1,
 		result:            result,
 		loading:           true,
 		loadingLabel:      "Loading Docker, kube contexts, and history…",
@@ -315,10 +357,55 @@ func newTUIModel(result *tuiLaunch, kubeconfig, kubeContext, namespace string) t
 }
 
 func (m tuiModel) Init() tea.Cmd {
-	return loadTUIDashboard(m.kubeconfig, m.selectedContext)
+	return loadTUIDashboard(m.kubeconfig, m.selectedContext, m.loadGen)
 }
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle layout and async load results before any input-mode routing: pod
+	// search must not swallow them (stuck "Loading…" and stale sizes), and
+	// results from abandoned requests must not overwrite newer state.
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.list.SetSize(max(30, msg.Width-4), max(8, msg.Height-14))
+		return m, nil
+	case tuiDashboardLoadedMsg:
+		if msg.gen != m.loadGen {
+			return m, nil
+		}
+		m.loading = false
+		m.dockerItems = msg.docker
+		m.contextItems = msg.contexts
+		m.historyItems = msg.history
+		m.dockerErr = msg.dockerErr
+		m.contextErr = msg.contextErr
+		m.historyErr = msg.historyErr
+		m.lastLoadedAt = msg.loadedAt
+		return m, m.applyView()
+	case tuiNamespacesLoadedMsg:
+		if msg.gen != m.loadGen {
+			return m, nil
+		}
+		m.loading = false
+		m.namespaceItems = msg.namespaces
+		m.namespaceErr = msg.err
+		m.selectedContext = msg.context
+		return m, m.applyView()
+	case tuiPodsLoadedMsg:
+		if msg.gen != m.loadGen {
+			return m, nil
+		}
+		m.loading = false
+		m.podItems = msg.pods
+		m.podsErr = msg.err
+		m.podsLimited = msg.limited
+		m.selectedContext = msg.context
+		m.selectedNamespace = msg.namespace
+		m.podQuery = msg.query
+		return m, m.applyView()
+	}
+
 	if m.searchingPods {
 		switch msg := msg.(type) {
 		case tea.KeyMsg:
@@ -337,7 +424,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.loadingLabel = "Searching pods matching “" + m.podQuery + "”…"
 				}
-				return m, loadTUIPods(m.kubeconfig, m.selectedContext, m.selectedNamespace, m.podQuery)
+				m.loadGen++
+				return m, loadTUIPods(m.kubeconfig, m.selectedContext, m.selectedNamespace, m.podQuery, m.loadGen)
 			}
 		}
 		var cmd tea.Cmd
@@ -345,59 +433,27 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.list.SetSize(max(30, msg.Width-4), max(8, msg.Height-14))
-		return m, nil
-	case tuiDashboardLoadedMsg:
-		m.loading = false
-		m.dockerItems = msg.docker
-		m.contextItems = msg.contexts
-		m.historyItems = msg.history
-		m.dockerErr = msg.dockerErr
-		m.contextErr = msg.contextErr
-		m.historyErr = msg.historyErr
-		m.lastLoadedAt = msg.loadedAt
-		return m, m.applyView()
-	case tuiNamespacesLoadedMsg:
-		m.loading = false
-		m.namespaceItems = msg.namespaces
-		m.namespaceErr = msg.err
-		m.selectedContext = msg.context
-		return m, m.applyView()
-	case tuiPodsLoadedMsg:
-		m.loading = false
-		m.podItems = msg.pods
-		m.podsErr = msg.err
-		m.podsLimited = msg.limited
-		m.selectedContext = msg.context
-		m.selectedNamespace = msg.namespace
-		m.podQuery = msg.query
-		return m, m.applyView()
-	case tea.KeyMsg:
+	if msg, ok := msg.(tea.KeyMsg); ok {
 		if !m.list.SettingFilter() {
 			switch msg.String() {
 			case "ctrl+c", "q":
 				return m, tea.Quit
-			case "esc", "backspace", "h", "b":
+			case "esc":
+				// First esc clears an applied filter, the next one goes back —
+				// matching the list's own advertised behavior.
+				if m.list.FilterState() == list.FilterApplied {
+					m.list.ResetFilter()
+					return m, nil
+				}
 				return m, m.goBack()
-			case "tab", "right", "l":
+			case "backspace", "b":
+				return m, m.goBack()
+			case "tab":
 				return m, m.cycleSource(1)
-			case "shift+tab", "left":
+			case "shift+tab":
 				return m, m.cycleSource(-1)
-			case "home":
+			case "home", "0":
 				m.view = tuiViewDashboard
-				return m, m.applyView()
-			case "d":
-				m.view = tuiViewDocker
-				return m, m.applyView()
-			case "k":
-				m.view = tuiViewKubeContexts
-				return m, m.applyView()
-			case "y":
-				m.view = tuiViewHistory
 				return m, m.applyView()
 			case "enter":
 				cmd, quit := m.activateSelected(tuiLaunchCurrent)
@@ -484,7 +540,11 @@ func (m tuiModel) View() string {
 	}
 	b.WriteString(m.optionsView(contentWidth))
 	b.WriteString("\n")
-	b.WriteString(tuiHintStyle.Render("/ filter · enter open/drill down · ←/→ or tab cycle sources · d/k/y jump · b back · s pod search · q quit"))
+	hint := "/ filter · enter open · tab cycle · 1/2/3 jump · b back · f/c/v/o/p/i options · r reload · q quit"
+	if m.view == tuiViewKubePods {
+		hint = "/ filter · enter open · s search namespace · b back · f/c/v/o/p/i options · r reload · q quit"
+	}
+	b.WriteString(tuiHintStyle.Render(hint))
 	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
 }
 
@@ -517,7 +577,7 @@ func (m tuiModel) tabsView() string {
 			parts[i] = tuiTabStyle.Render(label)
 		}
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, parts...) + "  " + tuiHintStyle.Render("←/→ or tab cycle · d/k/y jump")
+	return lipgloss.JoinHorizontal(lipgloss.Top, parts...) + "  " + tuiHintStyle.Render("tab cycle · 1/2/3 jump")
 }
 
 type tuiSourceTab struct {
@@ -529,9 +589,9 @@ type tuiSourceTab struct {
 
 func (m tuiModel) sourceTabs() []tuiSourceTab {
 	return []tuiSourceTab{
-		{key: "d", view: tuiViewDocker, label: "Docker", count: len(m.dockerItems)},
-		{key: "k", view: tuiViewKubeContexts, label: "Kubernetes", count: len(m.contextItems)},
-		{key: "y", view: tuiViewHistory, label: "History", count: len(m.historyItems)},
+		{key: "1", view: tuiViewDocker, label: "Docker", count: len(m.dockerItems)},
+		{key: "2", view: tuiViewKubeContexts, label: "Kubernetes", count: len(m.contextItems)},
+		{key: "3", view: tuiViewHistory, label: "History", count: len(m.historyItems)},
 	}
 }
 
@@ -670,9 +730,9 @@ func (m *tuiModel) applyView() tea.Cmd {
 
 func (m tuiModel) sourceItems() []tuiItem {
 	items := []tuiItem{
-		{kind: tuiItemSource, source: tuiSourceDocker, view: tuiViewDocker, title: fmt.Sprintf("Docker containers  %d", len(m.dockerItems)), desc: "Local running containers and active debux sidecars · press d", active: m.rootView() == tuiViewDocker},
-		{kind: tuiItemSource, source: tuiSourceK8s, view: tuiViewKubeContexts, title: fmt.Sprintf("Kubernetes  %d contexts", len(m.contextItems)), desc: "Contexts → namespaces → pods, loaded lazily for large clusters · press k", active: m.rootView() == tuiViewKubeContexts},
-		{kind: tuiItemSource, source: tuiSourceHistory, view: tuiViewHistory, title: fmt.Sprintf("Recent sessions  %d", len(m.historyItems)), desc: "Reopen previously launched debug sessions · press y", active: m.rootView() == tuiViewHistory},
+		{kind: tuiItemSource, source: tuiSourceDocker, view: tuiViewDocker, title: fmt.Sprintf("Docker containers  %d", len(m.dockerItems)), desc: "Local running containers and active debux sidecars · press 1", active: m.rootView() == tuiViewDocker},
+		{kind: tuiItemSource, source: tuiSourceK8s, view: tuiViewKubeContexts, title: fmt.Sprintf("Kubernetes  %d contexts", len(m.contextItems)), desc: "Contexts → namespaces → pods, loaded lazily for large clusters · press 2", active: m.rootView() == tuiViewKubeContexts},
+		{kind: tuiItemSource, source: tuiSourceHistory, view: tuiViewHistory, title: fmt.Sprintf("Recent sessions  %d", len(m.historyItems)), desc: "Reopen previously launched debug sessions · press 3", active: m.rootView() == tuiViewHistory},
 	}
 	if shortcut, ok := m.currentNamespaceShortcut(); ok {
 		shortcut.title = "Kubernetes current namespace  " + shortcut.title
@@ -717,22 +777,36 @@ func (m *tuiModel) setItems(title string, items []tuiItem) tea.Cmd {
 	for i, item := range items {
 		listItems[i] = item
 	}
-	return m.list.SetItems(listItems)
+	cmd := m.list.SetItems(listItems)
+	if m.view != m.lastAppliedView {
+		// A view switch starts fresh: the previous view's cursor position
+		// could exceed the new list (enter would silently no-op), a persisted
+		// filter would invisibly hide entries, and a stale notice would keep
+		// rendering.
+		m.list.ResetSelected()
+		m.list.ResetFilter()
+		m.notice = ""
+		m.lastAppliedView = m.view
+	} else if m.list.Index() >= len(listItems) {
+		m.list.ResetSelected()
+	}
+	return cmd
 }
 
 func (m *tuiModel) reload() tea.Cmd {
 	m.notice = ""
 	m.loading = true
+	m.loadGen++
 	switch m.view {
 	case tuiViewKubeNamespaces:
 		m.loadingLabel = "Loading namespaces…"
-		return loadTUINamespaces(m.kubeconfig, m.selectedContext, m.selectedNamespace)
+		return loadTUINamespaces(m.kubeconfig, m.selectedContext, m.selectedNamespace, m.loadGen)
 	case tuiViewKubePods:
 		m.loadingLabel = "Loading running pods…"
-		return loadTUIPods(m.kubeconfig, m.selectedContext, m.selectedNamespace, m.podQuery)
+		return loadTUIPods(m.kubeconfig, m.selectedContext, m.selectedNamespace, m.podQuery, m.loadGen)
 	default:
 		m.loadingLabel = "Loading Docker, kube contexts, and history…"
-		return loadTUIDashboard(m.kubeconfig, m.selectedContext)
+		return loadTUIDashboard(m.kubeconfig, m.selectedContext, m.loadGen)
 	}
 }
 
@@ -763,8 +837,8 @@ func (m *tuiModel) activateSelected(mode tuiLaunchMode) (tea.Cmd, bool) {
 			m.notice = "Select a concrete Docker container, pod, or history entry before opening externally."
 			return nil, false
 		}
-		if strings.TrimSpace(os.Getenv("DEBUX_TERMINAL")) == "" {
-			m.notice = "External launch is disabled by default. Use enter, or set DEBUX_TERMINAL explicitly."
+		if configuredTerminal() == "" {
+			m.notice = "External launch is disabled by default. Use enter, or set DEBUX_TERMINAL (or `terminal:` in the config file)."
 			return nil, false
 		}
 	}
@@ -792,7 +866,8 @@ func (m *tuiModel) activateSelected(mode tuiLaunchMode) (tea.Cmd, bool) {
 		m.view = tuiViewKubeNamespaces
 		m.loading = true
 		m.loadingLabel = "Loading namespaces for " + emptyAs(selected.context, "current context") + "…"
-		return loadTUINamespaces(m.kubeconfig, selected.context, ""), false
+		m.loadGen++
+		return loadTUINamespaces(m.kubeconfig, selected.context, "", m.loadGen), false
 	case tuiItemKubeNamespace:
 		if selected.context != "" || m.selectedContext == "" {
 			m.selectedContext = selected.context
@@ -802,13 +877,14 @@ func (m *tuiModel) activateSelected(mode tuiLaunchMode) (tea.Cmd, bool) {
 		m.view = tuiViewKubePods
 		m.loading = true
 		m.loadingLabel = "Loading running pods in " + selected.namespace + "…"
-		return loadTUIPods(m.kubeconfig, m.selectedContext, selected.namespace, ""), false
+		m.loadGen++
+		return loadTUIPods(m.kubeconfig, m.selectedContext, selected.namespace, "", m.loadGen), false
 	default:
 		return nil, false
 	}
 }
 
-func loadTUIDashboard(kubeconfig, preferredContext string) tea.Cmd {
+func loadTUIDashboard(kubeconfig, preferredContext string, gen int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
@@ -855,11 +931,11 @@ func loadTUIDashboard(kubeconfig, preferredContext string) tea.Cmd {
 			}
 		}
 
-		return tuiDashboardLoadedMsg{docker: dockerItems, contexts: contextItems, history: historyItems, dockerErr: dockerErr, contextErr: contextErr, historyErr: historyErr, loadedAt: time.Now()}
+		return tuiDashboardLoadedMsg{gen: gen, docker: dockerItems, contexts: contextItems, history: historyItems, dockerErr: dockerErr, contextErr: contextErr, historyErr: historyErr, loadedAt: time.Now()}
 	}
 }
 
-func loadTUINamespaces(kubeconfig, kubeContext, preferredNamespace string) tea.Cmd {
+func loadTUINamespaces(kubeconfig, kubeContext, preferredNamespace string, gen int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -871,6 +947,7 @@ func loadTUINamespaces(kubeconfig, kubeContext, preferredNamespace string) tea.C
 		namespaces, err := runtime.KubernetesNamespaces(ctx, kubeconfig, kubeContext)
 		if err != nil {
 			return tuiNamespacesLoadedMsg{
+				gen:        gen,
 				context:    kubeContext,
 				namespaces: []tuiItem{tuiKubeNamespaceItem(kubeContext, runtime.NamespaceInfo{Name: defaultNamespace, Status: "default"}, defaultNamespace)},
 				err:        err,
@@ -880,24 +957,24 @@ func loadTUINamespaces(kubeconfig, kubeContext, preferredNamespace string) tea.C
 		for _, ns := range namespaces {
 			items = append(items, tuiKubeNamespaceItem(kubeContext, ns, defaultNamespace))
 		}
-		return tuiNamespacesLoadedMsg{context: kubeContext, namespaces: items}
+		return tuiNamespacesLoadedMsg{gen: gen, context: kubeContext, namespaces: items}
 	}
 }
 
-func loadTUIPods(kubeconfig, kubeContext, namespace, query string) tea.Cmd {
+func loadTUIPods(kubeconfig, kubeContext, namespace, query string, gen int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
 		pods, limited, err := runtime.KubernetesBrowsePods(ctx, kubeconfig, kubeContext, namespace, query, 300)
 		if err != nil {
-			return tuiPodsLoadedMsg{context: kubeContext, namespace: namespace, query: query, err: err}
+			return tuiPodsLoadedMsg{gen: gen, context: kubeContext, namespace: namespace, query: query, err: err}
 		}
 		items := make([]tuiItem, 0, len(pods))
 		for _, pod := range pods {
 			items = append(items, tuiKubePodItem(pod, kubeContext))
 		}
-		return tuiPodsLoadedMsg{context: kubeContext, namespace: namespace, query: query, pods: items, limited: limited}
+		return tuiPodsLoadedMsg{gen: gen, context: kubeContext, namespace: namespace, query: query, pods: items, limited: limited}
 	}
 }
 
@@ -996,11 +1073,11 @@ func (d tuiItemDelegate) Render(w io.Writer, m list.Model, index int, item list.
 	descStyle := lipgloss.NewStyle().Foreground(tuiMuted)
 	rowStyle := lipgloss.NewStyle().Padding(0, 1)
 	if selected && m.FilterState() != list.Filtering {
-		titleStyle = titleStyle.Foreground(lipgloss.Color("#FFFFFF"))
-		descStyle = descStyle.Foreground(lipgloss.Color("#C4B5FD"))
-		rowStyle = rowStyle.Border(lipgloss.NormalBorder(), false, false, false, true).BorderForeground(tuiAccent).Background(lipgloss.Color("#1E1B2E"))
+		titleStyle = titleStyle.Foreground(tuiSelectedText)
+		descStyle = descStyle.Foreground(tuiSelectedDesc)
+		rowStyle = rowStyle.Border(lipgloss.NormalBorder(), false, false, false, true).BorderForeground(tuiAccent).Background(tuiSelectedBg)
 	} else if i.active {
-		titleStyle = titleStyle.Foreground(lipgloss.Color("#FDE68A"))
+		titleStyle = titleStyle.Foreground(tuiActiveTitle)
 	}
 
 	title := icon + " " + i.title
@@ -1059,6 +1136,15 @@ func nextPullPolicy(current string) string {
 	}
 }
 
+// configuredTerminal returns the external terminal command: DEBUX_TERMINAL
+// wins, then the config file's `terminal:` value.
+func configuredTerminal() string {
+	if t := strings.TrimSpace(os.Getenv("DEBUX_TERMINAL")); t != "" {
+		return t
+	}
+	return strings.TrimSpace(config.Get().Terminal)
+}
+
 func openInTerminal(ctx context.Context, cmd *cobra.Command, launch tuiLaunch) error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -1066,9 +1152,9 @@ func openInTerminal(ctx context.Context, cmd *cobra.Command, launch tuiLaunch) e
 	}
 	commandLine := terminalShellCommand(append([]string{exe}, buildExecArgs(cmd, launch)...))
 
-	terminal := strings.TrimSpace(os.Getenv("DEBUX_TERMINAL"))
+	terminal := configuredTerminal()
 	if terminal == "" {
-		return fmt.Errorf("external launch is disabled by default; press enter to open in the current terminal, or set DEBUX_TERMINAL explicitly")
+		return fmt.Errorf("external launch is disabled by default; press enter to open in the current terminal, or set DEBUX_TERMINAL (or `terminal:` in the config file)")
 	}
 	if err := startConfiguredTerminal(ctx, terminal, commandLine); err != nil {
 		return err

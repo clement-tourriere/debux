@@ -1,11 +1,8 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/clement-tourriere/debux/internal/selfupdate"
 	"github.com/clement-tourriere/debux/internal/version"
@@ -32,7 +29,7 @@ with appropriate permissions or use the one-line installer with --bin-dir.`,
   debux update --install-path ~/.local/bin/debux`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			ctx, cancel := signalContext()
 			defer cancel()
 
 			if installPath == "" {

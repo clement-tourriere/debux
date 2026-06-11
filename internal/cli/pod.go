@@ -1,10 +1,7 @@
 package cli
 
 import (
-	"context"
-	"os/signal"
-	"syscall"
-
+	"github.com/clement-tourriere/debux/internal/config"
 	"github.com/clement-tourriere/debux/internal/runtime"
 	"github.com/spf13/cobra"
 )
@@ -46,18 +43,17 @@ func runPod(cmd *cobra.Command, args []string) error {
 	keep, _ := cmd.Flags().GetBool("keep")
 	hostNetwork, _ := cmd.Flags().GetBool("host-network")
 
-	pullPolicy, err := resolvePullPolicy(flagPullPolicy)
+	pullPolicy, err := resolvePullPolicy(configuredPullPolicy(flagPullPolicy))
 	if err != nil {
 		return err
 	}
 
-	image := flagImage
-	if image == "" {
-		image = runtime.DefaultImage
+	if err := runtime.ValidateEnvVars(flagEnv); err != nil {
+		return err
 	}
 
 	opts := runtime.PodOpts{
-		Image:       image,
+		Image:       resolveImage(flagImage),
 		Namespace:   namespace,
 		Kubeconfig:  kubeconfig,
 		KubeContext: flagKubeContext,
@@ -67,9 +63,12 @@ func runPod(cmd *cobra.Command, args []string) error {
 		User:        flagUser,
 		PullPolicy:  pullPolicy,
 		Profile:     profile,
+		Env:         flagEnv,
+		CapAdd:      flagCapAdd,
+		Tools:       config.ResolveTools(flagTools),
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := signalContext()
 	defer cancel()
 
 	return runtime.KubernetesPod(ctx, opts)

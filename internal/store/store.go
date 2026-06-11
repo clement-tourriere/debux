@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/clement-tourriere/debux/internal/dockerclient"
 	"github.com/moby/moby/client"
 )
 
@@ -81,7 +82,7 @@ func ensureVolume(ctx context.Context, cli *client.Client, name, kind string) er
 
 // Clean removes all persistent volumes managed by debux.
 func Clean(ctx context.Context) error {
-	cli, err := client.New(client.FromEnv)
+	cli, err := dockerclient.New()
 	if err != nil {
 		return fmt.Errorf("connecting to Docker: %w", err)
 	}
@@ -98,18 +99,26 @@ func Clean(ctx context.Context) error {
 		return nil
 	}
 
+	var kept []string
 	for _, v := range list.Items {
 		if _, err := cli.VolumeRemove(ctx, v.Name, client.VolumeRemoveOptions{Force: true}); err != nil {
-			return fmt.Errorf("removing volume %s: %w", v.Name, err)
+			// Keep going: a volume mounted by a live debug session must not
+			// abort cleanup of the others.
+			fmt.Printf("Warning: could not remove %s: %v\n", v.Name, err)
+			kept = append(kept, v.Name)
+			continue
 		}
 		fmt.Printf("Removed %s\n", v.Name)
+	}
+	if len(kept) > 0 {
+		fmt.Printf("Kept %d volume(s) still in use (%s); close their debug sessions and rerun.\n", len(kept), strings.Join(kept, ", "))
 	}
 	return nil
 }
 
 // Info prints information about the persistent Nix volumes.
 func Info(ctx context.Context) error {
-	cli, err := client.New(client.FromEnv)
+	cli, err := dockerclient.New()
 	if err != nil {
 		return fmt.Errorf("connecting to Docker: %w", err)
 	}

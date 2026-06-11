@@ -97,6 +97,15 @@ type Target struct {
 	Context   string // k8s context (empty means current kube-context)
 	Namespace string // k8s namespace (empty means current kube-context namespace)
 	Container string // k8s container within pod (optional)
+
+	// Docker Compose service targeting (compose:// scheme). The runtime
+	// resolves these to a concrete container via compose labels.
+	ComposeProject string
+	ComposeService string
+
+	// PreferPodman selects the podman socket when DOCKER_HOST is not set
+	// (podman:// scheme).
+	PreferPodman bool
 }
 
 // DebugOpts are options for debugging a running container.
@@ -104,7 +113,6 @@ type DebugOpts struct {
 	Image           string
 	Privileged      bool
 	User            string
-	AutoRemove      bool
 	Kubeconfig      string
 	KubeContext     string
 	ShareVolumes    bool     // share target container's volumes (default: true)
@@ -114,6 +122,9 @@ type DebugOpts struct {
 	Copy            bool     // for Kubernetes: debug a copied pod instead of using ephemeral containers
 	Profile         string   // security profile (general, baseline, restricted, netadmin, sysadmin)
 	Command         []string // optional command to run instead of opening an interactive shell
+	Env             []string // extra KEY=VALUE environment for the debug container
+	CapAdd          []string // extra Linux capabilities for the debug container
+	Tools           []string // nixpkgs packages auto-installed at session start (dctl)
 }
 
 // PodOpts are options for creating a standalone debug pod.
@@ -127,7 +138,10 @@ type PodOpts struct {
 	Privileged  bool
 	User        string
 	PullPolicy  string
-	Profile     string // security profile (general, baseline, restricted, netadmin, sysadmin)
+	Profile     string   // security profile (general, baseline, restricted, netadmin, sysadmin)
+	Env         []string // extra KEY=VALUE environment for the debug container
+	CapAdd      []string // extra Linux capabilities for the debug container
+	Tools       []string // nixpkgs packages auto-installed at session start (dctl)
 }
 
 // ImageOpts are options for debugging a Docker image directly.
@@ -136,6 +150,51 @@ type ImageOpts struct {
 	Privileged bool
 	User       string
 	AutoRemove bool
+	Command    []string // optional one-shot command instead of an interactive shell
+}
+
+// debugExtraEnv renders user-provided env and tool requests as container
+// environment entries shared by both runtimes.
+func debugExtraEnv(env, tools []string) []string {
+	out := append([]string(nil), env...)
+	if len(tools) > 0 {
+		out = append(out, "DEBUX_TOOLS="+strings.Join(tools, " "))
+	}
+	return out
+}
+
+// normalizeCapabilities upper-cases capability names and strips an optional
+// CAP_ prefix so --cap-add net_admin, NET_ADMIN, and CAP_NET_ADMIN all work.
+func normalizeCapabilities(caps []string) []string {
+	out := make([]string, 0, len(caps))
+	for _, c := range caps {
+		c = strings.ToUpper(strings.TrimSpace(c))
+		c = strings.TrimPrefix(c, "CAP_")
+		if c != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// ValidateEnvVars checks KEY=VALUE syntax for --env flags.
+func ValidateEnvVars(env []string) error {
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || key == "" {
+			return fmt.Errorf("invalid --env %q: expected KEY=VALUE", entry)
+		}
+		for i, r := range key {
+			validStart := r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
+			if i == 0 && !validStart {
+				return fmt.Errorf("invalid --env %q: key must start with a letter or underscore", entry)
+			}
+			if !validStart && (r < '0' || r > '9') {
+				return fmt.Errorf("invalid --env %q: key may only contain letters, digits, and underscores", entry)
+			}
+		}
+	}
+	return nil
 }
 
 // ParseTarget parses a target string into a Target struct.
@@ -167,6 +226,12 @@ func ParseTarget(raw string) (*Target, error) {
 		case "docker":
 			return &Target{Runtime: "docker", Name: rest}, nil
 
+		case "podman":
+			return &Target{Runtime: "docker", Name: rest, PreferPodman: true}, nil
+
+		case "compose":
+			return parseComposeTarget(rest)
+
 		case "containerd", "nerdctl":
 			return &Target{Runtime: "containerd", Name: rest}, nil
 
@@ -180,6 +245,27 @@ func ParseTarget(raw string) (*Target, error) {
 
 	// No schema — default to Docker
 	return &Target{Runtime: "docker", Name: raw}, nil
+}
+
+// parseComposeTarget handles compose://<service> and
+// compose://<project>/<service>; the docker runtime resolves the service to a
+// concrete container via com.docker.compose.* labels.
+func parseComposeTarget(rest string) (*Target, error) {
+	if rest == "" {
+		return nil, fmt.Errorf("compose target requires a service: compose://<service> or compose://<project>/<service>")
+	}
+	first, second, hasProject := strings.Cut(rest, "/")
+	t := &Target{Runtime: "docker"}
+	if hasProject {
+		if first == "" || second == "" || strings.Contains(second, "/") {
+			return nil, fmt.Errorf("invalid compose target %q: expected compose://<project>/<service>", rest)
+		}
+		t.ComposeProject = first
+		t.ComposeService = second
+	} else {
+		t.ComposeService = first
+	}
+	return t, nil
 }
 
 func parseK8sTarget(rest string) (*Target, error) {

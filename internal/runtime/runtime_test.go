@@ -90,10 +90,10 @@ func TestFindRunningDebuxContainerForTargetHonorsProfile(t *testing.T) {
 		},
 	}
 
-	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileRestricted, ""); got != "debux-restricted" {
+	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileRestricted, "", ""); got != "debux-restricted" {
 		t.Fatalf("restricted container = %q", got)
 	}
-	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileGeneral, ""); got != "debux-general" {
+	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileGeneral, "", ""); got != "debux-general" {
 		t.Fatalf("general container = %q", got)
 	}
 }
@@ -130,10 +130,10 @@ func TestFindRunningDebuxContainerForTargetHonorsUser(t *testing.T) {
 		}},
 	}
 
-	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileGeneral, "1000:1000"); got != "debux-user" {
+	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileGeneral, "1000:1000", ""); got != "debux-user" {
 		t.Fatalf("user-specific container = %q", got)
 	}
-	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileGeneral, ""); got != "debux-root" {
+	if got := findRunningDebuxContainerForTarget(pod, "app", ProfileGeneral, "", ""); got != "debux-root" {
 		t.Fatalf("default-user container = %q", got)
 	}
 }

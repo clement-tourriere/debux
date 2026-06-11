@@ -6,7 +6,8 @@ import (
 )
 
 // ContainerdExec debugs a running containerd container.
-// This is deferred to v0.2 — containerd runtime support is planned but not yet implemented.
+// Native containerd support is tracked upstream but not implemented; nerdctl
+// users can often reach the same containers through the Docker-compatible API.
 func ContainerdExec(ctx context.Context, target *Target, opts DebugOpts) error {
-	return fmt.Errorf("containerd runtime is not yet supported (planned for v0.2)\n\nFor now, use Docker or Kubernetes:\n  debux exec docker://%s\n  debux exec k8s://%s", target.Name, target.Name)
+	return fmt.Errorf("the containerd runtime is not supported yet (https://github.com/clement-tourriere/debux/issues)\n\nAlternatives:\n  debux exec docker://%s   # if the container is also visible to a Docker-compatible daemon\n  debux exec k8s://%s      # if it runs inside a Kubernetes pod", target.Name, target.Name)
 }

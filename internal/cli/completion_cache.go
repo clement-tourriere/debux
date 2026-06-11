@@ -57,6 +57,7 @@ func newCompletionCacheCmd() *cobra.Command {
 			}
 			defer releaseCompletionPodCacheRefreshLock(kubeconfig, kubeContext, namespace)
 
+			pruneCompletionPodCaches()
 			pods, limited, err := runtime.KubernetesBrowsePods(ctx, kubeconfig, kubeContext, namespace, "", completionPodCacheMaxResults)
 			if err != nil {
 				return err
@@ -83,12 +84,18 @@ func readCompletionPodCache(kubeconfig, kubeContext, namespace string) (completi
 	}
 	var cache completionPodCache
 	if err := json.Unmarshal(data, &cache); err != nil {
+		_ = os.Remove(path)
 		return completionPodCache{}, false
 	}
 	if cache.Version != completionPodCacheVersion || cache.SavedAt.IsZero() {
+		_ = os.Remove(path)
 		return completionPodCache{}, false
 	}
-	if time.Since(cache.SavedAt) > completionPodCacheStaleFor {
+	// A future SavedAt (clock step-back between write and read) would
+	// otherwise count as fresh forever and never refresh.
+	age := time.Since(cache.SavedAt)
+	if age > completionPodCacheStaleFor || age < -time.Minute {
+		_ = os.Remove(path)
 		return completionPodCache{}, false
 	}
 	return cache, true
@@ -112,7 +119,23 @@ func writeCompletionPodCache(kubeconfig, kubeContext, namespace string, pods []r
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	// Write atomically: shell completion runs many debux processes in
+	// parallel, and an in-place truncate-and-write can leave torn JSON.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".debux-cache-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func startCompletionPodCacheRefresh(kubeconfig, kubeContext, namespace string) bool {
@@ -165,7 +188,14 @@ func acquireCompletionRefreshLock(lockPath string) bool {
 		return true
 	}
 	if info, statErr := os.Stat(lockPath); statErr == nil && time.Since(info.ModTime()) > completionPodCacheRefreshLockStale {
-		_ = os.Remove(lockPath)
+		// Steal the stale lock via rename so exactly one contender wins;
+		// a plain remove+recreate lets a second process delete the fresh
+		// lock the first one just created.
+		stalePath := fmt.Sprintf("%s.stale.%d", lockPath, os.Getpid())
+		if os.Rename(lockPath, stalePath) != nil {
+			return false
+		}
+		_ = os.Remove(stalePath)
 		file, err = os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err == nil {
 			_, _ = fmt.Fprintf(file, "%d\n", os.Getpid())
@@ -184,7 +214,7 @@ func releaseCompletionPodCacheRefreshLock(kubeconfig, kubeContext, namespace str
 }
 
 func completionPodCachePath(kubeconfig, kubeContext, namespace string) (string, error) {
-	key := completionCacheKey("k8s-pods", kubeconfig, kubeContext, namespace)
+	key := completionCacheKey("k8s-pods", kubeconfig, completionCacheKubeContext(kubeconfig, kubeContext), namespace)
 	dir, err := completionCacheDir()
 	if err != nil {
 		return "", err
@@ -193,7 +223,7 @@ func completionPodCachePath(kubeconfig, kubeContext, namespace string) (string, 
 }
 
 func completionPodCacheRefreshLockPath(kubeconfig, kubeContext, namespace string) (string, error) {
-	key := completionCacheKey("k8s-pods", kubeconfig, kubeContext, namespace)
+	key := completionCacheKey("k8s-pods", kubeconfig, completionCacheKubeContext(kubeconfig, kubeContext), namespace)
 	dir, err := completionCacheDir()
 	if err != nil {
 		return "", err
@@ -201,12 +231,55 @@ func completionPodCacheRefreshLockPath(kubeconfig, kubeContext, namespace string
 	return filepath.Join(dir, key+".lock"), nil
 }
 
+// completionCacheKubeContext resolves the effective kube-context for cache
+// keying. Keying on the raw --context flag (usually empty) would make two
+// clusters share one cache entry: after `kubectl config use-context`, the
+// previous cluster's pods would be served as fresh completions.
+func completionCacheKubeContext(kubeconfig, kubeContext string) string {
+	if kubeContext != "" {
+		return kubeContext
+	}
+	current, err := runtime.KubernetesCurrentContext(kubeconfig)
+	if err != nil || current == "" {
+		return "default"
+	}
+	return current
+}
+
 func completionCacheDir() (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil || base == "" {
-		base = os.TempDir()
+		// Falling back to a shared, predictable /tmp path invites symlink and
+		// cache-poisoning games on multi-user hosts; skip caching instead.
+		return "", fmt.Errorf("no user cache directory available")
 	}
 	return filepath.Join(base, "debux", "completion"), nil
+}
+
+// pruneCompletionPodCaches removes cache and lock files past the stale window
+// so abandoned (kubeconfig, context, namespace) combinations don't accumulate
+// forever. Called from the background refresh process.
+func pruneCompletionPodCaches() {
+	dir, err := completionCacheDir()
+	if err != nil {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if time.Since(info.ModTime()) > completionPodCacheStaleFor {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
 }
 
 func completionCacheKey(parts ...string) string {

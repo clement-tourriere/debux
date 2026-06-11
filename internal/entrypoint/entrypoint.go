@@ -109,13 +109,16 @@ command_not_found_handler() {
       done < "${DEBUX_TARGET_ENVIRON:-/proc/1/environ}" 2>/dev/null
     fi
     [[ -z "$target_path" ]] && target_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    # Split on colons with zsh native splitting; a here-string read loop leaves
+    # a trailing newline on the last component, breaking lookups in it.
     local search_dir
-    while IFS= read -r -d ':' search_dir || [[ -n "$search_dir" ]]; do
+    for search_dir in "${(@s.:.)target_path}"; do
+      [[ -n "$search_dir" ]] || continue
       if [[ -x "${DEBUX_TARGET_ROOT}${search_dir}/${cmd}" || -L "${DEBUX_TARGET_ROOT}${search_dir}/${cmd}" ]]; then
         target_bin="${search_dir}/${cmd}"
         break
       fi
-    done <<< "$target_path"
+    done
 
     if [[ -n "$target_bin" ]]; then
       # Run via chroot with target's full original environment (same as docker exec)
@@ -192,7 +195,7 @@ if [[ -o interactive && -z "${DEBUX_BANNER_SHOWN:-}" ]]; then
 fi
 
 # History — stored on persistent volume so it survives container restarts
-if [[ -d /nix/var/debux-data ]]; then
+if [[ -d /nix/var/debux-data && -w /nix/var/debux-data ]]; then
   HISTFILE=/nix/var/debux-data/.zsh_history
 else
   HISTFILE=/tmp/debux-data/.zsh_history
@@ -222,6 +225,20 @@ alias target='cd $DEBUX_TARGET_ROOT'
 
 # Wrap dctl to rehash after install/remove so new binaries are found immediately
 dctl() { command dctl "$@"; local ret=$?; rehash; return $ret; }
+
+# Auto-install requested tool sets (--tools / config file) once per container
+if [[ -n "${DEBUX_TOOLS:-}" ]]; then
+  _debux_tools_marker="${DEBUX_TOOLS//[^A-Za-z0-9._-]/-}"
+  _debux_tools_marker="${HOME:-/tmp}/.debux-tools-${_debux_tools_marker}"
+  if [[ ! -e "$_debux_tools_marker" ]]; then
+    echo "Installing requested tools: ${DEBUX_TOOLS}"
+    for _debux_tool in ${(s. .)DEBUX_TOOLS}; do
+      dctl install "$_debux_tool" || echo "  install failed: $_debux_tool (try: dctl search $_debux_tool)"
+    done
+    : > "$_debux_tools_marker" 2>/dev/null || true
+  fi
+  unset _debux_tools_marker _debux_tool
+fi
 
 # Import target container environment variables
 _debux_import_target_env() {
@@ -264,9 +281,10 @@ _debux_import_target_env() {
       # Translate each PATH component and append to current PATH
       local -a translated=()
       local component
-      while IFS= read -r -d ':' component || [[ -n "$component" ]]; do
+      for component in "${(@s.:.)val}"; do
+        [[ -n "$component" ]] || continue
         translated+=("${DEBUX_TARGET_ROOT}${component}")
-      done <<< "$val"
+      done
       # Save original target PATH for wrapper generation
       _debux_target_path="$val"
       export PATH="${PATH}:${(j.:.)translated}"
@@ -275,9 +293,10 @@ _debux_import_target_env() {
       # Colon-separated path vars: translate each component
       local -a translated=()
       local component
-      while IFS= read -r -d ':' component || [[ -n "$component" ]]; do
+      for component in "${(@s.:.)val}"; do
+        [[ -n "$component" ]] || continue
         translated+=("${DEBUX_TARGET_ROOT}${component}")
-      done <<< "$val"
+      done
       export "$key"="${(j.:.)translated}"
 
     elif (( ${path_single_vars[(Ie)$key]} )); then
@@ -332,16 +351,17 @@ HELPER_EOF
   # Collect sidecar's own binaries from the pre-modification PATH
   local -A sidecar_cmds
   local p
-  while IFS= read -r -d ':' p || [[ -n "$p" ]]; do
+  for p in "${(@s.:.)_debux_sidecar_path}"; do
     [[ -d "$p" ]] || continue
     for f in "$p"/*(-.:t N); do
       sidecar_cmds[$f]=1
     done
-  done <<< "$_debux_sidecar_path"
+  done
 
   # Walk each target PATH dir and create wrappers for missing commands
   local dir
-  while IFS= read -r -d ':' dir || [[ -n "$dir" ]]; do
+  for dir in "${(@s.:.)_debux_target_path}"; do
+    [[ -n "$dir" ]] || continue
     local target_dir="${DEBUX_TARGET_ROOT}${dir}"
     [[ -d "$target_dir" ]] || continue
     for bin_path in "$target_dir"/*(N^/); do
@@ -353,7 +373,7 @@ HELPER_EOF
       printf '#!/bin/sh\nexec /tmp/debux-target-bin/.chroot-exec "%s" "$@"\n' "${dir}/${bin_name}" > "$wrapper_dir/$bin_name"
       chmod +x "$wrapper_dir/$bin_name"
     done
-  done <<< "$_debux_target_path"
+  done
 
   # Common aliases: create symlink if canonical exists but alias doesn't
   local -A cmd_aliases=(
@@ -388,12 +408,17 @@ bindkey -e
 ZSHRC_EOF
 
 # Show shared volumes (read /proc/self/mounts directly — no external 'mount' command needed)
+# Match the mountpoint/type fields, not the whole line: a device like /dev/sda1
+# in field 1 must not hide a data volume mounted at /data.
 echo "Volumes from target:"
-awk '!/\/(nix|proc|sys|dev)|overlay/{print "  " $2 " (" $3 ")"}' /proc/self/mounts 2>/dev/null || true
+awk '$2 !~ /^\/(nix|proc|sys|dev|tmp)(\/|$)/ && $3 != "overlay" {print "  " $2 " (" $3 ")"}' /proc/self/mounts 2>/dev/null || true
 echo ""
 
 # Launch shell (or daemon mode for k8s container reuse)
 if [ "${DEBUX_DAEMON:-}" = "1" ]; then
+  # Record the daemon PID (as seen in the shared PID namespace) so debux kill
+  # can signal the daemon instead of the target's PID 1.
+  echo "$$" > /tmp/.debux-daemon.pid 2>/dev/null || true
   trap 'exit 0' TERM INT; while :; do sleep 86400 & wait; done
 fi
 exec zsh
@@ -510,7 +535,7 @@ if [[ -o interactive && -z "${DEBUX_BANNER_SHOWN:-}" ]]; then
 fi
 
 # History — stored on persistent volume so it survives container restarts
-if [[ -d /nix/var/debux-data ]]; then
+if [[ -d /nix/var/debux-data && -w /nix/var/debux-data ]]; then
   HISTFILE=/nix/var/debux-data/.zsh_history
 else
   HISTFILE=/tmp/debux-data/.zsh_history
@@ -540,6 +565,20 @@ alias target='cd $DEBUX_TARGET_ROOT'
 # Wrap dctl to rehash after install/remove so new binaries are found immediately
 dctl() { command dctl "$@"; local ret=$?; rehash; return $ret; }
 
+# Auto-install requested tool sets (--tools / config file) once per container
+if [[ -n "${DEBUX_TOOLS:-}" ]]; then
+  _debux_tools_marker="${DEBUX_TOOLS//[^A-Za-z0-9._-]/-}"
+  _debux_tools_marker="${HOME:-/tmp}/.debux-tools-${_debux_tools_marker}"
+  if [[ ! -e "$_debux_tools_marker" ]]; then
+    echo "Installing requested tools: ${DEBUX_TOOLS}"
+    for _debux_tool in ${(s. .)DEBUX_TOOLS}; do
+      dctl install "$_debux_tool" || echo "  install failed: $_debux_tool (try: dctl search $_debux_tool)"
+    done
+    : > "$_debux_tools_marker" 2>/dev/null || true
+  fi
+  unset _debux_tools_marker _debux_tool
+fi
+
 # Key bindings
 bindkey -e
 ZSHRC_EOF
@@ -547,6 +586,10 @@ ZSHRC_EOF
 echo "Image filesystem available at /target"
 echo ""
 
-# Launch shell
+# Launch shell (or run a one-shot command passed by the CLI)
+if [ -n "${DEBUX_EXEC_COMMAND:-}" ]; then
+  export DEBUX_BANNER_SHOWN=1
+  exec zsh -ic "$DEBUX_EXEC_COMMAND"
+fi
 exec zsh
 `
