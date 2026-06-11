@@ -769,6 +769,8 @@
             <a href="#tui">TUI</a>
             <a href="#docker">Docker</a>
             <a href="#kubernetes">Kubernetes</a>
+            <a href="#ports-files" class="hide-md">Ports &amp; files</a>
+            <a href="#config" class="hide-md">Config</a>
             <a href="#security" class="hide-md">Security</a>
             <a href="#troubleshooting" class="hide-md">Troubleshooting</a>
             <button class="search-trigger" type="button" aria-label="Open search">
@@ -813,9 +815,9 @@
       </section>
 
       <div class="stats" aria-label="Project highlights">
-        <div class="stat"><strong>Docker + K8s</strong><span>one workflow for local and cluster debugging</span></div>
-        <div class="stat"><strong>Distroless</strong><span>debug images with no shell or package manager</span></div>
-        <div class="stat"><strong>Nix tools</strong><span>install missing tools on demand with dctl</span></div>
+        <div class="stat"><strong>Docker + K8s</strong><span>plus Compose, Podman and Kubernetes nodes</span></div>
+        <div class="stat"><strong>Distroless</strong><span>debug, copy files and forward ports on shell-less images</span></div>
+        <div class="stat"><strong>Even stopped</strong><span>debug exited and crash-looping containers</span></div>
         <div class="stat"><strong>Open source</strong><span>no paid desktop subscription required</span></div>
       </div>
 
@@ -986,14 +988,14 @@ mise run image-build</code></pre>
             </article>
           </div>
           <div class="callout info" style="margin-top: 1rem;">
-            Inside the shell, run <code>target</code> to jump into the target filesystem. If a command is not available in the debug image, debux can either run the target binary via chroot wrappers or offer to install the tool with Nix.
+            Inside the shell, run <code>target</code> to jump into the target filesystem. If you run a command the toolbox lacks but the target has, debux runs the target's own binary via <code>chroot</code> into <code>$DEBUX_TARGET_ROOT</code> with the target's original environment — just like <code>docker exec</code>. Otherwise it offers to install the tool with Nix.
           </div>
         </section>
 
-        <section id="docker" class="doc-section" data-search data-title="Docker debugging">
+        <section id="docker" class="doc-section" data-search data-title="Docker debugging Compose Podman stopped exited crash-looping containers">
           <div class="section-heading">
             <h2>Docker debugging</h2>
-            <p>Use debux locally exactly where <code>docker exec</code> stops being useful: distroless images, missing tools, or debugging without rebuilding.</p>
+            <p>Use debux locally exactly where <code>docker exec</code> stops being useful: distroless images, missing tools, stopped containers, or debugging without rebuilding. Docker Compose services and Podman containers work through the same workflow.</p>
           </div>
           <div class="grid two">
             <div class="card code-card">
@@ -1005,7 +1007,14 @@ docker run -d --name my-nginx nginx:alpine
 debux my-nginx
 
 # Or with an explicit runtime prefix
-debux docker://my-nginx</code></pre>
+debux docker://my-nginx
+
+# A Docker Compose service (one replica if scaled)
+debux compose://web
+debux compose://my-project/web
+
+# A Podman container via its Docker-compatible socket
+debux podman://my-app</code></pre>
             </div>
             <div class="card code-card">
               <button class="copy" data-copy>Copy</button>
@@ -1018,12 +1027,18 @@ debux docker://
 # Force a new debug sidecar
 debux docker://my-nginx --fresh
 
+# Inject env and Linux capabilities
+debux docker://my-nginx --env LOG=debug --cap-add NET_ADMIN
+
 # Do not mount target volumes into the debug container
 debux docker://my-nginx --no-volumes
 
 # Or mount target volumes read-only to reduce accidental writes
 debux docker://my-nginx --read-only-volumes</code></pre>
             </div>
+          </div>
+          <div class="callout info" style="margin-top: 1rem;">
+            <strong>Stopped, exited or crash-looping?</strong> debux does not error — it copies the target container's filesystem, including its writable layer (logs, crash artifacts, modified config), into a debug container at <code>/target</code>. The original container is never started, and changes outside mounted volumes are discarded on exit. This matches a key <code>docker debug</code> capability.
           </div>
           <div class="card" style="margin-top: 1rem;">
             <h3>Persistent Nix store</h3>
@@ -1070,11 +1085,18 @@ debux k8s://prod/api-pod/app --copy
 debux pod -n prod
 
 # Keep standalone pod after exit
-debux pod -n prod --keep</code></pre>
+debux pod -n prod --keep
+
+# Debug a node (like kubectl debug node/, with the Nix toolbox)
+debux node                      # node picker
+debux node worker-1 --profile=sysadmin --keep</code></pre>
             </div>
           </div>
           <div class="callout info" style="margin-top: 1rem;">
             <strong>Pod name shortcut:</strong> if an exact pod name is not found, debux treats it as a substring and opens the searchable picker with matching running pods.
+          </div>
+          <div class="callout info" style="margin-top: 1rem;">
+            <strong>Debug a node:</strong> <code>debux node [node-name]</code> schedules a host-namespace toolbox pod (<code>hostPID</code>/<code>hostNetwork</code>/<code>hostIPC</code>), mounts the node root filesystem at <code>/host</code> (<code>$DEBUX_TARGET_ROOT</code>), and tolerates taints so cordoned or NotReady nodes can still be debugged. Node binaries like <code>crictl</code>, <code>journalctl</code> and <code>systemctl</code> run through the chroot fallback with their original host paths.
           </div>
           <div class="callout" style="margin-top: 1rem;">
             <strong>Kubernetes toolbox persistence:</strong> ephemeral containers cannot add new volumes, so debux cannot mount your local Docker toolbox/history into pods. Reuse the same debug container on the same pod to keep installed tools/history, or bake common tools into a custom debug image and pass it with <code>--image</code>.
@@ -1093,6 +1115,7 @@ RUN NIX_CONFIG="experimental-features = nix-command flakes" \
                 <tr><td><code>ephemeral container</code></td><td>Debugging a live pod in-place</td><td>Shares target container PID namespace when supported; cannot be removed from the pod spec after creation.</td></tr>
                 <tr><td><code>--copy</code></td><td>RBAC or PodSecurity blocks ephemeral containers</td><td>Creates a temporary copied pod, enables process namespace sharing, then deletes it on exit.</td></tr>
                 <tr><td><code>debux pod</code></td><td>Cluster network troubleshooting</td><td>Standalone debug pod in the current kube-context namespace by default, optionally with host networking.</td></tr>
+                <tr><td><code>debux node</code></td><td>Node-level debugging</td><td>Host-namespace toolbox pod pinned to a node, node root at <code>/host</code>, tolerates taints. Like <code>kubectl debug node/</code>.</td></tr>
               </tbody>
             </table>
           </div>
@@ -1107,9 +1130,12 @@ RUN NIX_CONFIG="experimental-features = nix-command flakes" \
             <table>
               <thead><tr><th>Format</th><th>Runtime</th><th>Meaning</th></tr></thead>
               <tbody>
-                <tr><td><code>my-container</code></td><td>Docker</td><td>Debug Docker container by name or ID.</td></tr>
+                <tr><td><code>my-container</code></td><td>Docker</td><td>Debug Docker container by name or ID (running or stopped).</td></tr>
                 <tr><td><code>docker://</code></td><td>Docker</td><td>Open the Docker container picker.</td></tr>
                 <tr><td><code>docker://my-container</code></td><td>Docker</td><td>Debug a specific Docker container.</td></tr>
+                <tr><td><code>compose://service</code></td><td>Docker</td><td>Debug a Docker Compose service by name (one replica if scaled).</td></tr>
+                <tr><td><code>compose://project/service</code></td><td>Docker</td><td>Debug a Compose service in a specific project.</td></tr>
+                <tr><td><code>podman://my-container</code></td><td>Podman</td><td>Debug a Podman container via its Docker-compatible socket.</td></tr>
                 <tr><td><code>k8s://</code></td><td>Kubernetes</td><td>Open the pod picker in the current kube-context namespace.</td></tr>
                 <tr><td><code>k8s://pod</code></td><td>Kubernetes</td><td>Debug a pod in the current kube-context namespace.</td></tr>
                 <tr><td><code>k8s://namespace/pod</code></td><td>Kubernetes</td><td>Debug a pod in an explicit namespace (or use <code>--namespace</code> / <code>-n</code>).</td></tr>
@@ -1180,13 +1206,25 @@ strace -p 1
 tcpdump -i any</code></pre>
             </article>
           </div>
+          <div class="grid two" style="margin-top: 1rem;">
+            <article class="card">
+              <h3>Target-binary fallback</h3>
+              <p>Run a command the toolbox does not have but the target does, and debux runs the target's own binary via <code>chroot</code> into <code>$DEBUX_TARGET_ROOT</code> with the target's original environment — like <code>docker exec</code>. Great for app-specific CLIs (a bundled <code>node</code>, <code>php</code>, <code>psql</code>, or a custom entrypoint helper) without installing anything.</p>
+            </article>
+            <article class="card">
+              <h3>Preload tools at startup</h3>
+              <p>Use <code>--tools</code> to auto-install nixpkgs packages before the shell opens. A value can be literal packages or the name of a tool set defined in your <a class="link" href="#config">config file</a>.</p>
+              <pre><code>debux my-app --tools py-spy --tools gdb
+debux k8s://prod/api --tools python</code></pre>
+            </article>
+          </div>
           <div class="callout" style="margin-top: 1rem;">
-            Some low-level tools need more privileges. In Kubernetes, use <code>--profile=sysadmin</code> for a fully privileged session or <code>--profile=netadmin</code> for network capabilities. <code>--profile=restricted</code> supports shell startup and <code>dctl install</code> with the current debug image, but deep chroot/target-root integration can be limited by Linux permissions.
+            Some low-level tools need more privileges. In Kubernetes, use <code>--profile=sysadmin</code> for a fully privileged session or <code>--profile=netadmin</code> for network capabilities. <code>--profile=restricted</code> supports shell startup and <code>dctl install</code> with the current debug image, but deep chroot/target-root integration can be limited by Linux permissions. You can also add capabilities ad hoc with <code>--cap-add</code> and inject environment with <code>--env</code>.
           </div>
           <div class="card code-card" style="margin-top: 1rem;">
             <button class="copy" data-copy>Copy</button>
-            <pre><code># Run a one-shot command through the debug toolbox
-debux docker://my-app -- curl -I localhost
+            <pre><code># Run a one-shot command through the debug toolbox; exit code propagates
+debux docker://my-app -- curl -fsS localhost/health
 debux k8s://prod/api/app -- ps aux</code></pre>
           </div>
         </section>
@@ -1203,6 +1241,106 @@ debux image gcr.io/distroless/static-debian12
 
 # Keep the debug container after exit
 debux image my-app:broken --rm=false</code></pre>
+          </div>
+        </section>
+
+        <section id="ports-files" class="doc-section" data-search data-title="Port forwarding copy files cp forward distroless socat kubectl cp">
+          <div class="section-heading">
+            <h2>Forward ports &amp; copy files</h2>
+            <p>Reach a running target and move files in or out — even for containers started without <code>-p</code> and distroless pods where <code>kubectl cp</code> fails.</p>
+          </div>
+          <div class="grid two">
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code># Forward local 8080 to the target's port 80
+debux forward my-app 8080:80
+
+# Same local and remote port
+debux forward docker://my-app 5432
+
+# A Compose service
+debux forward compose://web 8080:3000
+
+# Multiple ports to a pod
+debux forward k8s://prod/api-pod 8080:8080 9090:9090
+debux forward k8s://api-pod -n prod 8080:8080</code></pre>
+            </div>
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code># Pull a log file out of a container
+debux cp my-app:/var/log/app.log ./app.log
+
+# Pull a heap profile out of a distroless pod
+debux cp k8s://prod/api-pod:/app/heap.prof ./
+
+# Push a tool into a pod (destination is a directory)
+debux cp ./debug-tool k8s://prod/api-pod:/tmp
+
+# Works with Compose services too
+debux cp compose://web:/usr/share/nginx/html ./html</code></pre>
+            </div>
+          </div>
+          <div class="callout info" style="margin-top: 1rem;">
+            <strong>How it works:</strong> Docker <code>forward</code> runs a small socat relay on the target's network and publishes the ports on <code>127.0.0.1</code>, so it works for containers without published ports; Kubernetes uses the pod port-forward API. Kubernetes <code>cp</code> streams through the debux toolbox, so copies work on shell-less images with no <code>tar</code>; Docker <code>cp</code> uses the engine API and also works on stopped containers. Copying <strong>into</strong> a target treats the destination as a directory.
+          </div>
+        </section>
+
+        <section id="scripting" class="doc-section" data-search data-title="Scripting CI non-interactive one-shot exit code automation doctor preflight">
+          <div class="section-heading">
+            <h2>Scripting &amp; CI</h2>
+            <p>debux is not just an interactive shell. Pass a command after <code>--</code> to run it non-interactively in the toolbox, and the target's real exit code propagates — so debux drops into scripts and CI pipelines.</p>
+          </div>
+          <div class="grid two">
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code># One-shot command, exit code propagates
+debux docker://my-app -- curl -fsS localhost/health
+debux k8s://prod/api-pod/app -- ps aux
+
+# Use it as a CI gate
+debux k8s://prod/api-pod/app -- sh -c 'test -f /app/ready'</code></pre>
+            </div>
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code># Know before an incident whether debugging is allowed:
+# per-profile Kubernetes RBAC preflight
+debux doctor k8s://prod/api-pod/app --profile=restricted
+
+# Machine-readable, non-zero exit on any failing check
+debux doctor k8s://prod/api-pod/app --json --strict</code></pre>
+            </div>
+          </div>
+          <div class="callout info" style="margin-top: 1rem;">
+            <strong><code>debux doctor</code>:</strong> with no target it checks the debux binary, Docker, and the current Kubernetes context. With a target it focuses on that runtime and, for Kubernetes, evaluates the chosen security profile's required RBAC — a good CI check before granting or relying on debug access.
+          </div>
+        </section>
+
+        <section id="config" class="doc-section" data-search data-title="Configuration config file XDG tools sets image profile pull-policy terminal">
+          <div class="section-heading">
+            <h2>Configuration</h2>
+            <p>Set defaults once in <code>$XDG_CONFIG_HOME/debux/config.yaml</code> (or the path in <code>$DEBUX_CONFIG</code>). A missing file is fine, and flags always override the config.</p>
+          </div>
+          <div class="grid two">
+            <div class="card code-card">
+              <button class="copy" data-copy>Copy</button>
+              <pre><code>image: ghcr.io/clement-tourriere/debux:latest
+profile: restricted
+pull-policy: IfNotPresent
+terminal: wezterm
+tools:
+  python: [python3, py-spy, gdb]
+  net: [socat, mtr, iperf3]</code></pre>
+            </div>
+            <article class="card">
+              <h3>Keys and tool sets</h3>
+              <ul class="clean-list">
+                <li><code>image</code>, <code>profile</code>, <code>pull-policy</code>, <code>terminal</code> set defaults for the matching flags.</li>
+                <li><code>tools</code> maps a set name to a list of nixpkgs packages.</li>
+                <li><code>--tools python</code> expands a configured set; <code>--tools socat</code> also accepts literal packages.</li>
+              </ul>
+              <pre><code># Auto-installs python3, py-spy and gdb at session start
+debux k8s://prod/api --tools python</code></pre>
+            </article>
           </div>
         </section>
 
@@ -1318,6 +1456,9 @@ debux store clean</code></pre>
                 <tr><td><code>debux tui</code></td><td>Open the full-screen target browser for Docker, Kubernetes and recent sessions. Alias: <code>ui</code>.</td></tr>
                 <tr><td><code>debux image &lt;image&gt;</code></td><td>Debug a Docker image filesystem without starting it.</td></tr>
                 <tr><td><code>debux pod</code></td><td>Create a standalone Kubernetes debug pod.</td></tr>
+                <tr><td><code>debux node [node-name]</code></td><td>Debug a Kubernetes node with a host-namespace toolbox pod. Node root at <code>/host</code>.</td></tr>
+                <tr><td><code>debux forward &lt;target&gt; [LOCAL:]REMOTE...</code></td><td>Forward local ports to a container or pod.</td></tr>
+                <tr><td><code>debux cp &lt;source&gt; &lt;destination&gt;</code></td><td>Copy files between a target and the local filesystem.</td></tr>
                 <tr><td><code>debux kill [target]</code></td><td>Stop a running debux debug session.</td></tr>
                 <tr><td><code>debux completion</code></td><td>Generate shell completions for bash, zsh, fish, or PowerShell with cached Docker/Kubernetes target suggestions.</td></tr>
                 <tr><td><code>debux docs</code></td><td>Print the documentation URL. Use <code>--open</code> to open it in a browser.</td></tr>
@@ -1329,7 +1470,11 @@ debux store clean</code></pre>
                 <tr><td><code>--copy</code></td><td>Kubernetes: create a copied debug pod instead of an ephemeral container.</td></tr>
                 <tr><td><code>--no-volumes</code></td><td>Do not mount target volumes directly. This is not an isolation boundary if the debug container can access <code>/proc/1/root</code>.</td></tr>
                 <tr><td><code>--read-only-volumes</code></td><td>Mount target volumes read-only in the debug container to reduce accidental writes. This is not an isolation boundary if <code>/proc/1/root</code> is accessible.</td></tr>
+                <tr><td><code>--env KEY=VALUE</code></td><td>Inject an extra environment variable into the debug container (repeatable, both runtimes).</td></tr>
+                <tr><td><code>--cap-add CAP</code></td><td>Add a Linux capability to the debug container (repeatable, both runtimes).</td></tr>
+                <tr><td><code>--tools name-or-packages</code></td><td>Auto-install a config tool set or nixpkgs packages at session start (repeatable).</td></tr>
                 <tr><td><code>--pull-policy</code></td><td>Debug image pull policy for Docker/Kubernetes: <code>Always</code>, <code>IfNotPresent</code>, <code>Never</code>.</td></tr>
+                <tr><td><code>--privileged</code></td><td>Run privileged (Docker); Kubernetes alias for <code>--profile=sysadmin</code>.</td></tr>
                 <tr><td><code>--context</code></td><td>Kubernetes kube context name. Prefer this for context names containing slashes.</td></tr>
                 <tr><td><code>-n, --namespace</code></td><td>Kubernetes namespace for pod pickers, targets without an inline namespace, <code>kill</code>, and <code>doctor</code>.</td></tr>
                 <tr><td><code>--profile</code></td><td>Kubernetes security profile: <code>general</code>, <code>baseline</code>, <code>restricted</code>, <code>netadmin</code>, <code>sysadmin</code>.</td></tr>
@@ -1339,12 +1484,20 @@ debux store clean</code></pre>
           </div>
         </section>
 
-        <section id="troubleshooting" class="doc-section" data-search data-title="Troubleshooting errors containerd RBAC image pull stale store">
+        <section id="troubleshooting" class="doc-section" data-search data-title="Troubleshooting errors docker context colima podman RBAC image pull stale store">
           <div class="section-heading">
             <h2>Troubleshooting</h2>
             <p>Most failures come from image pull policy, cluster security policy, stale Docker volumes, or trying to debug a container that is not running.</p>
           </div>
           <div class="grid two">
+            <article class="card">
+              <h3>debux talks to the wrong Docker daemon</h3>
+              <p>debux honors the docker CLI's daemon selection: <code>DOCKER_HOST</code> first, then the active docker context (<code>DOCKER_CONTEXT</code> or <code>docker context use</code>), then the default socket — so colima, Docker Desktop and remote daemons work. If debux cannot see a container that <code>docker ps</code> shows, check your context. SSH-based contexts are not supported directly; forward the socket and set <code>DOCKER_HOST</code>.</p>
+              <pre><code>docker context ls
+docker context use colima
+# or pin it for one command
+DOCKER_HOST=unix:///path/to/docker.sock debux my-app</code></pre>
+            </article>
             <article class="card">
               <h3><code>openat etc/passwd: path escapes from parent</code></h3>
               <p>Your cluster runtime rejected NixOS-style absolute symlinks in <code>/etc/passwd</code> or <code>/etc/group</code>. Rebuild and push the latest debug image, then retry with <code>--pull-policy=Always</code>.</p>
@@ -1396,6 +1549,10 @@ debux k8s://prod/api/app \
             <article class="card">
               <h3>Does debux change my application image?</h3>
               <p>No. It starts a separate debug container. In Docker it is a sidecar. In Kubernetes it is an ephemeral container or a temporary copied pod.</p>
+            </article>
+            <article class="card">
+              <h3>Can I debug a stopped or crash-looping container?</h3>
+              <p>Yes. debux copies the container's filesystem — including its writable layer — into a debug container at <code>/target</code> without starting the original. Changes outside mounted volumes are discarded on exit.</p>
             </article>
             <article class="card">
               <h3>Why is the debug image large?</h3>

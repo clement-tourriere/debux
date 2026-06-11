@@ -40,10 +40,12 @@ If `debux` saves you a debugging session, a GitHub star helps other Docker and K
 ## Why debux?
 
 - **Works when `docker exec` is useless** — distroless, scratch, Alpine, and tiny production images.
-- **Docker + Kubernetes** — same workflow locally and in clusters.
+- **Debug even stopped containers** — debux falls back to the target's filesystem, including its writable layer, when the container is exited or crash-looping.
+- **Docker + Kubernetes** — same workflow locally and in clusters, plus Docker Compose, Podman, and Kubernetes nodes.
 - **Nix-powered shell** — zsh plus tools like `curl`, `strace`, `tcpdump`, `vim`, `jq`, `dig`, `nmap`, and more.
-- **Install tools on demand** — `dctl install <pkg>` pulls from nixpkgs during a debug session.
-- **Target-aware shell** — jump into the target root, inspect target processes, and reuse the target network namespace.
+- **Install tools on demand** — `dctl install <pkg>` pulls from nixpkgs during a debug session; `--tools` preloads a set at startup.
+- **Target-aware shell** — jump into the target root, inspect target processes, reuse the target network namespace, and run the target's own binaries via chroot when the toolbox lacks them.
+- **Forward ports and copy files** — reach and pull files from any target, even containers started without `-p` and distroless pods where `kubectl cp` fails.
 - **Open source** — no paid Docker Desktop or OrbStack subscription required.
 
 ## When to use it
@@ -57,9 +59,10 @@ If `debux` saves you a debugging session, a GitHub star helps other Docker and K
 
 | Usual option | Where it falls short | Debux approach |
 |---|---|---|
-| `docker exec` | Requires tools and a shell inside the target image. | Starts a separate toolbox and attaches it to the target. |
-| `kubectl debug` | Kubernetes-only, and you still need to curate a debug image. | Provides one Docker + Kubernetes workflow with a Nix toolbox. |
-| Rebuilding the app image | Slow during incidents and changes the artifact you are debugging. | Leaves the application image untouched. |
+| `docker exec` | Requires tools and a shell inside the target image, and the container must be running. | Starts a separate toolbox and attaches it to the target — and falls back to the filesystem (including the writable layer) for stopped or crash-looping containers. |
+| `kubectl debug` | Kubernetes-only, and you still need to curate a debug image. | Provides one Docker, Compose, Podman, and Kubernetes workflow with a Nix toolbox. |
+| `kubectl cp` | Needs `tar` inside the target, so it fails on distroless/scratch. | Streams `debux cp` through the toolbox, so copies work on shell-less images. |
+| Rebuilding the app image | Slow during incidents and changes the artifact you are debugging. | Leaves the application image untouched; the toolbox still runs the target's own binaries via chroot when needed. |
 | Shipping debug tools in prod | Increases image size and attack surface. | Keeps production images minimal and installs tools on demand. |
 
 ## Quick start
@@ -137,6 +140,25 @@ docker run -d --name distroless gcr.io/distroless/static-debian12
 debux distroless
 ```
 
+Even if the container is stopped, exited, or crash-looping:
+
+```bash
+# debux copies the target filesystem (including its writable layer) into a
+# debug container at /target. Changes outside volumes are discarded on exit.
+debux my-crashed-app
+```
+
+Docker Compose services and Podman containers work too:
+
+```bash
+# Resolve a Compose service by name (picks one replica if scaled)
+debux compose://web
+debux compose://my-project/web
+
+# Debug a Podman container via its Docker-compatible socket
+debux podman://my-app
+```
+
 ### Kubernetes
 
 ```bash
@@ -179,6 +201,26 @@ Force a fresh debug container and pull the newest debug image:
 debux k8s://my-namespace/my-pod/my-container \
   --fresh \
   --pull-policy=Always
+```
+
+### Debug a Kubernetes node
+
+Like `kubectl debug node/`, but with the Nix toolbox. `debux node` schedules a
+host-namespace toolbox pod on the node (`hostPID`/`hostNetwork`/`hostIPC`),
+mounts the node root filesystem at `/host` (`$DEBUX_TARGET_ROOT`), and tolerates
+taints so cordoned or NotReady nodes can still be debugged. Node binaries like
+`crictl`, `journalctl`, and `systemctl` run through the chroot fallback with
+their original host paths.
+
+```bash
+# Pick a node interactively
+debux node
+
+# Debug a specific node
+debux node worker-1
+
+# Privileged session, keep the debug pod after exit
+debux node worker-1 --profile=sysadmin --keep
 ```
 
 ## How it works
@@ -237,6 +279,24 @@ python3: command not found
 
 Packages are backed by [nixpkgs](https://search.nixos.org/packages).
 
+### Target-binary fallback
+
+If you run a command the toolbox does not have but the **target** does, debux
+runs the target's own binary via `chroot` into `$DEBUX_TARGET_ROOT`, using the
+target's original environment — just like `docker exec` would. This lets you use
+app-specific CLIs (a bundled `node`, `php`, `psql`, a custom entrypoint helper,
+or node binaries like `crictl`) without installing anything.
+
+### Preload tools at session start
+
+```bash
+# Install specific nixpkgs packages before the shell opens
+debux my-app --tools py-spy --tools gdb
+
+# Or reference a named tool set from the config file (see Configuration)
+debux k8s://prod/api --tools python
+```
+
 Persistence model:
 
 - **Docker:** installed tools and shell history live in image-specific Nix volumes, so they survive across Docker sessions without breaking rebuilt debug images.
@@ -251,9 +311,12 @@ Persistence model:
 
 | Format | Runtime | Meaning |
 |---|---|---|
-| `<container>` | Docker | Debug a Docker container by name or ID. |
+| `<container>` | Docker | Debug a Docker container by name or ID (running or stopped). |
 | `docker://` | Docker | Open the Docker picker. |
 | `docker://<container>` | Docker | Debug a Docker container. |
+| `compose://<service>` | Docker | Debug a Docker Compose service by name (picks one replica if scaled). |
+| `compose://<project>/<service>` | Docker | Debug a Compose service in a specific project. |
+| `podman://<container>` | Podman | Debug a Podman container via its Docker-compatible socket. |
 | `k8s://` | Kubernetes | Open the pod picker in the current kube-context namespace. |
 | `k8s://<pod>` | Kubernetes | Debug a pod in the current kube-context namespace. |
 | `k8s://<namespace>/<pod>` | Kubernetes | Debug a pod in an explicit namespace (or use `--namespace` / `-n`). |
@@ -293,7 +356,11 @@ Use `debux completion <bash|zsh|fish|powershell>` for other shells.
 | `--copy` | Kubernetes: create a copied debug pod instead of an ephemeral container. |
 | `--no-volumes` | Do not mount target volumes directly. This is not an isolation boundary if the debug container can access `/proc/1/root`. |
 | `--read-only-volumes` | Mount target volumes read-only in the debug container to reduce accidental writes. This is not a security boundary if `/proc/1/root` is accessible. |
+| `--env <KEY=VALUE>` | Inject an extra environment variable into the debug container (repeatable, both runtimes). |
+| `--cap-add <CAP>` | Add a Linux capability to the debug container (repeatable, both runtimes). |
+| `--tools <name-or-packages>` | Auto-install a config tool set or nixpkgs packages at session start (repeatable). |
 | `--pull-policy <policy>` | Debug image pull policy for Docker/Kubernetes: `Always`, `IfNotPresent`, `Never`. |
+| `--privileged` | Run privileged (Docker); Kubernetes alias for `--profile=sysadmin`. |
 | `--profile <profile>` | Kubernetes security profile: `general`, `baseline`, `restricted`, `netadmin`, `sysadmin`. |
 | `--user <uid[:gid]>` | Run the debug container as a specific user. |
 | `--kubeconfig <path>` | Override kubeconfig path. |
@@ -311,6 +378,17 @@ debux pod -n my-namespace --host-network
 debux pod -n my-namespace --keep
 ```
 
+### Standalone Kubernetes node debug
+
+```bash
+debux node                    # node picker
+debux node worker-1           # debug a specific node
+debux node worker-1 --profile=sysadmin --keep
+```
+
+The node root filesystem is mounted at `/host` (`$DEBUX_TARGET_ROOT`), and the
+pod shares the node's PID, network, and IPC namespaces.
+
 ### Debug an image without starting it
 
 Useful when the image itself cannot boot.
@@ -322,6 +400,67 @@ debux image my-app:broken
 ```
 
 The image filesystem is copied into the debug container and exposed at `/target`.
+
+### Forward ports
+
+Reach a running target without restarting it. Docker runs a small socat relay on
+the target's network and publishes the ports on `127.0.0.1`, so it works even for
+containers started without `-p`. Kubernetes uses the pod port-forward API.
+
+```bash
+# Forward local 8080 to the target's port 80
+debux forward my-app 8080:80
+
+# Same local and remote port (just give the remote port)
+debux forward docker://my-app 5432
+
+# A Compose service
+debux forward compose://web 8080:3000
+
+# Multiple ports to a pod
+debux forward k8s://prod/api-pod 8080:8080 9090:9090
+debux forward k8s://api-pod -n prod 8080:8080
+```
+
+### Copy files in and out
+
+Copy files between a target and the local machine. One side is `<target>:<path>`,
+the other is local. Kubernetes copies stream through the debux toolbox, so they
+work on distroless/scratch images where `kubectl cp` fails (no `tar` in the
+target). Docker copies use the engine API and also work on stopped containers.
+When copying **into** a target, the destination is treated as a directory.
+
+```bash
+# Pull a log file out of a container
+debux cp my-app:/var/log/app.log ./app.log
+
+# Pull a heap profile out of a distroless pod
+debux cp k8s://prod/api-pod:/app/heap.prof ./
+
+# Push a tool into a pod (destination is a directory)
+debux cp ./debug-tool k8s://prod/api-pod:/tmp
+
+# Works with Compose services too
+debux cp compose://web:/usr/share/nginx/html ./html
+```
+
+### Scripting and CI
+
+Pass a command after `--` to run it non-interactively in the toolbox instead of
+opening a shell. The target's real exit code propagates, so debux fits cleanly
+into scripts and CI pipelines.
+
+```bash
+# Run a one-shot command and propagate its exit code
+debux docker://my-app -- curl -fsS localhost/health
+debux k8s://prod/api-pod/app -- ps aux
+
+# Use it as a CI gate
+debux k8s://prod/api-pod/app -- sh -c 'test -f /app/ready' || exit 1
+```
+
+Pair it with `debux doctor --strict --json` to verify in CI that debugging is
+even permitted before an incident (see below).
 
 ### Manage debux sessions and stores
 
@@ -340,16 +479,25 @@ debux kill --all --namespace my-namespace
 debux store info
 debux store clean
 
-# Run a one-shot command through the debug toolbox
+# Forward target ports to localhost
+debux forward docker://my-app 8080:80
+debux forward k8s://my-namespace/my-pod 8080:8080 9090:9090
+
+# Copy files in and out of a target
+debux cp my-app:/var/log/app.log ./app.log
+debux cp ./debug-tool k8s://my-namespace/my-pod:/tmp
+
+# Run a one-shot command through the debug toolbox (exit code propagates)
 debux docker://my-app -- curl -I localhost
 debux k8s://my-namespace/my-pod/app -- ps aux
 
 # Browse Docker, Kubernetes, and recent sessions in the full-screen TUI
 debux tui
 
-# Diagnose local Docker/Kubernetes readiness
+# Diagnose local Docker/Kubernetes readiness and RBAC
 debux doctor
 debux doctor --strict
+debux doctor --json
 debux doctor k8s://my-namespace/my-pod --profile=restricted
 debux doctor k8s://my-pod --namespace my-namespace
 
@@ -363,6 +511,49 @@ debux completion zsh
 # Open the documentation
 debux docs
 debux docs --open
+```
+
+### Preflight RBAC checks (`debux doctor`)
+
+`debux doctor` runs local diagnostics. With no target it checks the debux
+binary, Docker, and the current Kubernetes context. With a target it focuses on
+that runtime and, for Kubernetes, performs a per-profile RBAC preflight — so you
+know **before** an incident whether debugging is allowed.
+
+```bash
+# Check the selected profile's required permissions against a real pod
+debux doctor k8s://prod/api-pod/app --profile=restricted
+
+# Machine-readable output for CI, non-zero exit on any failing check
+debux doctor k8s://prod/api-pod/app --json --strict
+```
+
+## Configuration
+
+debux reads optional defaults from `$XDG_CONFIG_HOME/debux/config.yaml` (or the
+path in `$DEBUX_CONFIG`). A missing file is fine, and flags always override the
+config. Supported keys are `image`, `profile`, `pull-policy`, `terminal`, and
+`tools` (a map of set name → list of nixpkgs packages).
+
+```yaml
+image: ghcr.io/clement-tourriere/debux:latest
+profile: restricted
+pull-policy: IfNotPresent
+terminal: wezterm
+tools:
+  python: [python3, py-spy, gdb]
+  net: [socat, mtr, iperf3]
+```
+
+With that file in place, a tool set name expands to its packages at session
+start:
+
+```bash
+# Auto-installs python3, py-spy, and gdb before the shell opens
+debux k8s://prod/api --tools python
+
+# --tools also accepts literal nixpkgs packages
+debux my-app --tools socat --tools iperf3
 ```
 
 ## Security model
@@ -553,6 +744,23 @@ Deployment workflow:
 If this is the first deployment for a fork or new repository, enable **GitHub Pages → Source: GitHub Actions** in repository settings.
 
 ## Troubleshooting
+
+### Docker: debux talks to the wrong daemon (colima, Docker Desktop, remote)
+
+debux honors the same daemon selection as the docker CLI: `DOCKER_HOST` first,
+then the selected docker context (`DOCKER_CONTEXT` or `docker context use`),
+then the default socket. If debux cannot see a container that `docker ps` shows,
+check your active context and host:
+
+```bash
+docker context ls
+docker context use colima      # or desktop-linux, your remote context, etc.
+# or pin it explicitly for one command
+DOCKER_HOST=unix:///path/to/docker.sock debux my-app
+```
+
+SSH-based docker contexts are not supported directly; forward the remote socket
+and set `DOCKER_HOST` instead.
 
 ### Kubernetes: `openat etc/passwd: path escapes from parent`
 
