@@ -20,7 +20,9 @@ func newKillCmd() *cobra.Command {
 		Long: `Stop debux debug sessions.
 
 Docker debug sessions are sidecar containers. Kubernetes ephemeral containers
-cannot be removed from the pod spec, so debux terminates their process instead.`,
+cannot be removed from the pod spec, so debux terminates their process instead.
+Kubernetes copy pods (--copy) are deleted outright; --all also sweeps copy
+pods that were kept with --keep or already expired via their TTL.`,
 		Example: `  # Pick an active session to stop
   debux kill
 
@@ -32,7 +34,10 @@ cannot be removed from the pod spec, so debux terminates their process instead.`
   debux kill k8s://api-pod -n prod
   debux kill k8s://@eks-preprod-01/prod/api-pod
 
-  # Stop all sessions in a namespace
+  # Delete a kept --copy debug pod
+  debux kill k8s://prod/debux-copy-abc12
+
+  # Stop all sessions in a namespace (includes kept/expired copy pods)
   debux kill k8s://prod/ --all
   debux kill --all --namespace prod
   debux kill k8s://@eks-preprod-01/prod/ --all`,

@@ -3,9 +3,11 @@ package runtime
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/moby/moby/api/types/container"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestParseTargetSchemes(t *testing.T) {
@@ -263,5 +265,95 @@ func TestPodSidecarContainersAreTargetable(t *testing.T) {
 	got, err := selectKubernetesTargetContainer(pod, "proxy")
 	if err != nil || got != "proxy" {
 		t.Fatalf("selecting the sidecar should work, got %q (%v)", got, err)
+	}
+}
+
+func TestBuildKubernetesCopyPodLifecycle(t *testing.T) {
+	source := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "api-1", Namespace: "prod"},
+		Spec: corev1.PodSpec{
+			NodeName:   "node-a",
+			Containers: []corev1.Container{{Name: "app"}},
+		},
+	}
+
+	opts := DebugOpts{Image: "img:v1", Profile: ProfileGeneral, TTL: 2 * time.Hour}
+	pod, debugName, err := buildKubernetesCopyPod("prod", source, "app", opts, "ctx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if debugName != "debux" {
+		t.Fatalf("debug container name = %q, want debux", debugName)
+	}
+	if pod.Spec.NodeName != "" {
+		t.Fatal("copy pod must not be pinned to the source node")
+	}
+	if pod.Spec.ActiveDeadlineSeconds == nil || *pod.Spec.ActiveDeadlineSeconds != 7200 {
+		t.Fatalf("TTL must map to activeDeadlineSeconds, got %v", pod.Spec.ActiveDeadlineSeconds)
+	}
+	if got := pod.Annotations[karpenterDoNotDisruptAnnotation]; got != "2h0m0s" {
+		t.Fatalf("karpenter protection must be bounded by the TTL, got %q", got)
+	}
+	if got := pod.Annotations[clusterAutoscalerSafeToEvictAnnotation]; got != "false" {
+		t.Fatalf("cluster-autoscaler annotation = %q, want false", got)
+	}
+	if got := pod.Annotations[debuxTargetContainerAnnotation]; got != "app" {
+		t.Fatalf("target-container annotation = %q, want app (reattach depends on it)", got)
+	}
+	if got := pod.Annotations[debuxSourcePodAnnotation]; got != "api-1" {
+		t.Fatalf("source-pod annotation = %q, want api-1", got)
+	}
+	if !isKubernetesCopyPod(pod) {
+		t.Fatal("built copy pod must be recognized by reattach/kill detection")
+	}
+	if got := findCopyPodDebugContainer(pod); got != "debux" {
+		t.Fatalf("findCopyPodDebugContainer = %q, want debux", got)
+	}
+
+	// TTL=0 means the user explicitly opted out: no deadline (not even an
+	// inherited one) and unbounded karpenter protection.
+	src2 := source.DeepCopy()
+	var inherited int64 = 30
+	src2.Spec.ActiveDeadlineSeconds = &inherited
+	pod, _, err = buildKubernetesCopyPod("prod", src2, "app", DebugOpts{Image: "img:v1", Profile: ProfileGeneral}, "ctx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pod.Spec.ActiveDeadlineSeconds != nil {
+		t.Fatal("ttl=0 must clear the deadline, including one inherited from the source spec")
+	}
+	if got := pod.Annotations[karpenterDoNotDisruptAnnotation]; got != "true" {
+		t.Fatalf("without a TTL karpenter protection must be unconditional, got %q", got)
+	}
+
+	// A source container already named debux must not collide with the debug
+	// container, and the daemon marker must still identify the right one.
+	src3 := source.DeepCopy()
+	src3.Spec.Containers = []corev1.Container{{Name: "app"}, {Name: "debux"}}
+	pod, debugName, err = buildKubernetesCopyPod("prod", src3, "app", opts, "ctx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if debugName != "debux-1" {
+		t.Fatalf("debug container name = %q, want debux-1", debugName)
+	}
+	if got := findCopyPodDebugContainer(pod); got != "debux-1" {
+		t.Fatalf("findCopyPodDebugContainer must follow the DEBUX_DAEMON marker, got %q", got)
+	}
+}
+
+func TestIsKubernetesCopyPodIgnoresUserPods(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Labels: map[string]string{debuxManagedByLabelKey: debuxManagedByLabelValue},
+	}}
+	if isKubernetesCopyPod(pod) {
+		t.Fatal("managed-by alone (e.g. node debug pods) must not be treated as a copy pod")
+	}
+	pod.Labels[debuxModeLabelKey] = debuxModeCopy
+	if !isKubernetesCopyPod(pod) {
+		t.Fatal("copy-labeled pod must be detected")
+	}
+	if isKubernetesCopyPod(&corev1.Pod{}) {
+		t.Fatal("unlabeled pod must not be treated as a copy pod")
 	}
 }

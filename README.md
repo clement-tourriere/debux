@@ -195,6 +195,40 @@ debux k8s://my-namespace/my-pod --copy
 Copy mode creates a temporary duplicate pod for debugging and deletes it on exit.
 Use it carefully for workloads with side effects or non-idempotent startup logic.
 
+#### Long-lived copy sessions (Karpenter, frequent deploys)
+
+An ephemeral debug container lives inside the target pod, so it dies whenever
+the pod does — a rollout, a Karpenter consolidation, an eviction. A copy pod
+does not have that problem: it is not owned by the source Deployment, so
+rollouts never replace it, and debux annotates it with
+`karpenter.sh/do-not-disrupt` (and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`)
+so voluntary node consolidation leaves it alone. Forceful disruption — spot
+interruptions, node failure, manual drains — still wins.
+
+```bash
+# Keep the copy pod when the session ends; it self-destructs after 48h
+debux k8s://my-namespace/my-pod --copy --keep --ttl=48h
+
+# Come back later: targeting a copy pod reattaches to its debug container
+debux k8s://my-namespace/debux-copy-abc12
+
+# Done early? Delete it explicitly
+debux kill k8s://my-namespace/debux-copy-abc12
+```
+
+Every copy pod carries a kubelet-enforced deadline (`activeDeadlineSeconds`,
+default `--ttl=24h`), so even one orphaned by a power loss or `kill -9` of the
+CLI stops consuming resources on time — no controller or cron required. The
+Karpenter protection is bounded by the same TTL. Two things to know about the
+deadline: Kubernetes only allows shortening it after creation, never extending
+it, so size the TTL up front; and an expired pod stays visible as `Failed`
+(`DeadlineExceeded`) until deleted — `debux kill --all` sweeps those, or
+`kubectl delete pod -l app.kubernetes.io/managed-by=debux`. `--ttl=0` disables
+the deadline entirely; the pod is then yours to delete.
+
+Remember the copy runs a fresh instance of the app: it receives no Service
+traffic and shares no in-memory state with the original.
+
 Force a fresh debug container and pull the newest debug image:
 
 ```bash
@@ -354,6 +388,8 @@ Use `debux completion <bash|zsh|fish|powershell>` for other shells.
 | `--image <image>` | Override the debug image. |
 | `--fresh` | Force a new debug container instead of reusing an existing session. |
 | `--copy` | Kubernetes: create a copied debug pod instead of an ephemeral container. |
+| `--keep` | Kubernetes: with `--copy`, keep the copy pod after the session ends; reattach by targeting it, delete it with `debux kill`. |
+| `--ttl <duration>` | Kubernetes: with `--copy`, kubelet-enforced deadline (`activeDeadlineSeconds`) after which the copy pod is stopped. Default `24h`, `0` disables. Bounds the `karpenter.sh/do-not-disrupt` protection window. |
 | `--no-volumes` | Do not mount target volumes directly. This is not an isolation boundary if the debug container can access `/proc/1/root`. |
 | `--read-only-volumes` | Mount target volumes read-only in the debug container to reduce accidental writes. This is not a security boundary if `/proc/1/root` is accessible. |
 | `--env <KEY=VALUE>` | Inject an extra environment variable into the debug container (repeatable, both runtimes). |
@@ -470,7 +506,11 @@ debux kill docker://my-app
 debux kill k8s://my-namespace/my-pod
 debux kill k8s://my-pod --namespace my-namespace
 
+# Delete a kept --copy debug pod
+debux kill k8s://my-namespace/debux-copy-abc12
+
 # Kill all sessions in the selected runtime
+# (for Kubernetes this also deletes kept and expired copy pods)
 debux kill --all
 debux kill k8s://my-namespace/ --all
 debux kill --all --namespace my-namespace

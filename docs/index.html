@@ -1342,6 +1342,12 @@ debux k8s://prod/api-pod/app --fresh --pull-policy=Always</code></pre>
               <pre><code># When pods/ephemeralcontainers RBAC is denied
 debux k8s://prod/api-pod/app --copy
 
+# Long-lived copy session: survives rollouts, kept after exit,
+# self-destructs after 48h (kubelet-enforced activeDeadlineSeconds)
+debux k8s://prod/api-pod/app --copy --keep --ttl=48h
+debux k8s://prod/debux-copy-abc12        # reattach later
+debux kill k8s://prod/debux-copy-abc12   # delete it
+
 # Standalone toolbox pod
 debux pod -n prod
 
@@ -1374,7 +1380,7 @@ RUN NIX_CONFIG="experimental-features = nix-command flakes" \
               <thead><tr><th>Mode</th><th>Best for</th><th>Notes</th></tr></thead>
               <tbody>
                 <tr><td><code>ephemeral container</code></td><td>Debugging a live pod in-place</td><td>Shares target container PID namespace when supported; cannot be removed from the pod spec after creation.</td></tr>
-                <tr><td><code>--copy</code></td><td>RBAC or PodSecurity blocks ephemeral containers</td><td>Creates a temporary copied pod, enables process namespace sharing, then deletes it on exit.</td></tr>
+                <tr><td><code>--copy</code></td><td>RBAC or PodSecurity blocks ephemeral containers; sessions that must survive rollouts or Karpenter consolidation</td><td>Creates a copied pod (process namespace sharing enabled), deleted on exit unless <code>--keep</code>. Annotated <code>karpenter.sh/do-not-disrupt</code> and expired by a kubelet-enforced TTL (<code>--ttl</code>, default 24h) so kept or orphaned copies cannot leak forever.</td></tr>
                 <tr><td><code>debux pod</code></td><td>Cluster network troubleshooting</td><td>Standalone debug pod in the current kube-context namespace by default, optionally with host networking.</td></tr>
                 <tr><td><code>debux node</code></td><td>Node-level debugging</td><td>Host-namespace toolbox pod pinned to a node, node root at <code>/host</code>, tolerates taints. Like <code>kubectl debug node/</code>.</td></tr>
               </tbody>
@@ -1729,6 +1735,8 @@ debux store clean</code></pre>
                 <tr><td><code>--image &lt;image&gt;</code></td><td>Override the debug image.</td></tr>
                 <tr><td><code>--fresh</code></td><td>Force a new debug container instead of reusing an existing one.</td></tr>
                 <tr><td><code>--copy</code></td><td>Kubernetes: create a copied debug pod instead of an ephemeral container.</td></tr>
+                <tr><td><code>--keep</code></td><td>Kubernetes: with <code>--copy</code>, keep the copy pod after the session ends. Reattach by targeting it; delete it with <code>debux kill</code>.</td></tr>
+                <tr><td><code>--ttl</code></td><td>Kubernetes: with <code>--copy</code>, kubelet-enforced deadline (<code>activeDeadlineSeconds</code>) after which the copy pod is stopped. Default <code>24h</code>, <code>0</code> disables; also bounds the <code>karpenter.sh/do-not-disrupt</code> window.</td></tr>
                 <tr><td><code>--no-volumes</code></td><td>Do not mount target volumes directly. This is not an isolation boundary if the debug container can access <code>/proc/1/root</code>.</td></tr>
                 <tr><td><code>--read-only-volumes</code></td><td>Mount target volumes read-only in the debug container to reduce accidental writes. This is not an isolation boundary if <code>/proc/1/root</code> is accessible.</td></tr>
                 <tr><td><code>--env KEY=VALUE</code></td><td>Inject an extra environment variable into the debug container (repeatable, both runtimes).</td></tr>
@@ -1826,6 +1834,10 @@ debux k8s://prod/api/app \
             <article class="card">
               <h3>Can I use it in restricted clusters?</h3>
               <p>Yes. Try <code>--profile=restricted</code> for non-root/no-capability sessions, or <code>--profile=baseline</code> for clusters that set defaults via policy. If ephemeral containers are blocked by RBAC, use <code>--copy</code>.</p>
+            </article>
+            <article class="card">
+              <h3>My pods get replaced by deploys or Karpenter — can a session survive?</h3>
+              <p>Ephemeral containers die with their pod. Use <code>--copy --keep</code> instead: the copy pod is not owned by your Deployment (rollouts skip it), carries <code>karpenter.sh/do-not-disrupt</code> against consolidation, and self-destructs after <code>--ttl</code> (default 24h) so nothing leaks. Reattach by targeting the copy pod; delete it with <code>debux kill</code>.</p>
             </article>
           </div>
         </section>

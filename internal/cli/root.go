@@ -13,6 +13,10 @@ import (
 
 const docsURL = "https://clement-tourriere.github.io/debux/"
 
+// defaultCopyPodTTL bounds the life of --copy debug pods so a CLI that dies
+// without cleaning up (power loss, SIGKILL) cannot leak a pod forever.
+const defaultCopyPodTTL = "24h"
+
 var (
 	flagImage           string
 	flagPrivileged      bool
@@ -25,6 +29,8 @@ var (
 	flagNamespace       string
 	flagFresh           bool
 	flagCopy            bool
+	flagKeep            bool
+	flagTTL             string
 	flagProfile         string
 	flagEnv             []string
 	flagCapAdd          []string
@@ -90,6 +96,10 @@ const rootExample = `  # Pick a Docker container interactively
   # If ephemeral containers are blocked by RBAC or policy
   debux k8s://prod/api-pod/app --copy
 
+  # Long-lived copy session that survives rollouts of the source Deployment;
+  # the pod stays after exit and self-destructs after 48h
+  debux k8s://prod/api-pod/app --copy --keep --ttl=48h
+
   # Pull the latest debug image and force a fresh session
   debux k8s://prod/api-pod/app --fresh --pull-policy=Always
 
@@ -147,6 +157,8 @@ func addExecFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&flagUser, "user", "", "Run debug container as uid[:gid]")
 	cmd.Flags().BoolVar(&flagPrivileged, "privileged", false, "Run privileged (Docker); Kubernetes alias for --profile=sysadmin")
 	cmd.Flags().BoolVar(&flagCopy, "copy", false, "Kubernetes: use a temporary copied pod instead of an ephemeral container")
+	cmd.Flags().BoolVar(&flagKeep, "keep", false, "Kubernetes: with --copy, keep the copy pod after the session ends (reattach by targeting it, delete with debux kill)")
+	cmd.Flags().StringVar(&flagTTL, "ttl", defaultCopyPodTTL, "Kubernetes: with --copy, kubelet-enforced deadline after which the copy pod is stopped (Go duration; 0 disables)")
 	cmd.Flags().StringVar(&flagPullPolicy, "pull-policy", "", "Image pull policy for the debug image (Always, IfNotPresent, Never)")
 	cmd.Flags().StringVar(&flagProfile, "profile", runtime.ProfileGeneral,
 		fmt.Sprintf("Kubernetes: security profile (%s)", strings.Join(runtime.ValidProfiles, ", ")))

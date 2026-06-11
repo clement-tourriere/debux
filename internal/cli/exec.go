@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/clement-tourriere/debux/internal/config"
 	"github.com/clement-tourriere/debux/internal/history"
@@ -37,6 +38,7 @@ Security: the default Kubernetes profile is root inside the pod. Use
   debux exec k8s://prod/api-pod/app --fresh --pull-policy=Always
   debux exec k8s://prod/api-pod/app --read-only-volumes
   debux exec k8s://prod/api-pod/app --copy
+  debux exec k8s://prod/api-pod/app --copy --keep --ttl=48h
   debux exec docker://my-app -- curl -I localhost
   debux exec k8s://prod/api-pod/app -- ps aux`,
 		Args: cobra.ArbitraryArgs,
@@ -82,6 +84,17 @@ func runExec(cmd *cobra.Command, args []string) error {
 	if err := validateExecFlags(cmd, target.Runtime); err != nil {
 		return err
 	}
+
+	// Parse --ttl before any pickers or cluster roundtrips so a typo fails fast.
+	var copyTTL time.Duration
+	if flagCopy {
+		ttl, err := parseCopyPodTTL(flagTTL)
+		if err != nil {
+			return err
+		}
+		copyTTL = ttl
+	}
+
 	applyKubeNamespaceFlagContainerShorthand(cmd, target)
 
 	kubeContext, err := resolveKubeContext(cmd, target.Context)
@@ -150,6 +163,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 		PullPolicy:      pullPolicy,
 		Fresh:           flagFresh,
 		Copy:            flagCopy,
+		Keep:            flagKeep,
+		TTL:             copyTTL,
 		Profile:         profile,
 		Command:         command,
 		Env:             flagEnv,
@@ -172,6 +187,22 @@ func runExec(cmd *cobra.Command, args []string) error {
 	default:
 		return fmt.Errorf("unsupported runtime: %s", target.Runtime)
 	}
+}
+
+// parseCopyPodTTL parses --ttl. "0" disables the deadline; anything else must
+// be a Go duration of at least one second (activeDeadlineSeconds granularity).
+func parseCopyPodTTL(value string) (time.Duration, error) {
+	d, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("invalid --ttl %q: use a Go duration like 30m, 8h, 2h45m, or 0 to disable", value)
+	}
+	if d == 0 {
+		return 0, nil
+	}
+	if d < time.Second {
+		return 0, fmt.Errorf("invalid --ttl %q: must be at least 1s (or 0 to disable)", value)
+	}
+	return d, nil
 }
 
 func resolveK8sContainerName(ctx context.Context, cmd *cobra.Command, target *runtime.Target, kubeContext string) (string, error) {
@@ -228,11 +259,14 @@ func resolveKubeContext(cmd *cobra.Command, targetContext string) (string, error
 
 func validateExecFlags(cmd *cobra.Command, targetRuntime string) error {
 	if targetRuntime == "kubernetes" {
+		if (flagChanged(cmd, "keep") || flagChanged(cmd, "ttl")) && !flagCopy {
+			return fmt.Errorf("--keep and --ttl are only supported with --copy: ephemeral debug containers live inside the target pod and cannot outlive it")
+		}
 		return nil
 	}
 
 	var invalid []string
-	for _, name := range []string{"copy", "kubeconfig", "context", "namespace", "profile"} {
+	for _, name := range []string{"copy", "keep", "ttl", "kubeconfig", "context", "namespace", "profile"} {
 		if flagChanged(cmd, name) {
 			invalid = append(invalid, "--"+name)
 		}
