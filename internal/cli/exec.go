@@ -96,14 +96,16 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}
 	target.Namespace = kubeNamespace
 
-	// If name is empty, show interactive picker for the runtime.
-	if target.Name == "" {
+	// If name is empty, show interactive picker for the runtime — unless a
+	// compose service was given, which the Docker runtime resolves to a
+	// concrete container itself.
+	if target.Name == "" && target.ComposeService == "" {
 		name, err := pickTarget(ctx, cmd, target)
 		if err != nil {
 			return err
 		}
 		target.Name = name
-	} else if target.Runtime == "kubernetes" {
+	} else if target.Name != "" && target.Runtime == "kubernetes" {
 		name, err := resolveK8sPodName(ctx, cmd, target, kubeContext)
 		if err != nil {
 			return err
