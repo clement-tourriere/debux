@@ -29,11 +29,16 @@ for _ in {1..60}; do
 done
 
 echo "Running one-shot debux command against $TARGET_NAME"
-"$DEBUX_BIN" "docker://$TARGET_NAME" \
+output="$("$DEBUX_BIN" "docker://$TARGET_NAME" \
   --image "$DEBUX_IMAGE" \
   --fresh \
   --pull-policy "$DEBUX_PULL_POLICY" \
-  -- sh -lc 'test -d "$DEBUX_TARGET_ROOT" && curl -fsS http://127.0.0.1 >/dev/null && echo debux-e2e-docker-ok'
+  -- sh -lc 'test -d "$DEBUX_TARGET_ROOT" && curl -fsS http://127.0.0.1 >/dev/null && echo debux-e2e-docker-ok')"
+printf '%s\n' "$output"
+if ! grep -q 'debux-e2e-docker-ok' <<<"$output"; then
+  echo "error: expected sentinel 'debux-e2e-docker-ok' in debux output" >&2
+  exit 1
+fi
 
 echo "Checking session cleanup command"
 "$DEBUX_BIN" kill "docker://$TARGET_NAME"
