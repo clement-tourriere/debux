@@ -153,6 +153,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 	if err := runtime.ValidateEnvVars(flagEnv); err != nil {
 		return err
 	}
+	if err := runtime.ValidateTools(config.ResolveTools(flagTools)); err != nil {
+		return err
+	}
 
 	opts := runtime.DebugOpts{
 		Image:           resolveImage(flagImage),

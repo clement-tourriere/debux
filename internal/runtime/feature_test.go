@@ -89,12 +89,30 @@ func TestValidateEnvVars(t *testing.T) {
 }
 
 func TestDebugExtraEnv(t *testing.T) {
-	got := debugExtraEnv([]string{"FOO=bar"}, []string{"py-spy", "gdb"})
+	got, err := debugExtraEnv([]string{"FOO=bar"}, []string{"py-spy", "gdb"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(got) != 2 || got[0] != "FOO=bar" || got[1] != "DEBUX_TOOLS=py-spy gdb" {
 		t.Fatalf("unexpected env: %v", got)
 	}
-	if extra := debugExtraEnv(nil, nil); len(extra) != 0 {
+	extra, err := debugExtraEnv(nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(extra) != 0 {
 		t.Fatalf("expected no entries, got %v", extra)
+	}
+}
+
+func TestValidateTools(t *testing.T) {
+	if err := ValidateTools([]string{"python3", "py-spy", "nixpkgs#hello", "github:owner/repo#pkg"}); err != nil {
+		t.Fatalf("valid tools rejected: %v", err)
+	}
+	for _, bad := range []string{"foo;bar", "foo bar", "foo|bar", "foo$(x)", "foo`bar", "foo*", "foo\nbar", ""} {
+		if err := ValidateTools([]string{bad}); err == nil {
+			t.Errorf("ValidateTools(%q): expected error", bad)
+		}
 	}
 }
 

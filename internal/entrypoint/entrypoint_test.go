@@ -41,3 +41,47 @@ func TestShellBootstrapScriptIncludesDebuxZshConfig(t *testing.T) {
 		t.Fatalf("ShellBootstrapScript() wrote an empty zshrc heredoc")
 	}
 }
+
+// TestShellBootstrapScriptZshenvOnlySetsZdotdir guards against regressing the
+// .zshenv heredoc back to carrying the full interactive zshrc. zsh sources
+// .zshenv on EVERY invocation (including non-interactive `zsh -c`), so it must
+// stay minimal — only `export ZDOTDIR=/tmp` — while the heavy config lives in
+// .zshrc. A substring check is not enough here (see the bug this caught): we
+// extract each heredoc body and compare it exactly.
+func TestShellBootstrapScriptZshenvOnlySetsZdotdir(t *testing.T) {
+	script := ShellBootstrapScript()
+
+	zshenv := heredocContent(script, "ZSHENV_EOF")
+	if zshenv != "export ZDOTDIR=/tmp" {
+		t.Fatalf("/tmp/.zshenv heredoc = %q, want exactly %q", zshenv, "export ZDOTDIR=/tmp")
+	}
+	if strings.Contains(zshenv, "command_not_found_handler()") {
+		t.Fatal("/tmp/.zshenv must not carry the interactive zshrc config")
+	}
+
+	zshrc := heredocContent(script, "ZSHRC_EOF")
+	if !strings.Contains(zshrc, "command_not_found_handler()") {
+		t.Fatal("/tmp/.zshrc heredoc is missing the debux zsh config")
+	}
+}
+
+func TestHeredocContent(t *testing.T) {
+	tests := []struct {
+		name   string
+		script string
+		marker string
+		want   string
+	}{
+		{"multi-line body", "head\ncat > f << 'M'\nfoo\nbar\nM\ntail", "M", "foo\nbar"},
+		{"single-line body", "cat > f << 'M'\nonly\nM", "M", "only"},
+		{"missing marker", "cat > f << 'M'\nfoo\nM", "NOPE", ""},
+		{"unterminated heredoc", "cat > f << 'M'\nfoo", "M", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := heredocContent(tt.script, tt.marker); got != tt.want {
+				t.Fatalf("heredocContent(_, %q) = %q, want %q", tt.marker, got, tt.want)
+			}
+		})
+	}
+}

@@ -157,6 +157,9 @@ debux compose://my-project/web
 
 # Debug a Podman container via its Docker-compatible socket
 debux podman://my-app
+
+# containerd/nerdctl schemes are recognized but not yet implemented;
+# use podman://, docker://, or k8s:// when available.
 ```
 
 ### Kubernetes

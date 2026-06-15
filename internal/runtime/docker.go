@@ -5,6 +5,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -576,7 +578,11 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 			"DEBUX_DAEMON=1",
 		},
 	}
-	config.Env = append(config.Env, debugExtraEnv(opts.Env, opts.Tools)...)
+	extraEnv, err := debugExtraEnv(opts.Env, opts.Tools)
+	if err != nil {
+		return err
+	}
+	config.Env = append(config.Env, extraEnv...)
 
 	// Share IPC when possible: join host IPC if the target uses it, join the
 	// target when its IPC is shareable, otherwise keep a private namespace.
@@ -986,7 +992,11 @@ func dockerExecCopy(ctx context.Context, cli *client.Client, targetInfo containe
 			fmt.Sprintf("DEBUX_TARGET_ENVIRON=%s", stoppedTargetEnvironPath),
 		},
 	}
-	config.Env = append(config.Env, debugExtraEnv(opts.Env, opts.Tools)...)
+	extraEnv, err := debugExtraEnv(opts.Env, opts.Tools)
+	if err != nil {
+		return err
+	}
+	config.Env = append(config.Env, extraEnv...)
 	if len(opts.Command) > 0 {
 		config.Env = append(config.Env, "DEBUX_EXEC_COMMAND="+shellJoin(opts.Command))
 	}
@@ -1089,7 +1099,9 @@ func mkdirViaTar(ctx context.Context, cli *client.Client, containerID, name stri
 }
 
 // sanitizeImageRef converts an image reference into a valid container name suffix.
-// e.g. "gcr.io/distroless/static:latest" → "gcr-io-distroless-static-latest"
+// e.g. "gcr.io/distroless/static:latest" → "gcr-io-distroless-static-latest-abc123"
+// A short hash of the original reference is appended so different refs such as
+// "a/b" and "a-b" cannot collide after sanitization.
 func sanitizeImageRef(ref string) string {
 	replacer := strings.NewReplacer(
 		"/", "-",
@@ -1097,7 +1109,9 @@ func sanitizeImageRef(ref string) string {
 		".", "-",
 		"@", "-",
 	)
-	return replacer.Replace(ref)
+	sanitized := replacer.Replace(ref)
+	hash := sha256.Sum256([]byte(ref))
+	return sanitized + "-" + hex.EncodeToString(hash[:])[:8]
 }
 
 // targetMounts extracts the target container's mounts and converts them to

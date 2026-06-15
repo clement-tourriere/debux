@@ -262,6 +262,10 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 		readOnlyVolumes: flagReadOnlyVolumes,
 	}
 
+	// Restore last-used TUI options when the user did not explicitly override
+	// them on the command line.
+	applySavedTUIState(cmd, &baseLaunch)
+
 	// Carry the navigation scope and any launch error across loop iterations
 	// so the next TUI reopens where the user left off and shows what failed.
 	kubeCtx, kubeNs := flagKubeContext, flagNamespace
@@ -303,6 +307,11 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 		baseLaunch.mode = ""
 
 		prepareTerminalForDebugSession()
+
+		// Persist the options used for this launch so the next `debux tui`
+		// invocation can start with the same defaults.
+		_ = config.SaveTUIState(tuiLaunchToState(launch))
+
 		if launch.mode == tuiLaunchTerminal {
 			if err := openInTerminal(ctx, cmd, launch); err != nil {
 				startupNotice = "External launch failed: " + err.Error()
@@ -312,6 +321,49 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 		if err := runExec(cmd, []string{launch.target}); err != nil {
 			return err
 		}
+	}
+}
+
+func applySavedTUIState(cmd *cobra.Command, launch *tuiLaunch) {
+	state := config.LoadTUIState()
+	if !flagChanged(cmd, "image") && state.Image != "" {
+		launch.image = state.Image
+	}
+	if !flagChanged(cmd, "user") && state.User != "" {
+		launch.user = state.User
+	}
+	if !flagChanged(cmd, "pull-policy") && state.PullPolicy != "" {
+		launch.pullPolicy = state.PullPolicy
+	}
+	if !flagChanged(cmd, "profile") && !flagChanged(cmd, "privileged") && state.Profile != "" {
+		launch.profile = state.Profile
+		launch.privileged = state.Privileged
+	}
+	if !flagChanged(cmd, "fresh") {
+		launch.fresh = state.Fresh
+	}
+	if !flagChanged(cmd, "copy") {
+		launch.copy = state.Copy
+	}
+	if !flagChanged(cmd, "no-volumes") && !flagChanged(cmd, "read-only-volumes") {
+		// NoVolumes is stored inverted so an absent/zero state keeps the
+		// default of sharing volumes rather than flipping it off.
+		launch.shareVolumes = !state.NoVolumes
+		launch.readOnlyVolumes = state.ReadOnlyVolumes
+	}
+}
+
+func tuiLaunchToState(launch tuiLaunch) config.TUIState {
+	return config.TUIState{
+		Image:           launch.image,
+		User:            launch.user,
+		PullPolicy:      launch.pullPolicy,
+		Profile:         launch.profile,
+		Fresh:           launch.fresh,
+		Copy:            launch.copy,
+		Privileged:      launch.privileged,
+		NoVolumes:       !launch.shareVolumes,
+		ReadOnlyVolumes: launch.readOnlyVolumes,
 	}
 }
 

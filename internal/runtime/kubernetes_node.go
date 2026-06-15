@@ -129,7 +129,11 @@ func KubernetesNode(ctx context.Context, nodeName string, opts PodOpts) error {
 			}},
 		},
 	}
-	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, kubernetesEnvVars(debugExtraEnv(opts.Env, opts.Tools))...)
+	extraEnv, err := debugExtraEnv(opts.Env, opts.Tools)
+	if err != nil {
+		return err
+	}
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, kubernetesEnvVars(extraEnv)...)
 
 	sc, err := SecurityContextForProfile(opts.Profile)
 	if err != nil {

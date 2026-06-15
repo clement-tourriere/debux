@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -156,14 +157,39 @@ type ImageOpts struct {
 	Command    []string // optional one-shot command instead of an interactive shell
 }
 
+// toolNamePattern matches a single nixpkgs package name or flake reference
+// fragment. It is intentionally restrictive so values injected into the debug
+// container's shell cannot carry shell metacharacters.
+var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9._+/#:\-]+$`)
+
+// ValidateTools checks that every requested tool name only contains characters
+// safe for both the shell and nixpkgs/flake references.
+func ValidateTools(tools []string) error {
+	for _, t := range tools {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			return fmt.Errorf("invalid --tools: empty value")
+		}
+		if !toolNamePattern.MatchString(t) {
+			return fmt.Errorf("invalid --tools %q: only letters, digits, and ._+/#:- are allowed", t)
+		}
+	}
+	return nil
+}
+
 // debugExtraEnv renders user-provided env and tool requests as container
-// environment entries shared by both runtimes.
-func debugExtraEnv(env, tools []string) []string {
+// environment entries shared by both runtimes. It validates tool names before
+// embedding them so shell scripts that consume DEBUX_TOOLS cannot be tricked
+// into executing injected commands.
+func debugExtraEnv(env, tools []string) ([]string, error) {
+	if err := ValidateTools(tools); err != nil {
+		return nil, err
+	}
 	out := append([]string(nil), env...)
 	if len(tools) > 0 {
 		out = append(out, "DEBUX_TOOLS="+strings.Join(tools, " "))
 	}
-	return out
+	return out, nil
 }
 
 // normalizeCapabilities upper-cases capability names and strips an optional
