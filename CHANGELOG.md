@@ -1,3 +1,9 @@
+## v0.8.1 (2026-06-15)
+
+### Refactor
+
+- split kubernetes/entrypoint internals and persist TUI options
+
 ## v0.8.0 (2026-06-15)
 
 ### Feat
