@@ -172,6 +172,41 @@ func TestKubernetesDebugTargetLabelIncludesContext(t *testing.T) {
 	}
 }
 
+func TestKubernetesTargetURIIncludesContext(t *testing.T) {
+	got := kubernetesTargetURI("eks-preprod-01", "gim", "debux-copy-zf8qd")
+	want := "k8s://@eks-preprod-01/gim/debux-copy-zf8qd"
+	if got != want {
+		t.Fatalf("kubernetesTargetURI() = %q, want %q", got, want)
+	}
+
+	got = kubernetesTargetURI("arn:aws:eks:us-west-2:123:cluster/preprod", "gim", "debux-copy-zf8qd")
+	want = "k8s://@arn:aws:eks:us-west-2:123:cluster%2Fpreprod/gim/debux-copy-zf8qd"
+	if got != want {
+		t.Fatalf("kubernetesTargetURI() escaped = %q, want %q", got, want)
+	}
+}
+
+func TestDockerSessionFromSidecar(t *testing.T) {
+	session, ok := dockerSessionFromSidecar(container.Summary{
+		Names:  []string{"/debux-api"},
+		Image:  "debug:latest",
+		Status: "Up 2 minutes",
+		Labels: map[string]string{
+			dockerLabelManagedBy:  dockerLabelManagedByVal,
+			dockerLabelKind:       dockerLabelKindSidecar,
+			dockerLabelTargetName: "api",
+			dockerLabelDebugImage: "debug:v1",
+			dockerLabelDebugUser:  "1000:1000",
+		},
+	})
+	if !ok {
+		t.Fatal("dockerSessionFromSidecar did not recognize sidecar")
+	}
+	if session.Target != "docker://api" || session.DebugName != "debux-api" || session.Image != "debug:v1" || session.User != "1000:1000" {
+		t.Fatalf("session = %#v", session)
+	}
+}
+
 func TestDebuxExecCommandQuotesOneShotCommand(t *testing.T) {
 	cmd := debuxExecCommand([]string{"sh", "-c", "echo 'hello world'"})
 	if len(cmd) != 3 || cmd[0] != "sh" || cmd[1] != "-c" {

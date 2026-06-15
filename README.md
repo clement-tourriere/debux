@@ -121,12 +121,12 @@ Interactive picker:
 debux docker://
 ```
 
-Full-screen target browser with Docker, Kubernetes context/namespace navigation, recent sessions, option toggles, and optional new-terminal launch support:
+Full-screen target browser with Docker, Kubernetes context/namespace navigation, active session reattach, recent sessions, option toggles, and optional new-terminal launch support:
 
 ```bash
 debux tui
 # keys: / filter, enter open/drill down, ←/→ or tab cycle sources,
-#       d/k/y jump to Docker/Kubernetes/History,
+#       1/2/3/4 jump to Docker/Kubernetes/Active sessions/History,
 #       b back, s search pods, r reload
 ```
 
@@ -209,8 +209,12 @@ interruptions, node failure, manual drains — still wins.
 # Keep the copy pod when the session ends; it self-destructs after 48h
 debux k8s://my-namespace/my-pod --copy --keep --ttl=48h
 
+# See currently reattachable sessions, then pick one from a searchable picker
+debux list k8s://my-namespace/
+debux attach
+
 # Come back later: targeting a copy pod reattaches to its debug container
-debux k8s://my-namespace/debux-copy-abc12
+debux attach k8s://my-namespace/debux-copy-abc12
 
 # Done early? Delete it explicitly
 debux kill k8s://my-namespace/debux-copy-abc12
@@ -501,6 +505,12 @@ even permitted before an incident (see below).
 ### Manage debux sessions and stores
 
 ```bash
+# List and reattach to active debux sessions (attach opens a searchable picker)
+debux list
+debux list k8s://@eks-preprod-01/my-namespace/
+debux attach
+debux attach k8s://@eks-preprod-01
+
 # Kill a Docker or Kubernetes debug session
 debux kill docker://my-app
 debux kill k8s://my-namespace/my-pod
@@ -531,7 +541,7 @@ debux cp ./debug-tool k8s://my-namespace/my-pod:/tmp
 debux docker://my-app -- curl -I localhost
 debux k8s://my-namespace/my-pod/app -- ps aux
 
-# Browse Docker, Kubernetes, and recent sessions in the full-screen TUI
+# Browse Docker, Kubernetes, active sessions, and recent history in the full-screen TUI
 debux tui
 
 # Diagnose local Docker/Kubernetes readiness and RBAC

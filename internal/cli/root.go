@@ -100,6 +100,10 @@ const rootExample = `  # Pick a Docker container interactively
   # the pod stays after exit and self-destructs after 48h
   debux k8s://prod/api-pod/app --copy --keep --ttl=48h
 
+  # List and reattach to active debux sessions
+  debux list
+  debux attach
+
   # Pull the latest debug image and force a fresh session
   debux k8s://prod/api-pod/app --fresh --pull-policy=Always
 
@@ -131,6 +135,8 @@ func NewRootCmd() *cobra.Command {
 
 	cmd.AddCommand(newExecCmd())
 	cmd.AddCommand(newTUICmd())
+	cmd.AddCommand(newListCmd())
+	cmd.AddCommand(newAttachCmd())
 	cmd.AddCommand(newImageCmd())
 	cmd.AddCommand(newPodCmd())
 	cmd.AddCommand(newNodeCmd())

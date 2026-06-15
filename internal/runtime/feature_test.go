@@ -357,3 +357,85 @@ func TestIsKubernetesCopyPodIgnoresUserPods(t *testing.T) {
 		t.Fatal("unlabeled pod must not be treated as a copy pod")
 	}
 }
+
+func TestKubernetesSessionsForPod(t *testing.T) {
+	started := metav1.Now()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "prod"},
+		Spec: corev1.PodSpec{EphemeralContainers: []corev1.EphemeralContainer{{
+			EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+				Name:  "debux-123",
+				Image: "debug:v1",
+				Env: []corev1.EnvVar{
+					{Name: "DEBUX_TARGET", Value: "ctx:prod/api/app"},
+					{Name: "DEBUX_SECURITY_PROFILE", Value: ProfileRestricted},
+					{Name: "DEBUX_DEBUG_USER", Value: "1000:1000"},
+				},
+			},
+			TargetContainerName: "app",
+		}}},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			EphemeralContainerStatuses: []corev1.ContainerStatus{{
+				Name:  "debux-123",
+				State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: started}},
+			}},
+		},
+	}
+
+	got := kubernetesSessionsForPod(pod, "ctx")
+	if len(got) != 1 {
+		t.Fatalf("sessions = %#v, want one", got)
+	}
+	if got[0].Kind != DebugSessionKindKubernetesEphemeral || got[0].Target != "k8s://@ctx/prod/api/app" {
+		t.Fatalf("ephemeral session = %#v", got[0])
+	}
+	if got[0].Profile != ProfileRestricted || got[0].User != "1000:1000" || got[0].Image != "debug:v1" {
+		t.Fatalf("ephemeral session metadata = %#v", got[0])
+	}
+
+	deadline := int64(3600)
+	copyPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "debux-copy-abc12",
+			Namespace: "prod",
+			Labels: map[string]string{
+				debuxManagedByLabelKey: debuxManagedByLabelValue,
+				debuxModeLabelKey:      debuxModeCopy,
+			},
+			Annotations: map[string]string{
+				debuxSourcePodAnnotation:       "api",
+				debuxTargetContainerAnnotation: "app",
+			},
+		},
+		Spec: corev1.PodSpec{
+			ActiveDeadlineSeconds: &deadline,
+			Containers: []corev1.Container{{
+				Name:  "debux",
+				Image: "debug:v2",
+				Env: []corev1.EnvVar{
+					{Name: "DEBUX_DAEMON", Value: "1"},
+					{Name: "DEBUX_SECURITY_PROFILE", Value: ProfileGeneral},
+				},
+			}},
+		},
+		Status: corev1.PodStatus{
+			Phase:     corev1.PodRunning,
+			StartTime: &started,
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name:  "debux",
+				State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: started}},
+			}},
+		},
+	}
+	got = kubernetesSessionsForPod(copyPod, "ctx")
+	if len(got) != 1 {
+		t.Fatalf("copy sessions = %#v, want one", got)
+	}
+	if got[0].Kind != DebugSessionKindKubernetesCopyPod || got[0].Target != "k8s://@ctx/prod/debux-copy-abc12" {
+		t.Fatalf("copy session = %#v", got[0])
+	}
+	if got[0].Source != "api" || got[0].TargetContainer != "app" || !got[0].HasExpiry {
+		t.Fatalf("copy session metadata = %#v", got[0])
+	}
+}

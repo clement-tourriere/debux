@@ -30,7 +30,7 @@ func newTUICmd() *cobra.Command {
 		Aliases: []string{"ui"},
 		Short:   "Open the full-screen debux target browser",
 		Long: `Open an interactive full-screen TUI to search Docker containers,
-Kubernetes contexts/namespaces/pods, and recent debux sessions.
+Kubernetes contexts/namespaces/pods, active debux sessions, and recent history.
 
 Kubernetes pods are loaded lazily after you choose a context and namespace, so
 large namespaces do not block startup. Press enter to open the selected debug
@@ -71,15 +71,17 @@ const (
 	tuiViewKubeContexts   tuiView = "kubernetes-contexts"
 	tuiViewKubeNamespaces tuiView = "kubernetes-namespaces"
 	tuiViewKubePods       tuiView = "kubernetes-pods"
+	tuiViewSessions       tuiView = "sessions"
 	tuiViewHistory        tuiView = "history"
 )
 
 type tuiSource string
 
 const (
-	tuiSourceDocker  tuiSource = "docker"
-	tuiSourceK8s     tuiSource = "kubernetes"
-	tuiSourceHistory tuiSource = "history"
+	tuiSourceDocker   tuiSource = "docker"
+	tuiSourceK8s      tuiSource = "kubernetes"
+	tuiSourceSessions tuiSource = "sessions"
+	tuiSourceHistory  tuiSource = "history"
 )
 
 type tuiItemKind string
@@ -92,15 +94,18 @@ const (
 )
 
 type tuiItem struct {
-	kind      tuiItemKind
-	source    tuiSource
-	view      tuiView
-	title     string
-	desc      string
-	target    string
-	context   string
-	namespace string
-	active    bool
+	kind          tuiItemKind
+	source        tuiSource
+	view          tuiView
+	title         string
+	desc          string
+	target        string
+	context       string
+	namespace     string
+	launchImage   string
+	launchUser    string
+	launchProfile string
+	active        bool
 }
 
 func (i tuiItem) Title() string { return i.title }
@@ -141,6 +146,13 @@ type tuiPodsLoadedMsg struct {
 	err       error
 }
 
+type tuiSessionsLoadedMsg struct {
+	gen      int
+	sessions []tuiItem
+	err      error
+	loadedAt time.Time
+}
+
 type tuiModel struct {
 	list   list.Model
 	view   tuiView
@@ -159,18 +171,21 @@ type tuiModel struct {
 	contextItems   []tuiItem
 	namespaceItems []tuiItem
 	podItems       []tuiItem
+	sessionItems   []tuiItem
 	historyItems   []tuiItem
 
-	loading      bool
-	loadingLabel string
-	notice       string
-	lastLoadedAt time.Time
-	dockerErr    error
-	contextErr   error
-	namespaceErr error
-	podsErr      error
-	historyErr   error
-	podsLimited  bool
+	loading        bool
+	loadingLabel   string
+	notice         string
+	lastLoadedAt   time.Time
+	dockerErr      error
+	contextErr     error
+	namespaceErr   error
+	podsErr        error
+	sessionErr     error
+	historyErr     error
+	podsLimited    bool
+	sessionsLoaded bool
 
 	selectedContext   string
 	selectedNamespace string
@@ -404,6 +419,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectedNamespace = msg.namespace
 		m.podQuery = msg.query
 		return m, m.applyView()
+	case tuiSessionsLoadedMsg:
+		if msg.gen != m.loadGen {
+			return m, nil
+		}
+		m.loading = false
+		m.sessionItems = msg.sessions
+		m.sessionErr = msg.err
+		m.sessionsLoaded = true
+		m.lastLoadedAt = msg.loadedAt
+		return m, m.applyView()
 	}
 
 	if m.searchingPods {
@@ -468,14 +493,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, cmd
 			case "1":
-				m.view = tuiViewDocker
-				return m, m.applyView()
+				return m, m.openRootView(tuiViewDocker)
 			case "2":
-				m.view = tuiViewKubeContexts
-				return m, m.applyView()
+				return m, m.openRootView(tuiViewKubeContexts)
 			case "3":
-				m.view = tuiViewHistory
-				return m, m.applyView()
+				return m, m.openRootView(tuiViewSessions)
+			case "4":
+				return m, m.openRootView(tuiViewHistory)
 			case "r":
 				return m, m.reload()
 			case "s":
@@ -540,7 +564,7 @@ func (m tuiModel) View() string {
 	}
 	b.WriteString(m.optionsView(contentWidth))
 	b.WriteString("\n")
-	hint := "/ filter · enter open · tab cycle · 1/2/3 jump · b back · f/c/v/o/p/i options · r reload · q quit"
+	hint := "/ filter · enter open · tab cycle · 1/2/3/4 jump · b back · f/c/v/o/p/i options · r reload · q quit"
 	if m.view == tuiViewKubePods {
 		hint = "/ filter · enter open · s search namespace · b back · f/c/v/o/p/i options · r reload · q quit"
 	}
@@ -554,7 +578,7 @@ func (m tuiModel) headerView(width int) string {
 		subtitle = "loaded " + m.lastLoadedAt.Format("15:04:05")
 	}
 	left := lipgloss.JoinHorizontal(lipgloss.Center, tuiLogoStyle.Render("debux"), "  ", tuiTitleStyle.Render("Target browser"), "  ", tuiHintStyle.Render(subtitle))
-	right := tuiHintStyle.Render(fmt.Sprintf("%d docker · %d contexts · %d history", len(m.dockerItems), len(m.contextItems), len(m.historyItems)))
+	right := tuiHintStyle.Render(fmt.Sprintf("%d docker · %d contexts · %d sessions · %d history", len(m.dockerItems), len(m.contextItems), len(m.sessionItems), len(m.historyItems)))
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 4
 	if gap < 2 {
 		gap = 2
@@ -577,7 +601,7 @@ func (m tuiModel) tabsView() string {
 			parts[i] = tuiTabStyle.Render(label)
 		}
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, parts...) + "  " + tuiHintStyle.Render("tab cycle · 1/2/3 jump")
+	return lipgloss.JoinHorizontal(lipgloss.Top, parts...) + "  " + tuiHintStyle.Render("tab cycle · 1/2/3/4 jump")
 }
 
 type tuiSourceTab struct {
@@ -588,10 +612,15 @@ type tuiSourceTab struct {
 }
 
 func (m tuiModel) sourceTabs() []tuiSourceTab {
+	sessionCount := -1
+	if m.sessionsLoaded {
+		sessionCount = len(m.sessionItems)
+	}
 	return []tuiSourceTab{
 		{key: "1", view: tuiViewDocker, label: "Docker", count: len(m.dockerItems)},
 		{key: "2", view: tuiViewKubeContexts, label: "Kubernetes", count: len(m.contextItems)},
-		{key: "3", view: tuiViewHistory, label: "History", count: len(m.historyItems)},
+		{key: "3", view: tuiViewSessions, label: "Sessions", count: sessionCount},
+		{key: "4", view: tuiViewHistory, label: "History", count: len(m.historyItems)},
 	}
 }
 
@@ -646,6 +675,8 @@ func (m tuiModel) breadcrumbView(width int) string {
 		if m.podQuery != "" {
 			parts = append(parts, "search: "+m.podQuery)
 		}
+	case tuiViewSessions:
+		parts = []string{"Active sessions", emptyAs(m.selectedContext, "current kube context"), emptyAs(m.selectedNamespace, "default namespace")}
 	}
 	crumb := tuiHintStyle.Render("where ") + tuiSuccessStyle.Render(strings.Join(parts, "  ›  "))
 	if m.view == tuiViewKubePods && m.podsLimited {
@@ -670,6 +701,8 @@ func (m tuiModel) warningView(width int) string {
 		add("Namespaces", m.namespaceErr)
 	case tuiViewKubePods:
 		add("Pods", m.podsErr)
+	case tuiViewSessions:
+		add("Sessions", m.sessionErr)
 	case tuiViewHistory:
 		add("History", m.historyErr)
 	default:
@@ -721,6 +754,8 @@ func (m *tuiModel) applyView() tea.Cmd {
 		return m.setItems("Kubernetes namespaces", m.namespaceItems)
 	case tuiViewKubePods:
 		return m.setItems("Running pods", m.podItems)
+	case tuiViewSessions:
+		return m.setItems("Active debux sessions", m.sessionItems)
 	case tuiViewHistory:
 		return m.setItems("Recent sessions", m.historyItems)
 	default:
@@ -729,10 +764,15 @@ func (m *tuiModel) applyView() tea.Cmd {
 }
 
 func (m tuiModel) sourceItems() []tuiItem {
+	sessionsTitle := "Active sessions"
+	if m.sessionsLoaded {
+		sessionsTitle = fmt.Sprintf("Active sessions  %d", len(m.sessionItems))
+	}
 	items := []tuiItem{
 		{kind: tuiItemSource, source: tuiSourceDocker, view: tuiViewDocker, title: fmt.Sprintf("Docker containers  %d", len(m.dockerItems)), desc: "Local running containers and active debux sidecars · press 1", active: m.rootView() == tuiViewDocker},
 		{kind: tuiItemSource, source: tuiSourceK8s, view: tuiViewKubeContexts, title: fmt.Sprintf("Kubernetes  %d contexts", len(m.contextItems)), desc: "Contexts → namespaces → pods, loaded lazily for large clusters · press 2", active: m.rootView() == tuiViewKubeContexts},
-		{kind: tuiItemSource, source: tuiSourceHistory, view: tuiViewHistory, title: fmt.Sprintf("Recent sessions  %d", len(m.historyItems)), desc: "Reopen previously launched debug sessions · press 3", active: m.rootView() == tuiViewHistory},
+		{kind: tuiItemSource, source: tuiSourceSessions, view: tuiViewSessions, title: sessionsTitle, desc: "Reattach to detached Docker sidecars and Kubernetes debug sessions · press 3", active: m.rootView() == tuiViewSessions},
+		{kind: tuiItemSource, source: tuiSourceHistory, view: tuiViewHistory, title: fmt.Sprintf("Recent sessions  %d", len(m.historyItems)), desc: "Reopen previously launched debug sessions · press 4", active: m.rootView() == tuiViewHistory},
 	}
 	if shortcut, ok := m.currentNamespaceShortcut(); ok {
 		shortcut.title = "Kubernetes current namespace  " + shortcut.title
@@ -804,10 +844,25 @@ func (m *tuiModel) reload() tea.Cmd {
 	case tuiViewKubePods:
 		m.loadingLabel = "Loading running pods…"
 		return loadTUIPods(m.kubeconfig, m.selectedContext, m.selectedNamespace, m.podQuery, m.loadGen)
+	case tuiViewSessions:
+		m.loadingLabel = "Loading active debux sessions…"
+		return loadTUISessions(m.kubeconfig, m.selectedContext, m.selectedNamespace, m.loadGen)
 	default:
 		m.loadingLabel = "Loading Docker, kube contexts, and history…"
 		return loadTUIDashboard(m.kubeconfig, m.selectedContext, m.loadGen)
 	}
+}
+
+func (m *tuiModel) openRootView(view tuiView) tea.Cmd {
+	m.view = view
+	m.notice = ""
+	if view == tuiViewSessions && !m.sessionsLoaded {
+		m.loading = true
+		m.loadingLabel = "Loading active debux sessions…"
+		m.loadGen++
+		return loadTUISessions(m.kubeconfig, m.selectedContext, m.selectedNamespace, m.loadGen)
+	}
+	return m.applyView()
 }
 
 func (m *tuiModel) goBack() tea.Cmd {
@@ -819,7 +874,7 @@ func (m *tuiModel) goBack() tea.Cmd {
 	case tuiViewKubeNamespaces:
 		m.view = tuiViewKubeContexts
 		return m.applyView()
-	case tuiViewDocker, tuiViewKubeContexts, tuiViewHistory:
+	case tuiViewDocker, tuiViewKubeContexts, tuiViewSessions, tuiViewHistory:
 		m.view = tuiViewDashboard
 		return m.applyView()
 	default:
@@ -844,9 +899,7 @@ func (m *tuiModel) activateSelected(mode tuiLaunchMode) (tea.Cmd, bool) {
 	}
 	switch selected.kind {
 	case tuiItemSource:
-		m.view = selected.view
-		m.notice = ""
-		return m.applyView(), false
+		return m.openRootView(selected.view), false
 	case tuiItemTarget:
 		m.result.target = selected.target
 		m.result.mode = mode
@@ -854,6 +907,17 @@ func (m *tuiModel) activateSelected(mode tuiLaunchMode) (tea.Cmd, bool) {
 		m.result.user = m.user
 		m.result.pullPolicy = m.pullPolicy
 		m.result.profile = m.profile
+		if selected.source == tuiSourceSessions {
+			if selected.launchImage != "" {
+				m.result.image = selected.launchImage
+			}
+			m.result.user = selected.launchUser
+			if selected.launchProfile != "" {
+				m.result.profile = selected.launchProfile
+			} else {
+				m.result.profile = runtime.ProfileGeneral
+			}
+		}
 		m.result.fresh = m.fresh
 		m.result.copy = m.copy
 		m.result.privileged = m.privileged
@@ -863,6 +927,7 @@ func (m *tuiModel) activateSelected(mode tuiLaunchMode) (tea.Cmd, bool) {
 	case tuiItemKubeContext:
 		m.selectedContext = selected.context
 		m.selectedNamespace = ""
+		m.sessionsLoaded = false
 		m.view = tuiViewKubeNamespaces
 		m.loading = true
 		m.loadingLabel = "Loading namespaces for " + emptyAs(selected.context, "current context") + "…"
@@ -873,6 +938,7 @@ func (m *tuiModel) activateSelected(mode tuiLaunchMode) (tea.Cmd, bool) {
 			m.selectedContext = selected.context
 		}
 		m.selectedNamespace = selected.namespace
+		m.sessionsLoaded = false
 		m.podQuery = ""
 		m.view = tuiViewKubePods
 		m.loading = true
@@ -978,6 +1044,41 @@ func loadTUIPods(kubeconfig, kubeContext, namespace, query string, gen int) tea.
 	}
 }
 
+func loadTUISessions(kubeconfig, kubeContext, namespace string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+
+		var sessions []runtime.DebugSessionInfo
+		var problems []error
+		if dockerSessions, err := runtime.DockerSessions(ctx); err != nil {
+			problems = append(problems, fmt.Errorf("docker: %w", err))
+		} else {
+			sessions = append(sessions, dockerSessions...)
+		}
+		for _, scope := range kubernetesSessionScopes(kubeconfig, kubeContext, namespace, true) {
+			if kubeSessions, err := runtime.KubernetesSessions(ctx, kubeconfig, scope.context, scope.namespace, false); err != nil {
+				problems = append(problems, fmt.Errorf("kubernetes %s: %w", scope.label(), err))
+			} else {
+				sessions = append(sessions, kubeSessions...)
+			}
+		}
+		sessions = dedupeDebugSessions(sessions)
+
+		items := make([]tuiItem, 0, len(sessions))
+		for _, session := range sessions {
+			items = append(items, tuiSessionItem(session))
+		}
+		sort.SliceStable(items, func(i, j int) bool { return items[i].target < items[j].target })
+
+		var err error
+		if len(problems) > 0 {
+			err = fmt.Errorf("%s", strings.Join(errorStrings(problems), " · "))
+		}
+		return tuiSessionsLoadedMsg{gen: gen, sessions: items, err: err, loadedAt: time.Now()}
+	}
+}
+
 func tuiDockerItem(c runtime.ContainerInfo) tuiItem {
 	desc := fmt.Sprintf("Docker · %s · %s", c.Image, c.Status)
 	return tuiItem{kind: tuiItemTarget, source: tuiSourceDocker, title: c.Name, desc: desc, target: "docker://" + c.Name, active: c.HasDebuxSession}
@@ -1020,6 +1121,33 @@ func tuiKubePodItem(p runtime.PodInfo, kubeContext string) tuiItem {
 		descParts = append(descParts, p.Status)
 	}
 	return tuiItem{kind: tuiItemTarget, source: tuiSourceK8s, title: p.Name, desc: strings.Join(descParts, " · "), target: target, active: p.HasDebuxSession, context: kubeContext, namespace: p.Namespace}
+}
+
+func tuiSessionItem(session runtime.DebugSessionInfo) tuiItem {
+	descParts := []string{"Active session", shortDebugSessionKind(session.Kind)}
+	if session.DebugName != "" {
+		descParts = append(descParts, "debug: "+session.DebugName)
+	}
+	if session.Source != "" {
+		descParts = append(descParts, "source: "+session.Source)
+	}
+	status := debugSessionStatus(session)
+	if status != "" {
+		descParts = append(descParts, status)
+	}
+	return tuiItem{
+		kind:          tuiItemTarget,
+		source:        tuiSourceSessions,
+		title:         session.Target,
+		desc:          strings.Join(descParts, " · "),
+		target:        session.Target,
+		context:       session.Context,
+		namespace:     session.Namespace,
+		launchImage:   session.Image,
+		launchUser:    session.User,
+		launchProfile: session.Profile,
+		active:        true,
+	}
 }
 
 func tuiHistoryItem(entry history.Entry) tuiItem {
@@ -1104,6 +1232,8 @@ func tuiItemIcon(i tuiItem) string {
 		return "🐳"
 	case tuiSourceK8s:
 		return "☸"
+	case tuiSourceSessions:
+		return "●"
 	case tuiSourceHistory:
 		return "↺"
 	default:

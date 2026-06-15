@@ -187,6 +187,135 @@ func KubernetesNamespaces(ctx context.Context, kubeconfig, kubeContext string) (
 	return result, nil
 }
 
+// KubernetesSessions returns running debux Kubernetes sessions that can be reattached.
+func KubernetesSessions(ctx context.Context, kubeconfig, kubeContext, namespace string, allNamespaces bool) ([]DebugSessionInfo, error) {
+	_, clientset, err := getK8sClient(kubeconfig, kubeContext)
+	if err != nil {
+		return nil, err
+	}
+
+	listNamespace := metav1.NamespaceAll
+	if !allNamespaces {
+		listNamespace = resolveTargetNamespace(namespace, kubeconfig, kubeContext)
+	}
+	displayContext := kubernetesDisplayContext(kubeconfig, kubeContext)
+
+	var result []DebugSessionInfo
+	listOptions := metav1.ListOptions{
+		FieldSelector: "status.phase=Running",
+		Limit:         kubernetesPodListLimit,
+	}
+	for {
+		pods, err := clientset.CoreV1().Pods(listNamespace).List(ctx, listOptions)
+		if err != nil {
+			return nil, fmt.Errorf("listing pods: %w", err)
+		}
+		for i := range pods.Items {
+			result = append(result, kubernetesSessionsForPod(&pods.Items[i], displayContext)...)
+		}
+		if pods.Continue == "" {
+			break
+		}
+		listOptions.Continue = pods.Continue
+	}
+
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Runtime != result[j].Runtime {
+			return result[i].Runtime < result[j].Runtime
+		}
+		return result[i].Target < result[j].Target
+	})
+	return result, nil
+}
+
+func kubernetesSessionsForPod(pod *corev1.Pod, displayContext string) []DebugSessionInfo {
+	var result []DebugSessionInfo
+
+	if isKubernetesCopyPod(pod) {
+		if debugName := findCopyPodDebugContainer(pod); debugName != "" && podContainerRunning(pod, debugName) {
+			image, profile, user := kubernetesRegularContainerDebugMetadata(pod, debugName)
+			session := DebugSessionInfo{
+				Runtime:         "kubernetes",
+				Kind:            DebugSessionKindKubernetesCopyPod,
+				Target:          kubernetesTargetURI(displayContext, pod.Namespace, pod.Name),
+				Name:            pod.Name,
+				Context:         displayContext,
+				Namespace:       pod.Namespace,
+				TargetContainer: pod.Annotations[debuxTargetContainerAnnotation],
+				DebugName:       debugName,
+				Source:          pod.Annotations[debuxSourcePodAnnotation],
+				Image:           image,
+				Profile:         profile,
+				User:            user,
+				Status:          string(pod.Status.Phase),
+			}
+			if remaining, ok := copyPodTimeRemaining(pod); ok {
+				session.ExpiresIn = remaining
+				session.HasExpiry = true
+			}
+			if pod.Status.StartTime != nil {
+				session.StartedAt = pod.Status.StartTime.Time
+			}
+			result = append(result, session)
+		}
+		return result
+	}
+
+	running := runningDebuxEphemeralContainers(pod)
+	for _, ec := range pod.Spec.EphemeralContainers {
+		if _, ok := running[ec.Name]; !ok || !debuxEphemeralContainerHasMetadata(ec) {
+			continue
+		}
+		profile, user := kubernetesDebugEnvMetadata(ec.Env)
+		startedAt := time.Time{}
+		for _, cs := range pod.Status.EphemeralContainerStatuses {
+			if cs.Name == ec.Name && cs.State.Running != nil {
+				startedAt = cs.State.Running.StartedAt.Time
+				break
+			}
+		}
+		result = append(result, DebugSessionInfo{
+			Runtime:         "kubernetes",
+			Kind:            DebugSessionKindKubernetesEphemeral,
+			Target:          kubernetesTargetURIWithContainer(displayContext, pod.Namespace, pod.Name, ec.TargetContainerName),
+			Name:            pod.Name,
+			Context:         displayContext,
+			Namespace:       pod.Namespace,
+			TargetContainer: ec.TargetContainerName,
+			DebugName:       ec.Name,
+			Image:           ec.Image,
+			Profile:         profile,
+			User:            user,
+			Status:          string(pod.Status.Phase),
+			StartedAt:       startedAt,
+		})
+	}
+	return result
+}
+
+func kubernetesRegularContainerDebugMetadata(pod *corev1.Pod, name string) (image, profile, user string) {
+	for _, c := range pod.Spec.Containers {
+		if c.Name != name {
+			continue
+		}
+		profile, user = kubernetesDebugEnvMetadata(c.Env)
+		return c.Image, profile, user
+	}
+	return "", "", ""
+}
+
+func kubernetesDebugEnvMetadata(env []corev1.EnvVar) (profile, user string) {
+	for _, e := range env {
+		switch e.Name {
+		case "DEBUX_SECURITY_PROFILE":
+			profile = e.Value
+		case "DEBUX_DEBUG_USER":
+			user = e.Value
+		}
+	}
+	return profile, user
+}
+
 // KubernetesBrowsePods returns lightweight running pod metadata for interactive navigation.
 // It avoids per-pod GET enrichment so large namespaces remain responsive.
 func KubernetesBrowsePods(ctx context.Context, kubeconfig, kubeContext, namespace, query string, maxResults int) ([]PodInfo, bool, error) {
@@ -641,7 +770,7 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	// Targeting a debux copy pod (e.g. one kept with --keep) reattaches to its
 	// debug container instead of debugging the copy as a fresh target.
 	if isKubernetesCopyPod(pod) {
-		return kubernetesReattachToCopyPod(ctx, config, clientset, namespace, pod, target.Container, opts)
+		return kubernetesReattachToCopyPod(ctx, config, clientset, namespace, pod, target.Container, displayContext, opts)
 	}
 
 	// Pod-copy mode only needs the source container's spec (mounts, env), not
@@ -951,7 +1080,7 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 	keepPod := false
 	defer func() {
 		if keepPod {
-			printKeptCopyPod(namespace, created.Name, opts.TTL)
+			printKeptCopyPod(displayContext, namespace, created.Name, opts.TTL)
 			return
 		}
 		fmt.Printf("Deleting debug copy pod %s...\n", created.Name)
@@ -984,15 +1113,39 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 
 // printKeptCopyPod tells the user how to get back to (or get rid of) a copy
 // pod that outlives this session.
-func printKeptCopyPod(namespace, podName string, ttl time.Duration) {
-	fmt.Printf("Keeping debug copy pod %s/%s\n", namespace, podName)
+func printKeptCopyPod(kubeContext, namespace, podName string, ttl time.Duration) {
+	targetURI := kubernetesTargetURI(kubeContext, namespace, podName)
+	printTerminalStatusLine("Keeping debug copy pod %s/%s", namespace, podName)
 	if ttl > 0 {
-		fmt.Printf("  Expires:  %s after pod start, then the kubelet stops its containers\n", ttl)
+		printTerminalStatusLine("  Expires:  %s after pod start, then the kubelet stops its containers", ttl)
 	} else {
-		fmt.Printf("  Warning:  no TTL (--ttl=0); the pod runs until deleted\n")
+		printTerminalStatusLine("  Warning:  no TTL (--ttl=0); the pod runs until deleted")
 	}
-	fmt.Printf("  Reattach: debux k8s://%s/%s\n", namespace, podName)
-	fmt.Printf("  Delete:   debux kill k8s://%s/%s\n", namespace, podName)
+	printTerminalStatusLine("  Reattach: debux %s", targetURI)
+	printTerminalStatusLine("  Delete:   debux kill %s", targetURI)
+}
+
+func printTerminalStatusLine(format string, args ...any) {
+	if stdioIsTTY() {
+		fmt.Printf(format+"\033[K\n", args...)
+		return
+	}
+	fmt.Printf(format+"\n", args...)
+}
+
+func kubernetesTargetURI(kubeContext, namespace, podName string) string {
+	return kubernetesTargetURIWithContainer(kubeContext, namespace, podName, "")
+}
+
+func kubernetesTargetURIWithContainer(kubeContext, namespace, podName, containerName string) string {
+	parts := []string{url.PathEscape(namespace), url.PathEscape(podName)}
+	if containerName != "" {
+		parts = append(parts, url.PathEscape(containerName))
+	}
+	if kubeContext != "" {
+		return "k8s://@" + url.PathEscape(kubeContext) + "/" + strings.Join(parts, "/")
+	}
+	return "k8s://" + strings.Join(parts, "/")
 }
 
 // isKubernetesCopyPod reports whether pod is a copy pod created by debux
@@ -1019,8 +1172,8 @@ func findCopyPodDebugContainer(pod *corev1.Pod) string {
 // kubernetesReattachToCopyPod opens a shell inside the debug container of an
 // existing debux copy pod (typically one created with --keep), instead of
 // debugging the copy pod as if it were a regular target.
-func kubernetesReattachToCopyPod(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace string, pod *corev1.Pod, requestedContainer string, opts DebugOpts) error {
-	killHint := fmt.Sprintf("debux kill k8s://%s/%s", namespace, pod.Name)
+func kubernetesReattachToCopyPod(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace string, pod *corev1.Pod, requestedContainer, displayContext string, opts DebugOpts) error {
+	killHint := fmt.Sprintf("debux kill %s", kubernetesTargetURI(displayContext, namespace, pod.Name))
 
 	if pod.DeletionTimestamp != nil {
 		return fmt.Errorf("debug copy pod %s/%s is terminating; start a new --copy session against the source pod", namespace, pod.Name)

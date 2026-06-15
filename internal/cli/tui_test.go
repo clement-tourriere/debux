@@ -55,8 +55,8 @@ func TestTUISourceItemsIncludeCurrentNamespaceShortcut(t *testing.T) {
 	m.historyItems = []tuiItem{{kind: tuiItemTarget, source: tuiSourceHistory, title: "docker://api"}}
 
 	items := m.sourceItems()
-	if len(items) != 4 {
-		t.Fatalf("len(sourceItems) = %d, want 4", len(items))
+	if len(items) != 5 {
+		t.Fatalf("len(sourceItems) = %d, want 5", len(items))
 	}
 	if items[0].kind != tuiItemSource || items[0].view != tuiViewDocker {
 		t.Fatalf("first source item = %#v, want Docker source", items[0])

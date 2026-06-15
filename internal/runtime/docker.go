@@ -105,6 +105,64 @@ func DockerList(ctx context.Context) ([]ContainerInfo, error) {
 	return result, nil
 }
 
+// DockerSessions returns running debux sidecar sessions that can be reattached.
+func DockerSessions(ctx context.Context) ([]DebugSessionInfo, error) {
+	cli, err := dockerclient.New()
+	if err != nil {
+		return nil, fmt.Errorf("connecting to Docker: %w", err)
+	}
+	defer func() { _ = cli.Close() }()
+
+	containers, err := listDockerContainers(ctx, cli)
+	if err != nil {
+		return nil, fmt.Errorf("listing containers: %w", err)
+	}
+
+	var result []DebugSessionInfo
+	for _, c := range containers {
+		if c.State != "running" || !isDebuxDockerSidecar(c) {
+			continue
+		}
+		if session, ok := dockerSessionFromSidecar(c); ok {
+			result = append(result, session)
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool { return result[i].Target < result[j].Target })
+	return result, nil
+}
+
+func dockerSessionFromSidecar(c container.Summary) (DebugSessionInfo, bool) {
+	debugName := dockerContainerPrimaryName(c)
+	targetName := c.Labels[dockerLabelTargetName]
+	if targetName == "" {
+		if targetID := c.Labels[dockerLabelTargetID]; targetID != "" {
+			targetName = shortContainerID(targetID)
+		}
+	}
+	if targetName == "" && strings.HasPrefix(debugName, "debux-") {
+		targetName = strings.TrimPrefix(debugName, "debux-")
+	}
+	if targetName == "" {
+		return DebugSessionInfo{}, false
+	}
+
+	image := c.Labels[dockerLabelDebugImage]
+	if image == "" {
+		image = c.Image
+	}
+	return DebugSessionInfo{
+		Runtime:   "docker",
+		Kind:      DebugSessionKindDockerSidecar,
+		Target:    "docker://" + targetName,
+		Name:      targetName,
+		DebugName: debugName,
+		Source:    c.Labels[dockerLabelTargetImage],
+		Image:     image,
+		User:      c.Labels[dockerLabelDebugUser],
+		Status:    c.Status,
+	}, true
+}
+
 // DockerImages returns locally available Docker image references.
 func DockerImages(ctx context.Context) ([]ImageInfo, error) {
 	cli, err := dockerclient.New()
