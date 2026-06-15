@@ -1,3 +1,9 @@
+## v0.8.0 (2026-06-15)
+
+### Feat
+
+- add debux session listing and attach picker
+
 ## v0.7.0 (2026-06-11)
 
 ### Feat
