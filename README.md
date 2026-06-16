@@ -212,7 +212,10 @@ interruptions, node failure, manual drains — still wins.
 # Keep the copy pod when the session ends; it self-destructs after 48h
 debux k8s://my-namespace/my-pod --copy --keep --ttl=48h
 
-# See currently reattachable sessions, then pick one from a searchable picker
+# See currently reattachable sessions, then pick one from a searchable picker.
+# debux remembers recent Kubernetes contexts/namespaces; pass a scope when you
+# want to be explicit or use -A when your RBAC allows all-namespace listing.
+debux list
 debux list k8s://my-namespace/
 debux attach
 
@@ -409,6 +412,7 @@ Use `debux completion <bash|zsh|fish|powershell>` for other shells.
 | `--kubeconfig <path>` | Override kubeconfig path. |
 | `--context <name>` | Kubernetes kube context name. |
 | `-n, --namespace <name>` | Kubernetes namespace for pod pickers, pod targets without an inline namespace, `kill`, and `doctor`. |
+| `-A, --all-namespaces` | Kubernetes session pickers/listing: search every namespace in the selected context when RBAC allows it. |
 
 ### Standalone Kubernetes debug pod
 
@@ -511,10 +515,13 @@ even permitted before an incident (see below).
 # List and reattach to active debux sessions (attach opens a searchable picker)
 debux list
 debux list k8s://@eks-preprod-01/my-namespace/
+debux list --context eks-preprod-01 --all-namespaces
 debux attach
 debux attach k8s://@eks-preprod-01
 
-# Kill a Docker or Kubernetes debug session
+# Kill a Docker or Kubernetes debug session (no target opens the active-session picker)
+debux kill
+debux kill --context eks-preprod-01 --all-namespaces
 debux kill docker://my-app
 debux kill k8s://my-namespace/my-pod
 debux kill k8s://my-pod --namespace my-namespace

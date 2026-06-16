@@ -175,7 +175,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		Tools:           config.ResolveTools(flagTools),
 	}
 
-	recordDebugHistory(target, opts)
+	recordDebugHistory(cmd, target, opts)
 
 	switch target.Runtime {
 	case "docker":
@@ -235,11 +235,26 @@ func resolveK8sPodName(ctx context.Context, cmd *cobra.Command, target *runtime.
 		return target.Name, nil
 	}
 
-	matches, err := runtime.KubernetesFindPods(ctx, kubeconfig, kubeContext, target.Namespace, target.Name)
+	// A very common typo is `k8s://@ctx/ns` when the user means the namespace
+	// picker (`k8s://@ctx/ns/`). Preserve exact-pod semantics above, but avoid a
+	// slow substring scan of the current namespace when the segment is itself a
+	// namespace in the selected context.
+	if target.Context != "" && target.Namespace == "" && target.Container == "" {
+		if namespaceExists, _ := runtime.KubernetesNamespaceExists(ctx, kubeconfig, kubeContext, target.Name); namespaceExists {
+			target.Namespace = target.Name
+			target.Name = ""
+			return pickK8sPod(ctx, kubeconfig, kubeContext, target.Namespace)
+		}
+	}
+
+	matches, limited, err := runtime.KubernetesFindPodsLimited(ctx, kubeconfig, kubeContext, target.Namespace, target.Name)
 	if err != nil {
 		return "", fmt.Errorf("pod %q was not found and listing similar pods failed: %w", target.Name, err)
 	}
 	if len(matches) == 0 {
+		if limited {
+			return "", fmt.Errorf("pod %q was not found and no running pods matched that substring in the first scanned results; use k8s://<namespace>/ to browse a namespace or type more of the pod name", target.Name)
+		}
 		return "", fmt.Errorf("pod %q was not found and no running pods matched that substring", target.Name)
 	}
 
@@ -325,12 +340,15 @@ func pickDockerContainer(ctx context.Context) (string, error) {
 }
 
 func pickK8sPod(ctx context.Context, kubeconfig, kubeContext, namespace string) (string, error) {
-	pods, err := runtime.KubernetesList(ctx, kubeconfig, kubeContext, namespace)
+	pods, limited, err := runtime.KubernetesBrowsePods(ctx, kubeconfig, kubeContext, namespace, "", 500)
 	if err != nil {
 		return "", err
 	}
 	if len(pods) == 0 {
 		return "", fmt.Errorf("no running pods found")
+	}
+	if limited {
+		fmt.Println("Showing first 500 running pods; type a more specific target to narrow the search")
 	}
 
 	return pickK8sPodFromList("Select a pod", pods)
@@ -367,9 +385,23 @@ func formatK8sPodLabel(p runtime.PodInfo, active bool) string {
 	return label
 }
 
-func recordDebugHistory(target *runtime.Target, opts runtime.DebugOpts) {
+func recordDebugHistory(cmd *cobra.Command, target *runtime.Target, opts runtime.DebugOpts) {
 	if target == nil || target.Name == "" {
 		return
 	}
-	_ = history.Append(history.NewEntry(target, formatTargetURI(target), opts, "cli"))
+
+	historyTarget := *target
+	if historyTarget.Runtime == "kubernetes" {
+		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
+		if historyTarget.Context == "" {
+			if current, err := runtime.KubernetesCurrentContext(kubeconfig); err == nil && current != "" {
+				historyTarget.Context = current
+			}
+		}
+		if historyTarget.Namespace == "" {
+			historyTarget.Namespace = runtime.KubernetesDefaultNamespace(kubeconfig, historyTarget.Context)
+		}
+	}
+
+	_ = history.Append(history.NewEntry(&historyTarget, formatTargetURI(&historyTarget), opts, "cli"))
 }

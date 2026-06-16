@@ -1,9 +1,13 @@
 package cli
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -39,6 +43,57 @@ func TestCompleteKubeContextFlagUsesRawContextName(t *testing.T) {
 	}
 	if directive&cobra.ShellCompDirectiveNoFileComp == 0 {
 		t.Fatalf("directive = %v, want no-file", directive)
+	}
+}
+
+func TestCompleteKubernetesRootSuggestsOnlyContexts(t *testing.T) {
+	kubeconfig := writeCompletionKubeconfig(t)
+	cmd := &cobra.Command{}
+	cmd.Flags().String("kubeconfig", kubeconfig, "")
+
+	completions, _ := completeKubernetesTarget(cmd, "k8s://")
+	joined := strings.Join(completions, "\n")
+	if !strings.Contains(joined, "k8s://@prod%2Fcontext/") {
+		t.Fatalf("root k8s completions = %#v, want context", completions)
+	}
+	if strings.Contains(joined, "k8s://gim/") || strings.Contains(joined, "pod completion unavailable") {
+		t.Fatalf("root k8s completions = %#v, want contexts only", completions)
+	}
+}
+
+func TestCompleteKubernetesContextPathSuggestsOnlyNamespaces(t *testing.T) {
+	kubeconfig, counts := writeCompletionKubeconfigWithAPIServer(t)
+	cmd := &cobra.Command{}
+	cmd.Flags().String("kubeconfig", kubeconfig, "")
+
+	completions, _ := completeKubernetesTarget(cmd, "k8s://@prod%2Fcontext/")
+	joined := strings.Join(completions, "\n")
+	if !strings.Contains(joined, "k8s://@prod%2Fcontext/gim/") {
+		t.Fatalf("context path completions = %#v, want namespace", completions)
+	}
+	if strings.Contains(joined, "api-123") || counts.pods.Load() != 0 {
+		t.Fatalf("context path completions = %#v, want namespaces only (pod calls: %d)", completions, counts.pods.Load())
+	}
+	if counts.namespaces.Load() == 0 {
+		t.Fatalf("context path completion did not list namespaces")
+	}
+}
+
+func TestCompleteKubernetesNamespacePathSuggestsOnlyPods(t *testing.T) {
+	kubeconfig, counts := writeCompletionKubeconfigWithAPIServer(t)
+	cmd := &cobra.Command{}
+	cmd.Flags().String("kubeconfig", kubeconfig, "")
+
+	completions, _ := completeKubernetesTarget(cmd, "k8s://@prod%2Fcontext/gim/")
+	joined := strings.Join(completions, "\n")
+	if !strings.Contains(joined, "k8s://@prod%2Fcontext/gim/api-123") {
+		t.Fatalf("namespace path completions = %#v, want pod", completions)
+	}
+	if strings.Contains(joined, "Kubernetes namespace") || counts.namespaces.Load() != 0 {
+		t.Fatalf("namespace path completions = %#v, want pods only (namespace calls: %d)", completions, counts.namespaces.Load())
+	}
+	if counts.pods.Load() == 0 {
+		t.Fatalf("namespace path completion did not list pods")
 	}
 }
 
@@ -117,14 +172,47 @@ func TestBranchAwareDirectiveNoSpaceOnlyForBranches(t *testing.T) {
 
 func writeCompletionKubeconfig(t *testing.T) string {
 	t.Helper()
+	return writeCompletionKubeconfigWithServer(t, "https://127.0.0.1:6443")
+}
+
+type completionAPICounts struct {
+	namespaces atomic.Int32
+	pods       atomic.Int32
+}
+
+func writeCompletionKubeconfigWithAPIServer(t *testing.T) (string, *completionAPICounts) {
+	t.Helper()
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	counts := &completionAPICounts{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/namespaces":
+			counts.namespaces.Add(1)
+			_, _ = fmt.Fprint(w, `{"apiVersion":"v1","kind":"NamespaceList","items":[{"metadata":{"name":"gim"},"status":{"phase":"Active"}},{"metadata":{"name":"prod"},"status":{"phase":"Active"}}]}`)
+		case "/api/v1/namespaces/gim/pods":
+			counts.pods.Add(1)
+			_, _ = fmt.Fprint(w, `{"apiVersion":"meta.k8s.io/v1","kind":"PartialObjectMetadataList","items":[{"apiVersion":"v1","kind":"Pod","metadata":{"name":"api-123","namespace":"gim"}},{"apiVersion":"v1","kind":"Pod","metadata":{"name":"web-456","namespace":"gim"}}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	return writeCompletionKubeconfigWithServer(t, server.URL), counts
+}
+
+func writeCompletionKubeconfigWithServer(t *testing.T, server string) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "config")
-	content := `apiVersion: v1
+	content := fmt.Sprintf(`apiVersion: v1
 kind: Config
 current-context: prod/context
 clusters:
   - name: prod-cluster
     cluster:
-      server: https://127.0.0.1:6443
+      server: %s
 contexts:
   - name: prod/context
     context:
@@ -139,7 +227,7 @@ contexts:
 users:
   - name: prod-user
     user: {}
-`
+`, server)
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}

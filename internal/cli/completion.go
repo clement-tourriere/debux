@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/clement-tourriere/debux/internal/history"
 	"github.com/clement-tourriere/debux/internal/runtime"
 	"github.com/spf13/cobra"
 )
@@ -346,13 +347,24 @@ func completeKubernetesContextTarget(cmd *cobra.Command, kubeconfig, rest, toCom
 
 func completeKubernetesPath(cmd *cobra.Command, kubeconfig, kubeContext, base, path, toComplete string, includeContexts bool) []string {
 	parts := strings.Split(path, "/")
+	explicitContext := strings.HasPrefix(base, "k8s://@")
+
+	// Make the high-level URI hierarchy predictable:
+	//   k8s://<TAB>            -> contexts only
+	//   k8s://@ctx/<TAB>       -> namespaces only
+	//   k8s://@ctx/ns/<TAB>    -> pods only
+	//   k8s://@ctx/ns/pod/<TAB> -> containers only
+	if includeContexts && base == "k8s://" && path == "" {
+		return completeKubernetesContexts(kubeconfig, "k8s://@", "", toComplete)
+	}
+	if explicitContext && len(parts) == 1 {
+		return completeKubernetesNamespaces(kubeconfig, kubeContext, base, toComplete)
+	}
+
 	switch len(parts) {
 	case 1:
 		typedPart := unescapeCompletionPart(parts[0])
 		var completions []string
-		if includeContexts && parts[0] == "" && base == "k8s://" {
-			completions = append(completions, completeKubernetesContexts(kubeconfig, "k8s://@", "", toComplete)...)
-		}
 		if !completionNamespaceFlagChanged(cmd) && typedPart == "" {
 			completions = append(completions, completeKubernetesDefaultNamespace(kubeconfig, kubeContext, base, toComplete)...)
 		}
@@ -374,6 +386,10 @@ func completeKubernetesPath(cmd *cobra.Command, kubeconfig, kubeContext, base, p
 			return nil
 		}
 		second := unescapeCompletionPart(parts[1])
+		if explicitContext || parts[1] == "" {
+			podBase := base + url.PathEscape(first) + "/"
+			return completeKubernetesPods(kubeconfig, kubeContext, first, podBase, second, toComplete)
+		}
 		selectedNamespace := completionSelectedNamespace(cmd, kubeconfig, kubeContext)
 		if completionNamespaceFlagChanged(cmd) && first != selectedNamespace {
 			podBase := base + url.PathEscape(first)
@@ -440,13 +456,41 @@ func completeKubernetesDefaultNamespace(kubeconfig, kubeContext, base, toComplet
 }
 
 func completeKubernetesNamespaces(kubeconfig, kubeContext, base, toComplete string) []string {
+	if cache, ok := readCompletionNamespaceCache(kubeconfig, kubeContext); ok {
+		completions := formatKubernetesNamespaceCompletions(cache.Namespaces, base, toComplete)
+		if time.Since(cache.SavedAt) > completionNamespaceCacheFreshFor {
+			if startCompletionNamespaceCacheRefresh(kubeconfig, kubeContext) {
+				completions = appendActiveHelp(completions, "Using cached namespaces; refreshing in the background")
+			} else {
+				completions = appendActiveHelp(completions, "Using cached namespaces")
+			}
+		}
+		if cache.Limited {
+			completions = appendActiveHelp(completions, "Cached namespace list was limited; keep typing to narrow the search")
+		}
+		return completions
+	}
+
 	namespaces, timedOut, err := listKubernetesNamespacesForCompletion(kubeconfig, kubeContext)
 	if timedOut {
-		return appendActiveHelp(nil, "Namespace completion is taking too long; keep typing a pod name or use the default namespace shortcut")
+		completions := completeKnownKubernetesNamespaces(kubeconfig, kubeContext, base, toComplete)
+		if startCompletionNamespaceCacheRefresh(kubeconfig, kubeContext) {
+			return appendActiveHelp(completions, "Namespace lookup is slow; showing default/recent namespaces and refreshing in the background — press Tab again in a few seconds")
+		}
+		return appendActiveHelp(completions, "Namespace lookup is slow; showing default/recent namespaces")
 	}
 	if err != nil {
-		return appendActiveHelp(nil, "Kubernetes namespace completion unavailable: "+err.Error())
+		completions := completeKnownKubernetesNamespaces(kubeconfig, kubeContext, base, toComplete)
+		if startCompletionNamespaceCacheRefresh(kubeconfig, kubeContext) {
+			completions = appendActiveHelp(completions, "Refreshing namespace cache in the background")
+		}
+		return appendActiveHelp(completions, "Kubernetes namespace completion unavailable: "+err.Error())
 	}
+	_ = writeCompletionNamespaceCache(kubeconfig, kubeContext, namespaces, false)
+	return formatKubernetesNamespaceCompletions(namespaces, base, toComplete)
+}
+
+func formatKubernetesNamespaceCompletions(namespaces []runtime.NamespaceInfo, base, toComplete string) []string {
 	var completions []string
 	for _, ns := range namespaces {
 		desc := "Kubernetes namespace"
@@ -454,6 +498,42 @@ func completeKubernetesNamespaces(kubeconfig, kubeContext, base, toComplete stri
 			desc += " · " + ns.Status
 		}
 		completions = appendCompletion(completions, base+url.PathEscape(ns.Name)+"/", desc, toComplete)
+	}
+	return completions
+}
+
+func completeKnownKubernetesNamespaces(kubeconfig, kubeContext, base, toComplete string) []string {
+	var completions []string
+	seen := make(map[string]struct{})
+	add := func(namespace, desc string) {
+		namespace = strings.TrimSpace(namespace)
+		if namespace == "" {
+			return
+		}
+		if _, ok := seen[namespace]; ok {
+			return
+		}
+		seen[namespace] = struct{}{}
+		completions = appendCompletion(completions, base+url.PathEscape(namespace)+"/", desc, toComplete)
+	}
+
+	add(runtime.KubernetesDefaultNamespace(kubeconfig, kubeContext), "Default Kubernetes namespace")
+	resolvedContext := completionCacheKubeContext(kubeconfig, kubeContext)
+	entries, err := history.Load()
+	if err != nil {
+		return completions
+	}
+	for _, entry := range entries {
+		if entry.Runtime != "kubernetes" || entry.Namespace == "" {
+			continue
+		}
+		if resolvedContext != "" && entry.Context != "" && entry.Context != resolvedContext {
+			continue
+		}
+		if kubeContext != "" && entry.Context == "" {
+			continue
+		}
+		add(entry.Namespace, "Recent Kubernetes namespace")
 	}
 	return completions
 }
@@ -548,14 +628,18 @@ func browseKubernetesPodsForCompletion(kubeconfig, kubeContext, namespace, query
 func listKubernetesNamespacesForCompletion(kubeconfig, kubeContext string) ([]runtime.NamespaceInfo, bool, error) {
 	type result struct {
 		namespaces []runtime.NamespaceInfo
+		limited    bool
 		err        error
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ch := make(chan result, 1)
 	go func() {
-		namespaces, err := runtime.KubernetesNamespaces(ctx, kubeconfig, kubeContext)
-		ch <- result{namespaces: namespaces, err: err}
+		namespaces, limited, err := runtime.KubernetesBrowseNamespaces(ctx, kubeconfig, kubeContext, "", completionNamespaceCacheMaxResults)
+		if err == nil {
+			_ = writeCompletionNamespaceCache(kubeconfig, kubeContext, namespaces, limited)
+		}
+		ch <- result{namespaces: namespaces, limited: limited, err: err}
 	}()
 
 	select {

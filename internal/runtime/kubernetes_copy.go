@@ -178,13 +178,15 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 
 func printKeptCopyPod(kubeContext, namespace, podName string, ttl time.Duration) {
 	targetURI := kubernetesTargetURI(kubeContext, namespace, podName)
+	scopeURI := kubernetesScopeURI(kubeContext, namespace)
 	printTerminalStatusLine("Keeping debug copy pod %s/%s", namespace, podName)
 	if ttl > 0 {
 		printTerminalStatusLine("  Expires:  %s after pod start, then the kubelet stops its containers", ttl)
 	} else {
 		printTerminalStatusLine("  Warning:  no TTL (--ttl=0); the pod runs until deleted")
 	}
-	printTerminalStatusLine("  Reattach: debux %s", targetURI)
+	printTerminalStatusLine("  List:     debux list %s", scopeURI)
+	printTerminalStatusLine("  Reattach: debux attach %s", targetURI)
 	printTerminalStatusLine("  Delete:   debux kill %s", targetURI)
 }
 
@@ -198,6 +200,13 @@ func printTerminalStatusLine(format string, args ...any) {
 
 func kubernetesTargetURI(kubeContext, namespace, podName string) string {
 	return kubernetesTargetURIWithContainer(kubeContext, namespace, podName, "")
+}
+
+func kubernetesScopeURI(kubeContext, namespace string) string {
+	if kubeContext != "" {
+		return "k8s://@" + url.PathEscape(kubeContext) + "/" + url.PathEscape(namespace) + "/"
+	}
+	return "k8s://" + url.PathEscape(namespace) + "/"
 }
 
 func kubernetesTargetURIWithContainer(kubeContext, namespace, podName, containerName string) string {

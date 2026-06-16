@@ -186,6 +186,14 @@ func TestKubernetesTargetURIIncludesContext(t *testing.T) {
 	}
 }
 
+func TestKubernetesScopeURIIncludesContext(t *testing.T) {
+	got := kubernetesScopeURI("arn:aws:eks:us-west-2:123:cluster/preprod", "gim")
+	want := "k8s://@arn:aws:eks:us-west-2:123:cluster%2Fpreprod/gim/"
+	if got != want {
+		t.Fatalf("kubernetesScopeURI() = %q, want %q", got, want)
+	}
+}
+
 func TestDockerSessionFromSidecar(t *testing.T) {
 	session, ok := dockerSessionFromSidecar(container.Summary{
 		Names:  []string{"/debux-api"},

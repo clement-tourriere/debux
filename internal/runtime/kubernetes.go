@@ -175,6 +175,52 @@ func KubernetesNamespaces(ctx context.Context, kubeconfig, kubeContext string) (
 	return result, nil
 }
 
+// KubernetesBrowseNamespaces returns lightweight namespace metadata for shell
+// completion. It uses the metadata API to avoid fetching full namespace objects.
+func KubernetesBrowseNamespaces(ctx context.Context, kubeconfig, kubeContext, query string, maxResults int) ([]NamespaceInfo, bool, error) {
+	config, _, err := getK8sClient(kubeconfig, kubeContext)
+	if err != nil {
+		return nil, false, err
+	}
+	metadataClient, err := metadata.NewForConfig(config)
+	if err != nil {
+		return nil, false, fmt.Errorf("creating Kubernetes metadata client: %w", err)
+	}
+	if maxResults <= 0 {
+		maxResults = 300
+	}
+	query = strings.ToLower(strings.TrimSpace(query))
+
+	listLimit := int64(200)
+	if maxResults > 0 && maxResults < int(listLimit) {
+		listLimit = int64(maxResults)
+	}
+
+	var result []NamespaceInfo
+	listOptions := metav1.ListOptions{Limit: listLimit}
+	for {
+		namespaces, err := metadataClient.Resource(namespacesResource).List(ctx, listOptions)
+		if err != nil {
+			return nil, false, fmt.Errorf("listing namespaces: %w", err)
+		}
+		for _, ns := range namespaces.Items {
+			if query != "" && !strings.Contains(strings.ToLower(ns.Name), query) {
+				continue
+			}
+			result = append(result, NamespaceInfo{Name: ns.Name})
+			if len(result) >= maxResults {
+				return result, true, nil
+			}
+		}
+		if namespaces.Continue == "" {
+			break
+		}
+		listOptions.Continue = namespaces.Continue
+	}
+	sort.SliceStable(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	return result, false, nil
+}
+
 // KubernetesSessions returns running debux Kubernetes sessions that can be reattached.
 func KubernetesBrowsePods(ctx context.Context, kubeconfig, kubeContext, namespace, query string, maxResults int) ([]PodInfo, bool, error) {
 	config, _, err := getK8sClient(kubeconfig, kubeContext)
@@ -197,6 +243,17 @@ func KubernetesBrowsePods(ctx context.Context, kubeconfig, kubeContext, namespac
 	}
 
 	var result []PodInfo
+	scanned := 0
+	scanLimit := 0
+	if query != "" {
+		// Kubernetes has no substring field selector for names. Cap client-side
+		// scans so a typo or broad query in a huge namespace does not walk every
+		// pod before showing the picker/error.
+		scanLimit = maxResults * 5
+		if scanLimit < 500 {
+			scanLimit = 500
+		}
+	}
 	listOptions := metav1.ListOptions{
 		FieldSelector: "status.phase=Running",
 		Limit:         listLimit,
@@ -207,11 +264,15 @@ func KubernetesBrowsePods(ctx context.Context, kubeconfig, kubeContext, namespac
 			return nil, false, fmt.Errorf("listing pods: %w", err)
 		}
 		for _, pod := range pods.Items {
+			scanned++
 			if query != "" && !matchesPodQuery(pod.Namespace, pod.Name, query) {
+				if scanLimit > 0 && scanned >= scanLimit {
+					return result, true, nil
+				}
 				continue
 			}
 			result = append(result, PodInfo{Name: pod.Name, Namespace: pod.Namespace, Context: kubeContext, Status: "Running"})
-			if len(result) >= maxResults {
+			if len(result) >= maxResults || (scanLimit > 0 && scanned >= scanLimit) {
 				return result, true, nil
 			}
 		}
@@ -224,12 +285,15 @@ func KubernetesBrowsePods(ctx context.Context, kubeconfig, kubeContext, namespac
 }
 
 const (
-	kubernetesPodListLimit       int64 = 50
+	kubernetesPodListLimit       int64 = 200
 	kubernetesPodListResultLimit int   = 500
 	kubernetesPodListEnrichLimit int   = 100
 )
 
-var podsResource = schema.GroupVersionResource{Version: "v1", Resource: "pods"}
+var (
+	podsResource       = schema.GroupVersionResource{Version: "v1", Resource: "pods"}
+	namespacesResource = schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}
+)
 
 func kubernetesListPods(ctx context.Context, kubeconfig, kubeContext, namespace, query string) ([]PodInfo, error) {
 	config, clientset, err := getK8sClient(kubeconfig, kubeContext)
@@ -323,9 +387,35 @@ func KubernetesPodExists(ctx context.Context, kubeconfig, kubeContext, namespace
 	return false, fmt.Errorf("getting pod %s/%s: %w", namespace, podName, err)
 }
 
+// KubernetesNamespaceExists reports whether a namespace exists in the selected context.
+func KubernetesNamespaceExists(ctx context.Context, kubeconfig, kubeContext, namespace string) (bool, error) {
+	if namespace == "" {
+		return false, nil
+	}
+	_, clientset, err := getK8sClient(kubeconfig, kubeContext)
+	if err != nil {
+		return false, err
+	}
+	_, err = clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+	if err == nil {
+		return true, nil
+	}
+	if k8serrors.IsNotFound(err) || k8serrors.IsForbidden(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("getting namespace %s: %w", namespace, err)
+}
+
 // KubernetesFindPods returns running pods whose name contains query.
 func KubernetesFindPods(ctx context.Context, kubeconfig, kubeContext, namespace, query string) ([]PodInfo, error) {
-	return kubernetesListPods(ctx, kubeconfig, kubeContext, namespace, query)
+	pods, _, err := KubernetesFindPodsLimited(ctx, kubeconfig, kubeContext, namespace, query)
+	return pods, err
+}
+
+// KubernetesFindPodsLimited returns running pods whose name contains query and
+// reports whether the client-side search hit its scan/result cap.
+func KubernetesFindPodsLimited(ctx context.Context, kubeconfig, kubeContext, namespace, query string) ([]PodInfo, bool, error) {
+	return KubernetesBrowsePods(ctx, kubeconfig, kubeContext, namespace, query, kubernetesPodListResultLimit)
 }
 
 // KubernetesRunningContainers returns the regular containers currently running

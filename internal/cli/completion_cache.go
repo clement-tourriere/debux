@@ -23,6 +23,10 @@ const (
 	completionPodCacheRefreshTimeout   = 30 * time.Second
 	completionPodCacheRefreshLockStale = 45 * time.Second
 	completionPodCacheMaxResults       = 500
+
+	completionNamespaceCacheVersion    = 1
+	completionNamespaceCacheFreshFor   = 10 * time.Minute
+	completionNamespaceCacheMaxResults = 500
 )
 
 type completionPodCache struct {
@@ -30,6 +34,13 @@ type completionPodCache struct {
 	SavedAt time.Time         `json:"savedAt"`
 	Limited bool              `json:"limited"`
 	Pods    []runtime.PodInfo `json:"pods"`
+}
+
+type completionNamespaceCache struct {
+	Version    int                     `json:"version"`
+	SavedAt    time.Time               `json:"savedAt"`
+	Limited    bool                    `json:"limited"`
+	Namespaces []runtime.NamespaceInfo `json:"namespaces"`
 }
 
 func newCompletionCacheCmd() *cobra.Command {
@@ -69,7 +80,28 @@ func newCompletionCacheCmd() *cobra.Command {
 	podsCmd.Flags().StringVar(&kubeContext, "context", "", "Kube context")
 	podsCmd.Flags().StringVar(&namespace, "namespace", "", "Kubernetes namespace")
 
+	namespacesCmd := &cobra.Command{
+		Use:   "k8s-namespaces",
+		Short: "Refresh Kubernetes namespace completion cache",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), completionPodCacheRefreshTimeout)
+			defer cancel()
+			defer releaseCompletionNamespaceCacheRefreshLock(kubeconfig, kubeContext)
+
+			pruneCompletionPodCaches()
+			namespaces, limited, err := runtime.KubernetesBrowseNamespaces(ctx, kubeconfig, kubeContext, "", completionNamespaceCacheMaxResults)
+			if err != nil {
+				return err
+			}
+			return writeCompletionNamespaceCache(kubeconfig, kubeContext, namespaces, limited)
+		},
+	}
+	namespacesCmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "Kubeconfig path")
+	namespacesCmd.Flags().StringVar(&kubeContext, "context", "", "Kube context")
+
 	cmd.AddCommand(podsCmd)
+	cmd.AddCommand(namespacesCmd)
 	return cmd
 }
 
@@ -138,6 +170,67 @@ func writeCompletionPodCache(kubeconfig, kubeContext, namespace string, pods []r
 	return os.Rename(tmpPath, path)
 }
 
+func readCompletionNamespaceCache(kubeconfig, kubeContext string) (completionNamespaceCache, bool) {
+	path, err := completionNamespaceCachePath(kubeconfig, kubeContext)
+	if err != nil {
+		return completionNamespaceCache{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return completionNamespaceCache{}, false
+	}
+	var cache completionNamespaceCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		_ = os.Remove(path)
+		return completionNamespaceCache{}, false
+	}
+	if cache.Version != completionNamespaceCacheVersion || cache.SavedAt.IsZero() {
+		_ = os.Remove(path)
+		return completionNamespaceCache{}, false
+	}
+	age := time.Since(cache.SavedAt)
+	if age > completionPodCacheStaleFor || age < -time.Minute {
+		_ = os.Remove(path)
+		return completionNamespaceCache{}, false
+	}
+	return cache, true
+}
+
+func writeCompletionNamespaceCache(kubeconfig, kubeContext string, namespaces []runtime.NamespaceInfo, limited bool) error {
+	path, err := completionNamespaceCachePath(kubeconfig, kubeContext)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	cache := completionNamespaceCache{
+		Version:    completionNamespaceCacheVersion,
+		SavedAt:    time.Now(),
+		Limited:    limited,
+		Namespaces: namespaces,
+	}
+	data, err := json.Marshal(cache)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".debux-cache-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
 func startCompletionPodCacheRefresh(kubeconfig, kubeContext, namespace string) bool {
 	lockPath, err := completionPodCacheRefreshLockPath(kubeconfig, kubeContext, namespace)
 	if err != nil {
@@ -161,6 +254,42 @@ func startCompletionPodCacheRefresh(kubeconfig, kubeContext, namespace string) b
 	}
 	if namespace != "" {
 		args = append(args, "--namespace", namespace)
+	}
+	cmd := exec.Command(exe, args...)
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		_ = os.Remove(lockPath)
+		return false
+	}
+	if err := cmd.Process.Release(); err != nil {
+		_ = os.Remove(lockPath)
+		return false
+	}
+	return true
+}
+
+func startCompletionNamespaceCacheRefresh(kubeconfig, kubeContext string) bool {
+	lockPath, err := completionNamespaceCacheRefreshLockPath(kubeconfig, kubeContext)
+	if err != nil {
+		return false
+	}
+	if !acquireCompletionRefreshLock(lockPath) {
+		return false
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		_ = os.Remove(lockPath)
+		return false
+	}
+	args := []string{"__completion_cache", "k8s-namespaces"}
+	if kubeconfig != "" {
+		args = append(args, "--kubeconfig", kubeconfig)
+	}
+	if kubeContext != "" {
+		args = append(args, "--context", kubeContext)
 	}
 	cmd := exec.Command(exe, args...)
 	cmd.Stdin = nil
@@ -213,6 +342,13 @@ func releaseCompletionPodCacheRefreshLock(kubeconfig, kubeContext, namespace str
 	}
 }
 
+func releaseCompletionNamespaceCacheRefreshLock(kubeconfig, kubeContext string) {
+	lockPath, err := completionNamespaceCacheRefreshLockPath(kubeconfig, kubeContext)
+	if err == nil {
+		_ = os.Remove(lockPath)
+	}
+}
+
 func completionPodCachePath(kubeconfig, kubeContext, namespace string) (string, error) {
 	key := completionCacheKey("k8s-pods", kubeconfig, completionCacheKubeContext(kubeconfig, kubeContext), namespace)
 	dir, err := completionCacheDir()
@@ -224,6 +360,24 @@ func completionPodCachePath(kubeconfig, kubeContext, namespace string) (string, 
 
 func completionPodCacheRefreshLockPath(kubeconfig, kubeContext, namespace string) (string, error) {
 	key := completionCacheKey("k8s-pods", kubeconfig, completionCacheKubeContext(kubeconfig, kubeContext), namespace)
+	dir, err := completionCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, key+".lock"), nil
+}
+
+func completionNamespaceCachePath(kubeconfig, kubeContext string) (string, error) {
+	key := completionCacheKey("k8s-namespaces", kubeconfig, completionCacheKubeContext(kubeconfig, kubeContext))
+	dir, err := completionCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, key+".json"), nil
+}
+
+func completionNamespaceCacheRefreshLockPath(kubeconfig, kubeContext string) (string, error) {
+	key := completionCacheKey("k8s-namespaces", kubeconfig, completionCacheKubeContext(kubeconfig, kubeContext))
 	dir, err := completionCacheDir()
 	if err != nil {
 		return "", err
