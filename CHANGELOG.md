@@ -1,3 +1,9 @@
+## v0.8.2 (2026-06-16)
+
+### Fix
+
+- improve Kubernetes session lookup and completion
+
 ## v0.8.1 (2026-06-15)
 
 ### Refactor
