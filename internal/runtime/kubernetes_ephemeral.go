@@ -214,11 +214,18 @@ const (
 	debuxTargetContainerAnnotation = "debux.clement-tourriere/target-container"
 
 	// karpenterDoNotDisruptAnnotation blocks Karpenter's voluntary node
-	// disruption (consolidation, drift) while the copy pod runs. The value can
-	// be a Go duration, which bounds the protection window; Karpenter also
-	// ignores terminal pods, so protection lapses once activeDeadlineSeconds
-	// expires the pod either way.
+	// disruption (consolidation, drift) while the copy pod runs. debux uses
+	// the boolean "true" form; the TTL bounds the protection indirectly
+	// because Karpenter ignores terminal pods once activeDeadlineSeconds
+	// expires them. (Karpenter also accepts a Go-duration value, but the
+	// deadline already bounds the window, so the boolean form is simpler.)
 	karpenterDoNotDisruptAnnotation = "karpenter.sh/do-not-disrupt"
+	// karpenterDoNotEvictAnnotation and karpenterDoNotConsolidateAnnotation
+	// are the pre-v1beta1 equivalents of do-not-disrupt. Karpenter dropped
+	// them in v1.0, so they only take effect on v0.x clusters; v1.0+ silently
+	// ignores them. Kept so copy pods stay protected on older clusters.
+	karpenterDoNotEvictAnnotation       = "karpenter.sh/do-not-evict"
+	karpenterDoNotConsolidateAnnotation = "karpenter.sh/do-not-consolidate"
 	// clusterAutoscalerSafeToEvictAnnotation is the cluster-autoscaler
 	// equivalent: "false" blocks scale-down of the node while the pod runs.
 	clusterAutoscalerSafeToEvictAnnotation = "cluster-autoscaler.kubernetes.io/safe-to-evict"

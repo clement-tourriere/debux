@@ -229,9 +229,10 @@ debux kill k8s://my-namespace/debux-copy-abc12
 Every copy pod carries a kubelet-enforced deadline (`activeDeadlineSeconds`,
 default `--ttl=24h`), so even one orphaned by a power loss or `kill -9` of the
 CLI stops consuming resources on time — no controller or cron required. The
-Karpenter protection is bounded by the same TTL. Two things to know about the
-deadline: Kubernetes only allows shortening it after creation, never extending
-it, so size the TTL up front; and an expired pod stays visible as `Failed`
+Karpenter protection lasts while the copy pod is non-terminal and is bounded by
+the same TTL because the deadline marks the pod `Failed`. Two things to know
+about the deadline: Kubernetes only allows shortening it after creation, never
+extending it, so size the TTL up front; and an expired pod stays visible as `Failed`
 (`DeadlineExceeded`) until deleted — `debux kill --all` sweeps those, or
 `kubectl delete pod -l app.kubernetes.io/managed-by=debux`. `--ttl=0` disables
 the deadline entirely; the pod is then yours to delete.
@@ -399,7 +400,7 @@ Use `debux completion <bash|zsh|fish|powershell>` for other shells.
 | `--fresh` | Force a new debug container instead of reusing an existing session. |
 | `--copy` | Kubernetes: create a copied debug pod instead of an ephemeral container. |
 | `--keep` | Kubernetes: with `--copy`, keep the copy pod after the session ends; reattach by targeting it, delete it with `debux kill`. |
-| `--ttl <duration>` | Kubernetes: with `--copy`, kubelet-enforced deadline (`activeDeadlineSeconds`) after which the copy pod is stopped. Default `24h`, `0` disables. Bounds the `karpenter.sh/do-not-disrupt` protection window. |
+| `--ttl <duration>` | Kubernetes: with `--copy`, kubelet-enforced deadline (`activeDeadlineSeconds`) after which the copy pod is stopped. Default `24h`, `0` disables. The deadline fails the pod, which also ends `karpenter.sh/do-not-disrupt` protection (Karpenter ignores terminal pods). |
 | `--no-volumes` | Do not mount target volumes directly. This is not an isolation boundary if the debug container can access `/proc/1/root`. |
 | `--read-only-volumes` | Mount target volumes read-only in the debug container to reduce accidental writes. This is not a security boundary if `/proc/1/root` is accessible. |
 | `--env <KEY=VALUE>` | Inject an extra environment variable into the debug container (repeatable, both runtimes). |

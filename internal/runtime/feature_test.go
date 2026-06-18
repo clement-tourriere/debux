@@ -309,8 +309,14 @@ func TestBuildKubernetesCopyPodLifecycle(t *testing.T) {
 	if pod.Spec.ActiveDeadlineSeconds == nil || *pod.Spec.ActiveDeadlineSeconds != 7200 {
 		t.Fatalf("TTL must map to activeDeadlineSeconds, got %v", pod.Spec.ActiveDeadlineSeconds)
 	}
-	if got := pod.Annotations[karpenterDoNotDisruptAnnotation]; got != "2h0m0s" {
-		t.Fatalf("karpenter protection must be bounded by the TTL, got %q", got)
+	if got := pod.Annotations[karpenterDoNotDisruptAnnotation]; got != "true" {
+		t.Fatalf("karpenter protection must use boolean true, got %q", got)
+	}
+	if got := pod.Annotations[karpenterDoNotEvictAnnotation]; got != "true" {
+		t.Fatalf("legacy karpenter do-not-evict annotation = %q, want true", got)
+	}
+	if got := pod.Annotations[karpenterDoNotConsolidateAnnotation]; got != "true" {
+		t.Fatalf("legacy karpenter do-not-consolidate annotation = %q, want true", got)
 	}
 	if got := pod.Annotations[clusterAutoscalerSafeToEvictAnnotation]; got != "false" {
 		t.Fatalf("cluster-autoscaler annotation = %q, want false", got)
@@ -341,7 +347,13 @@ func TestBuildKubernetesCopyPodLifecycle(t *testing.T) {
 		t.Fatal("ttl=0 must clear the deadline, including one inherited from the source spec")
 	}
 	if got := pod.Annotations[karpenterDoNotDisruptAnnotation]; got != "true" {
-		t.Fatalf("without a TTL karpenter protection must be unconditional, got %q", got)
+		t.Fatalf("without a TTL karpenter protection must still be enabled, got %q", got)
+	}
+	if got := pod.Annotations[karpenterDoNotEvictAnnotation]; got != "true" {
+		t.Fatalf("legacy karpenter do-not-evict annotation = %q, want true", got)
+	}
+	if got := pod.Annotations[karpenterDoNotConsolidateAnnotation]; got != "true" {
+		t.Fatalf("legacy karpenter do-not-consolidate annotation = %q, want true", got)
 	}
 
 	// A source container already named debux must not collide with the debug

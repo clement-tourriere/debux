@@ -99,13 +99,11 @@ func buildKubernetesCopyPod(namespace string, sourcePod *corev1.Pod, targetConta
 
 	spec.Containers = append(spec.Containers, debugContainer)
 
-	// Bound the Karpenter protection to the TTL. Without a TTL the user
-	// explicitly opted into an unbounded pod, so protect it unconditionally.
-	doNotDisrupt := "true"
-	if opts.TTL > 0 {
-		doNotDisrupt = opts.TTL.String()
-	}
-
+	// Use the boolean "true" form of karpenter.sh/do-not-disrupt. The TTL
+	// still bounds the protection: activeDeadlineSeconds makes the pod
+	// terminal (Failed), and Karpenter ignores terminal pods when considering
+	// voluntary disruption. (Karpenter also accepts a Go-duration value, but
+	// the deadline already bounds the window, so the boolean form is simpler.)
 	copyPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "debux-copy-",
@@ -117,7 +115,9 @@ func buildKubernetesCopyPod(namespace string, sourcePod *corev1.Pod, targetConta
 			Annotations: map[string]string{
 				debuxSourcePodAnnotation:               sourcePod.Name,
 				debuxTargetContainerAnnotation:         targetContainer,
-				karpenterDoNotDisruptAnnotation:        doNotDisrupt,
+				karpenterDoNotDisruptAnnotation:        "true",
+				karpenterDoNotEvictAnnotation:          "true",
+				karpenterDoNotConsolidateAnnotation:    "true",
 				clusterAutoscalerSafeToEvictAnnotation: "false",
 			},
 		},
