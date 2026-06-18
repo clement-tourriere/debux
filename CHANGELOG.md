@@ -1,3 +1,9 @@
+## v0.8.3 (2026-06-18)
+
+### Fix
+
+- use boolean do-not-disrupt and add legacy Karpenter annotations
+
 ## v0.8.2 (2026-06-16)
 
 ### Fix
