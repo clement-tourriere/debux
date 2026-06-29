@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // untarToLocal extracts a tar stream produced by a copy operation. When the
@@ -22,6 +21,29 @@ func untarToLocal(r io.Reader, dst string) error {
 	dstIsDir := false
 	if info, err := os.Stat(dst); err == nil && info.IsDir() {
 		dstIsDir = true
+	}
+
+	var root *os.Root
+	defer func() {
+		if root != nil {
+			_ = root.Close()
+		}
+	}()
+	ensureRoot := func() (*os.Root, error) {
+		if !dstIsDir {
+			if err := os.MkdirAll(dst, 0o755); err != nil {
+				return nil, fmt.Errorf("creating destination %s: %w", dst, err)
+			}
+			dstIsDir = true
+		}
+		if root == nil {
+			opened, err := os.OpenRoot(dst)
+			if err != nil {
+				return nil, fmt.Errorf("opening destination %s: %w", dst, err)
+			}
+			root = opened
+		}
+		return root, nil
 	}
 
 	entries := 0
@@ -42,7 +64,7 @@ func untarToLocal(r io.Reader, dst string) error {
 		if name == "." || name == "" {
 			continue
 		}
-		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+		if !filepath.IsLocal(name) {
 			return fmt.Errorf("archive entry %q escapes the destination", header.Name)
 		}
 		entries++
@@ -57,48 +79,61 @@ func untarToLocal(r io.Reader, dst string) error {
 			wroteSingleFile = true
 			continue
 		}
-		if !dstIsDir {
-			if err := os.MkdirAll(dst, 0o755); err != nil {
-				return fmt.Errorf("creating destination %s: %w", dst, err)
-			}
-			dstIsDir = true
-		}
 
-		path := filepath.Join(dst, name)
+		root, err := ensureRoot()
+		if err != nil {
+			return err
+		}
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(path, header.FileInfo().Mode().Perm()|0o100); err != nil {
-				return fmt.Errorf("creating directory %s: %w", path, err)
+			if err := root.MkdirAll(name, header.FileInfo().Mode().Perm()|0o100); err != nil {
+				return fmt.Errorf("creating directory %s: %w", filepath.Join(dst, name), err)
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return fmt.Errorf("creating directory for %s: %w", path, err)
+			if err := mkdirAllInRoot(root, filepath.Dir(name), 0o755); err != nil {
+				return fmt.Errorf("creating directory for %s: %w", filepath.Join(dst, name), err)
 			}
-			if err := writeLocalFile(path, tr, header.FileInfo().Mode()); err != nil {
-				return err
+			if err := writeRootFile(root, name, tr, header.FileInfo().Mode()); err != nil {
+				return fmt.Errorf("writing %s: %w", filepath.Join(dst, name), err)
 			}
 		case tar.TypeSymlink:
 			linkTarget := filepath.FromSlash(header.Linkname)
-			resolved := linkTarget
-			if !filepath.IsAbs(resolved) {
-				resolved = filepath.Join(filepath.Dir(name), resolved)
-			}
-			if filepath.IsAbs(linkTarget) || strings.HasPrefix(filepath.Clean(resolved), "..") {
+			resolvedLink := filepath.Clean(filepath.Join(filepath.Dir(name), linkTarget))
+			if linkTarget == "" || filepath.IsAbs(linkTarget) || !filepath.IsLocal(resolvedLink) {
 				fmt.Printf("Warning: skipping symlink %s -> %s (points outside the copied tree)\n", name, header.Linkname)
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return fmt.Errorf("creating directory for %s: %w", path, err)
+			if err := mkdirAllInRoot(root, filepath.Dir(name), 0o755); err != nil {
+				return fmt.Errorf("creating directory for %s: %w", filepath.Join(dst, name), err)
 			}
-			_ = os.Remove(path)
-			if err := os.Symlink(linkTarget, path); err != nil {
-				return fmt.Errorf("creating symlink %s: %w", path, err)
+			_ = root.Remove(name)
+			if err := root.Symlink(linkTarget, name); err != nil {
+				return fmt.Errorf("creating symlink %s: %w", filepath.Join(dst, name), err)
 			}
 		default:
 			// Devices, FIFOs, hard links: not useful on the developer side.
 			continue
 		}
 	}
+}
+
+func mkdirAllInRoot(root *os.Root, name string, perm fs.FileMode) error {
+	if name == "." || name == "" {
+		return nil
+	}
+	return root.MkdirAll(name, perm)
+}
+
+func writeRootFile(root *os.Root, path string, r io.Reader, mode fs.FileMode) error {
+	out, err := root.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode.Perm()|0o200)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, r); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func writeLocalFile(path string, r io.Reader, mode fs.FileMode) error {
