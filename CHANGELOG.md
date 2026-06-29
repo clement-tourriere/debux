@@ -1,3 +1,9 @@
+## v0.8.4 (2026-06-29)
+
+### Fix
+
+- harden tar extraction paths
+
 ## v0.8.3 (2026-06-18)
 
 ### Fix
