@@ -235,13 +235,11 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	profile := runtime.ProfileGeneral
-	var err error
-	if flagChanged(cmd, "profile") || flagChanged(cmd, "privileged") {
-		profile, err = resolveProfile(cmd)
-		if err != nil {
-			return err
-		}
+	// resolveProfile falls back to the config file's default profile when no
+	// flag was passed, matching plain `debux exec`.
+	profile, err := resolveProfile(cmd)
+	if err != nil {
+		return err
 	}
 	pullPolicy, err := resolvePullPolicy(configuredPullPolicy(flagPullPolicy))
 	if err != nil {
@@ -262,22 +260,40 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 		readOnlyVolumes: flagReadOnlyVolumes,
 	}
 
+	// Snapshot the flag/config-resolved defaults before layering saved TUI
+	// state on top: only deviations from these defaults are persisted, so a
+	// config edit or a release changing the default image is not masked by
+	// state saved in an older session.
+	defaultLaunch := baseLaunch
+
 	// Restore last-used TUI options when the user did not explicitly override
 	// them on the command line.
 	applySavedTUIState(cmd, &baseLaunch)
+
+	// Launching a Kubernetes target marks Kubernetes-only flags as changed to
+	// carry the TUI's choices into runExec. Snapshot their state so each
+	// iteration starts from the user's original command line; otherwise
+	// validateExecFlags rejects the next Docker pick and aborts the TUI.
+	kubeFlagSnapshot := snapshotFlagState(cmd, "profile", "copy", "keep", "ttl", "kubeconfig", "context", "namespace")
 
 	// Carry the navigation scope and any launch error across loop iterations
 	// so the next TUI reopens where the user left off and shows what failed.
 	kubeCtx, kubeNs := flagKubeContext, flagNamespace
 	startupNotice := ""
 	for {
+		restoreFlagState(cmd, kubeFlagSnapshot)
 		launch := baseLaunch
 		m := newTUIModel(&launch, kubeconfig, kubeCtx, kubeNs)
 		m.notice = startupNotice
 		startupNotice = ""
-		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx))
 		finalModel, err := p.Run()
 		if err != nil {
+			// SIGTERM/SIGHUP cancel the signal context; bubbletea has already
+			// restored the terminal, so exit quietly like Ctrl-C does.
+			if ctx.Err() != nil {
+				return nil
+			}
 			return err
 		}
 		if fm, ok := finalModel.(tuiModel); ok {
@@ -298,9 +314,16 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 		flagReadOnlyVolumes = launch.readOnlyVolumes
 		// resolveProfile honors --profile only when cobra marks it as changed;
 		// without this, a profile toggled in the TUI silently launches the
-		// default profile.
-		if strings.HasPrefix(launch.target, "k8s://") && launch.profile != "" && !launch.privileged {
-			_ = cmd.Flags().Set("profile", launch.profile)
+		// default profile. A privileged toggle maps to the sysadmin profile,
+		// like the --privileged flag alias.
+		if strings.HasPrefix(launch.target, "k8s://") {
+			profile := launch.profile
+			if launch.privileged {
+				profile = runtime.ProfileSysadmin
+			}
+			if profile != "" {
+				_ = cmd.Flags().Set("profile", profile)
+			}
 		}
 		baseLaunch = launch
 		baseLaunch.target = ""
@@ -310,7 +333,7 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 
 		// Persist the options used for this launch so the next `debux tui`
 		// invocation can start with the same defaults.
-		_ = config.SaveTUIState(tuiLaunchToState(launch))
+		_ = config.SaveTUIState(tuiLaunchStateDiff(launch, defaultLaunch))
 
 		if launch.mode == tuiLaunchTerminal {
 			if err := openInTerminal(ctx, cmd, launch); err != nil {
@@ -353,17 +376,57 @@ func applySavedTUIState(cmd *cobra.Command, launch *tuiLaunch) {
 	}
 }
 
-func tuiLaunchToState(launch tuiLaunch) config.TUIState {
-	return config.TUIState{
-		Image:           launch.image,
-		User:            launch.user,
-		PullPolicy:      launch.pullPolicy,
-		Profile:         launch.profile,
+// tuiLaunchStateDiff persists only the options that deviate from the
+// flag/config-resolved defaults. Values equal to the defaults are stored as
+// zero values ("follow the defaults"), so an upgraded release's new default
+// image or an edited config file takes effect instead of being pinned by
+// state saved in an older session.
+func tuiLaunchStateDiff(launch, defaults tuiLaunch) config.TUIState {
+	state := config.TUIState{
 		Fresh:           launch.fresh,
 		Copy:            launch.copy,
-		Privileged:      launch.privileged,
 		NoVolumes:       !launch.shareVolumes,
 		ReadOnlyVolumes: launch.readOnlyVolumes,
+	}
+	if launch.image != defaults.image {
+		state.Image = launch.image
+	}
+	if launch.user != defaults.user {
+		state.User = launch.user
+	}
+	if launch.pullPolicy != defaults.pullPolicy {
+		state.PullPolicy = launch.pullPolicy
+	}
+	if launch.profile != defaults.profile || launch.privileged != defaults.privileged {
+		state.Profile = launch.profile
+		state.Privileged = launch.privileged
+	}
+	return state
+}
+
+type flagState struct {
+	value   string
+	changed bool
+}
+
+func snapshotFlagState(cmd *cobra.Command, names ...string) map[string]flagState {
+	snap := make(map[string]flagState, len(names))
+	for _, name := range names {
+		if f := cmd.Flags().Lookup(name); f != nil {
+			snap[name] = flagState{value: f.Value.String(), changed: f.Changed}
+		}
+	}
+	return snap
+}
+
+// restoreFlagState also writes through to the package-level flag variables
+// the flags are bound to, resetting them to the snapshot values.
+func restoreFlagState(cmd *cobra.Command, snap map[string]flagState) {
+	for name, s := range snap {
+		if f := cmd.Flags().Lookup(name); f != nil {
+			_ = f.Value.Set(s.value)
+			f.Changed = s.changed
+		}
 	}
 }
 
@@ -1010,7 +1073,7 @@ func loadTUIDashboard(kubeconfig, preferredContext string, gen int) tea.Cmd {
 		var dockerItems, contextItems, historyItems []tuiItem
 		var dockerErr, contextErr, historyErr error
 
-		if containers, err := runtime.DockerList(ctx); err != nil {
+		if containers, err := runtime.DockerList(ctx, nil); err != nil {
 			dockerErr = err
 		} else {
 			sort.SliceStable(containers, func(i, j int) bool {
@@ -1103,7 +1166,7 @@ func loadTUISessions(kubeconfig, kubeContext, namespace string, gen int) tea.Cmd
 
 		var sessions []runtime.DebugSessionInfo
 		var problems []error
-		if dockerSessions, err := runtime.DockerSessions(ctx); err != nil {
+		if dockerSessions, err := runtime.DockerSessions(ctx, nil); err != nil {
 			problems = append(problems, fmt.Errorf("docker: %w", err))
 		} else {
 			sessions = append(sessions, dockerSessions...)
@@ -1421,6 +1484,18 @@ func buildExecArgs(cmd *cobra.Command, launch tuiLaunch) []string {
 	if launch.pullPolicy != "" {
 		args = append(args, "--pull-policy", launch.pullPolicy)
 	}
+	// Repeatable flags from the original command line must survive an
+	// external-terminal launch, or it behaves differently from an
+	// in-terminal (enter) launch that reuses the flag variables directly.
+	for _, env := range flagEnv {
+		args = append(args, "--env", env)
+	}
+	for _, cap := range flagCapAdd {
+		args = append(args, "--cap-add", cap)
+	}
+	for _, tool := range flagTools {
+		args = append(args, "--tools", tool)
+	}
 	if isKubernetes {
 		if launch.copy {
 			args = append(args, "--copy")
@@ -1444,6 +1519,9 @@ func buildExecArgs(cmd *cobra.Command, launch tuiLaunch) []string {
 func formatTargetURI(target *runtime.Target) string {
 	switch target.Runtime {
 	case "docker":
+		if target.PreferPodman {
+			return "podman://" + target.Name
+		}
 		return "docker://" + target.Name
 	case "containerd":
 		return "containerd://" + target.Name
@@ -1459,7 +1537,10 @@ func formatTargetURI(target *runtime.Target) string {
 		if target.Name != "" {
 			parts = append(parts, url.PathEscape(target.Name))
 		}
-		if target.Container != "" {
+		// Without a namespace, k8s://<pod>/<container> would re-parse as
+		// k8s://<namespace>/<pod>; drop the container rather than emit an
+		// ambiguous URI.
+		if target.Container != "" && (target.Namespace != "" || target.Name == "") {
 			parts = append(parts, url.PathEscape(target.Container))
 		}
 		if len(parts) == 0 {

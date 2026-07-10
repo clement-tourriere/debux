@@ -59,7 +59,6 @@ func runPod(cmd *cobra.Command, args []string) error {
 		KubeContext: flagKubeContext,
 		Keep:        keep,
 		HostNetwork: hostNetwork,
-		Privileged:  flagPrivileged,
 		User:        flagUser,
 		PullPolicy:  pullPolicy,
 		Profile:     profile,

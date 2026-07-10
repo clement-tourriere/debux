@@ -114,7 +114,7 @@ func currentContextEndpoint() (host, tlsDir string, err error) {
 	metaPath := filepath.Join(dir, "contexts", "meta", id, "meta.json")
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
-		return "", "", fmt.Errorf("docker context %q is selected but its metadata cannot be read (%v); run `docker context ls` or set DOCKER_HOST", name, err)
+		return "", "", fmt.Errorf("docker context %q is selected but its metadata cannot be read (%w); run `docker context ls` or set DOCKER_HOST", name, err)
 	}
 	var meta struct {
 		Endpoints map[string]struct {

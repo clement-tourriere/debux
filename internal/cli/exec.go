@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -221,7 +222,7 @@ func resolveK8sContainerName(ctx context.Context, cmd *cobra.Command, target *ru
 	for i, name := range containers {
 		items[i] = picker.Item{Label: name, Value: name}
 	}
-	return picker.Pick(fmt.Sprintf("Select a container in %s", target.Name), items)
+	return picker.Pick(ctx, fmt.Sprintf("Select a container in %s", target.Name), items)
 }
 
 func resolveK8sPodName(ctx context.Context, cmd *cobra.Command, target *runtime.Target, kubeContext string) (string, error) {
@@ -258,7 +259,7 @@ func resolveK8sPodName(ctx context.Context, cmd *cobra.Command, target *runtime.
 		return "", fmt.Errorf("pod %q was not found and no running pods matched that substring", target.Name)
 	}
 
-	name, err := pickK8sPodFromList(fmt.Sprintf("Pod %q not found. Select a matching pod", target.Name), matches)
+	name, err := pickK8sPodFromList(ctx, fmt.Sprintf("Pod %q not found. Select a matching pod", target.Name), matches)
 	if err != nil {
 		return "", err
 	}
@@ -277,7 +278,7 @@ func resolveKubeContext(cmd *cobra.Command, targetContext string) (string, error
 
 func validateExecFlags(cmd *cobra.Command, targetRuntime string) error {
 	if targetRuntime == "kubernetes" {
-		if (flagChanged(cmd, "keep") || flagChanged(cmd, "ttl")) && !flagCopy {
+		if ((flagChanged(cmd, "keep") && flagKeep) || flagChanged(cmd, "ttl")) && !flagCopy {
 			return fmt.Errorf("--keep and --ttl are only supported with --copy: ephemeral debug containers live inside the target pod and cannot outlive it")
 		}
 		return nil
@@ -285,9 +286,15 @@ func validateExecFlags(cmd *cobra.Command, targetRuntime string) error {
 
 	var invalid []string
 	for _, name := range []string{"copy", "keep", "ttl", "kubeconfig", "context", "namespace", "profile"} {
-		if flagChanged(cmd, name) {
-			invalid = append(invalid, "--"+name)
+		if !flagChanged(cmd, name) {
+			continue
 		}
+		// An explicit --copy=false / --keep=false is a no-op, not a
+		// Kubernetes request; don't fail a Docker target over it.
+		if (name == "copy" && !flagCopy) || (name == "keep" && !flagKeep) {
+			continue
+		}
+		invalid = append(invalid, "--"+name)
 	}
 	if len(invalid) == 1 {
 		return fmt.Errorf("%s is only supported for Kubernetes targets; use k8s://... or remove the flag", invalid[0])
@@ -301,7 +308,7 @@ func validateExecFlags(cmd *cobra.Command, targetRuntime string) error {
 func pickTarget(ctx context.Context, cmd *cobra.Command, target *runtime.Target) (string, error) {
 	switch target.Runtime {
 	case "docker":
-		return pickDockerContainer(ctx)
+		return pickDockerContainer(ctx, target)
 	case "kubernetes":
 		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
 		return pickK8sPod(ctx, kubeconfig, target.Context, target.Namespace)
@@ -310,8 +317,8 @@ func pickTarget(ctx context.Context, cmd *cobra.Command, target *runtime.Target)
 	}
 }
 
-func pickDockerContainer(ctx context.Context) (string, error) {
-	containers, err := runtime.DockerList(ctx)
+func pickDockerContainer(ctx context.Context, target *runtime.Target) (string, error) {
+	containers, err := runtime.DockerList(ctx, target)
 	if err != nil {
 		return "", err
 	}
@@ -336,7 +343,7 @@ func pickDockerContainer(ctx context.Context) (string, error) {
 		}
 	}
 
-	return picker.Pick("Select a container", items)
+	return picker.Pick(ctx, "Select a container", items)
 }
 
 func pickK8sPod(ctx context.Context, kubeconfig, kubeContext, namespace string) (string, error) {
@@ -348,13 +355,13 @@ func pickK8sPod(ctx context.Context, kubeconfig, kubeContext, namespace string) 
 		return "", fmt.Errorf("no running pods found")
 	}
 	if limited {
-		fmt.Println("Showing first 500 running pods; type a more specific target to narrow the search")
+		fmt.Fprintln(os.Stderr, "Showing first 500 running pods; type a more specific target to narrow the search")
 	}
 
-	return pickK8sPodFromList("Select a pod", pods)
+	return pickK8sPodFromList(ctx, "Select a pod", pods)
 }
 
-func pickK8sPodFromList(title string, pods []runtime.PodInfo) (string, error) {
+func pickK8sPodFromList(ctx context.Context, title string, pods []runtime.PodInfo) (string, error) {
 	// Sort: active debux sessions first
 	sort.SliceStable(pods, func(i, j int) bool {
 		return pods[i].HasDebuxSession && !pods[j].HasDebuxSession
@@ -368,7 +375,7 @@ func pickK8sPodFromList(title string, pods []runtime.PodInfo) (string, error) {
 		}
 	}
 
-	return picker.Pick(title, items)
+	return picker.Pick(ctx, title, items)
 }
 
 func formatK8sPodLabel(p runtime.PodInfo, active bool) string {

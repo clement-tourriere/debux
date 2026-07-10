@@ -77,7 +77,6 @@ func runNode(cmd *cobra.Command, args []string) error {
 		Kubeconfig:  kubeconfig,
 		KubeContext: flagKubeContext,
 		Keep:        keep,
-		Privileged:  flagPrivileged,
 		User:        flagUser,
 		PullPolicy:  pullPolicy,
 		Profile:     profile,
@@ -115,5 +114,5 @@ func pickKubernetesNode(ctx context.Context, kubeconfig, kubeContext string) (st
 		}
 		items[i] = picker.Item{Label: label, Value: node.Name}
 	}
-	return picker.Pick("Select a node to debug", items)
+	return picker.Pick(ctx, "Select a node to debug", items)
 }

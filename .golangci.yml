@@ -1,0 +1,45 @@
+version: "2"
+
+# Shared by CI (golangci-lint-action), the hk pre-commit hook, and
+# `mise run lint` — one linter set everywhere.
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - copyloopvar
+    - errorlint
+    - gocritic
+    - gosec
+    - intrange
+    - misspell
+    - nolintlint
+    - unconvert
+    - wastedassign
+  settings:
+    gosec:
+      excludes:
+        # debux is a debugger that runs user-specified commands and reads
+        # user-specified paths by design.
+        - G204 # subprocess launched with variable
+        - G304 # file path from variable
+        # 0o644/0o755 for non-secret state files and directories.
+        - G301
+        - G302
+        - G306
+        # Taint-analysis rules misfire for a local CLI: "XSS" flags terminal
+        # output, "SSRF" flags the GitHub Releases API, and "path traversal"
+        # flags the user's own state files.
+        - G703
+        - G704
+        - G705
+    gocritic:
+      disabled-checks:
+        # if/else chains often read better than forced switches.
+        - ifElseChain
+        - singleCaseSwitch
+  exclusions:
+    rules:
+      # Tests routinely build fixtures where these rules add noise.
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck

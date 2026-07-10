@@ -54,11 +54,10 @@ func newRemoteExecutor(config *rest.Config, reqURL *url.URL) (remotecommand.Exec
 	return exec, nil
 }
 
-// KubernetesExec debugs a running pod using ephemeral containers.
-// It reuses an existing running debux container when possible, or creates a new
-// one in daemon mode (DEBUX_DAEMON=1) so it stays alive between sessions.
-
-func execInPodWithMetadata(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName, targetLabel, kubeContext string, command []string) error {
+// execInPodWithMetadata opens an interactive debug shell in a pod container
+// after bootstrapping the debux zsh config, propagating the session metadata
+// through the environment.
+func execInPodWithMetadata(ctx context.Context, config *rest.Config, clientset kubernetes.Interface, namespace, podName, containerName, targetLabel, kubeContext string, command []string) error {
 	if err := bootstrapPodShell(ctx, config, clientset, namespace, podName, containerName); err != nil {
 		return fmt.Errorf("preparing debux shell config: %w", err)
 	}
@@ -67,7 +66,7 @@ func execInPodWithMetadata(ctx context.Context, config *rest.Config, clientset *
 	return execInPodWithCommand(ctx, config, clientset, namespace, podName, containerName, cmd)
 }
 
-func bootstrapPodShell(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string) error {
+func bootstrapPodShell(ctx context.Context, config *rest.Config, clientset kubernetes.Interface, namespace, podName, containerName string) error {
 	req := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).
@@ -107,7 +106,6 @@ func bootstrapPodShell(ctx context.Context, config *rest.Config, clientset *kube
 // kubernetesExecError converts the remote command's exit status into the
 // typed ExitError so the CLI propagates the real code instead of printing a
 // spurious "command terminated with exit code N".
-
 func kubernetesExecError(err error) error {
 	if err == nil {
 		return nil
@@ -119,7 +117,7 @@ func kubernetesExecError(err error) error {
 	return err
 }
 
-func execInPodWithCommand(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string, command []string) error {
+func execInPodWithCommand(ctx context.Context, config *rest.Config, clientset kubernetes.Interface, namespace, podName, containerName string, command []string) error {
 	// Allocate a remote TTY only when stdio is a terminal, mirroring kubectl:
 	// piped one-shot commands must not get CRLF-mangled, echo-polluted output.
 	tty := stdioIsTTY()
@@ -169,9 +167,9 @@ func execInPodWithCommand(ctx context.Context, config *rest.Config, clientset *k
 	return kubernetesExecError(exec.StreamWithContext(ctx, streamOpts))
 }
 
-// KubernetesPod creates a standalone debug pod.
-
-func attachToPod(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string, tty bool) error {
+// attachToPod attaches to a container's primary process (kubectl attach
+// semantics), used to reconnect to daemon debug containers.
+func attachToPod(ctx context.Context, config *rest.Config, clientset kubernetes.Interface, namespace, podName, containerName string, tty bool) error {
 	req := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).

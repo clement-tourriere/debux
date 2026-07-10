@@ -62,7 +62,8 @@ func runForward(cmd *cobra.Command, args []string) error {
 		}
 		target.Namespace = kubeNamespace
 		if target.Name == "" {
-			name, err := pickK8sPod(ctx, completionFlagString(cmd, "kubeconfig"), kubeContext, target.Namespace)
+			kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
+			name, err := pickK8sPod(ctx, kubeconfig, kubeContext, target.Namespace)
 			if err != nil {
 				return err
 			}

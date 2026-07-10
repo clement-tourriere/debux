@@ -2,11 +2,14 @@ package runtime
 
 import (
 	"archive/tar"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 )
 
 // untarToLocal extracts a tar stream produced by a copy operation. When the
@@ -15,7 +18,7 @@ import (
 // extracted inside dst. Entries that would escape dst — including via
 // symlinks — are rejected: the archive comes from a container we should not
 // blindly trust with local paths.
-func untarToLocal(r io.Reader, dst string) error {
+func untarToLocal(r io.Reader, dst string) (returnErr error) {
 	tr := tar.NewReader(r)
 
 	dstIsDir := false
@@ -46,11 +49,36 @@ func untarToLocal(r io.Reader, dst string) error {
 		return root, nil
 	}
 
+	// Directories are created owner-writable so their children can be
+	// extracted even when the archive says read-only (Nix store trees are all
+	// 0555); the archived modes are restored once extraction finishes.
+	var deferredDirNames []string
+	deferredDirModes := make(map[string]fs.FileMode)
+	// Restore every temporarily widened mode even when extraction later fails.
+	// The restore runs before the os.Root close defer above (LIFO order).
+	defer func() {
+		if root == nil {
+			return
+		}
+		// Restore deepest paths first so a parent archived as mode 000 cannot
+		// make its children unreachable before their modes are restored.
+		sort.SliceStable(deferredDirNames, func(i, j int) bool {
+			return strings.Count(deferredDirNames[i], string(os.PathSeparator)) > strings.Count(deferredDirNames[j], string(os.PathSeparator))
+		})
+		var restoreErr error
+		for _, name := range deferredDirNames {
+			if err := root.Chmod(name, deferredDirModes[name]); err != nil {
+				restoreErr = errors.Join(restoreErr, fmt.Errorf("restoring mode of directory %s: %w", filepath.Join(dst, name), err))
+			}
+		}
+		returnErr = errors.Join(returnErr, restoreErr)
+	}()
+
 	entries := 0
 	wroteSingleFile := false
 	for {
 		header, err := tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			if entries == 0 {
 				return fmt.Errorf("source produced an empty archive")
 			}
@@ -86,8 +114,19 @@ func untarToLocal(r io.Reader, dst string) error {
 		}
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := root.MkdirAll(name, header.FileInfo().Mode().Perm()|0o100); err != nil {
+			perm := header.FileInfo().Mode().Perm()
+			if err := root.MkdirAll(name, perm|0o300); err != nil {
 				return fmt.Errorf("creating directory %s: %w", filepath.Join(dst, name), err)
+			}
+			if _, tracked := deferredDirModes[name]; !tracked {
+				deferredDirNames = append(deferredDirNames, name)
+			}
+			deferredDirModes[name] = perm
+			// MkdirAll is affected by umask and does not alter existing modes.
+			// Set the temporary owner-writable mode explicitly, then restore the
+			// exact last archived mode in the deferred cleanup above.
+			if err := root.Chmod(name, perm|0o300); err != nil {
+				return fmt.Errorf("temporarily widening mode of directory %s: %w", filepath.Join(dst, name), err)
 			}
 		case tar.TypeReg:
 			if err := mkdirAllInRoot(root, filepath.Dir(name), 0o755); err != nil {
@@ -100,7 +139,7 @@ func untarToLocal(r io.Reader, dst string) error {
 			linkTarget := filepath.FromSlash(header.Linkname)
 			resolvedLink := filepath.Clean(filepath.Join(filepath.Dir(name), linkTarget))
 			if linkTarget == "" || filepath.IsAbs(linkTarget) || !filepath.IsLocal(resolvedLink) {
-				fmt.Printf("Warning: skipping symlink %s -> %s (points outside the copied tree)\n", name, header.Linkname)
+				fmt.Fprintf(os.Stderr, "Warning: skipping symlink %s -> %s (points outside the copied tree)\n", name, header.Linkname)
 				continue
 			}
 			if err := mkdirAllInRoot(root, filepath.Dir(name), 0o755); err != nil {
@@ -199,8 +238,15 @@ func addTarEntry(tw *tar.Writer, path, name string) error {
 	if err != nil {
 		return err
 	}
+	mode := info.Mode()
+	if !mode.IsRegular() && !mode.IsDir() && mode&fs.ModeSymlink == 0 {
+		// Sockets, FIFOs, devices: skip them instead of failing the whole
+		// copy (a stale .sock in an app dir is common).
+		fmt.Fprintf(os.Stderr, "Warning: skipping %s (unsupported file type)\n", path)
+		return nil
+	}
 	link := ""
-	if info.Mode()&fs.ModeSymlink != 0 {
+	if mode&fs.ModeSymlink != 0 {
 		if link, err = os.Readlink(path); err != nil {
 			return err
 		}

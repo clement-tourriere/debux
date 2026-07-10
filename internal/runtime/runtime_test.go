@@ -195,7 +195,7 @@ func TestKubernetesScopeURIIncludesContext(t *testing.T) {
 }
 
 func TestDockerSessionFromSidecar(t *testing.T) {
-	session, ok := dockerSessionFromSidecar(container.Summary{
+	summary := container.Summary{
 		Names:  []string{"/debux-api"},
 		Image:  "debug:latest",
 		Status: "Up 2 minutes",
@@ -206,12 +206,20 @@ func TestDockerSessionFromSidecar(t *testing.T) {
 			dockerLabelDebugImage: "debug:v1",
 			dockerLabelDebugUser:  "1000:1000",
 		},
-	})
+	}
+	session, ok := dockerSessionFromSidecar(summary, "docker")
 	if !ok {
 		t.Fatal("dockerSessionFromSidecar did not recognize sidecar")
 	}
 	if session.Target != "docker://api" || session.DebugName != "debux-api" || session.Image != "debug:v1" || session.User != "1000:1000" {
 		t.Fatalf("session = %#v", session)
+	}
+
+	// Sessions found on the podman socket must round-trip as podman:// so
+	// reattach and kill talk to the same daemon they were found on.
+	podmanSession, ok := dockerSessionFromSidecar(summary, "podman")
+	if !ok || podmanSession.Target != "podman://api" {
+		t.Fatalf("podman session target = %q, want podman://api", podmanSession.Target)
 	}
 }
 

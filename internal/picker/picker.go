@@ -2,6 +2,7 @@ package picker
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
+	"github.com/moby/term"
 )
 
 // ErrCancelled is returned when the user aborts an interactive selection.
@@ -24,10 +26,19 @@ type Item struct {
 
 const maxTextPickerItems = 20
 
-// Pick shows an interactive select list and returns the chosen Value.
-func Pick(title string, items []Item) (string, error) {
+// Pick shows an interactive select list and returns the chosen Value. The
+// context cancels the picker (Ctrl-C is handled internally; SIGTERM/SIGHUP
+// arrive via ctx), which restores the terminal before returning.
+func Pick(ctx context.Context, title string, items []Item) (string, error) {
 	if len(items) == 0 {
 		return "", fmt.Errorf("no items to select from")
+	}
+
+	// Without a terminal on stdio the full-screen picker cannot run; fall
+	// back to the plain-text picker on /dev/tty so a shell with redirected
+	// stdin/stdout can still select interactively.
+	if !stdioIsTerminal() {
+		return pickText(ctx, title, items)
 	}
 
 	opts := make([]huh.Option[string], len(items))
@@ -36,21 +47,28 @@ func Pick(title string, items []Item) (string, error) {
 	}
 
 	var selected string
-	err := huh.NewSelect[string]().
-		Title(title).
-		Options(opts...).
-		Filtering(true).
-		Height(15).
-		Value(&selected).
-		Run()
-	if err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title(title).
+			Options(opts...).
+			Filtering(true).
+			Height(15).
+			Value(&selected),
+	))
+	if err := form.RunWithContext(ctx); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) || ctx.Err() != nil {
 			return "", ErrCancelled
 		}
-		return "", fmt.Errorf("selection cancelled: %w", err)
+		return "", fmt.Errorf("interactive selection failed: %w", err)
 	}
 
 	return selected, nil
+}
+
+func stdioIsTerminal() bool {
+	_, stdinTerm := term.GetFdInfo(os.Stdin)
+	_, stdoutTerm := term.GetFdInfo(os.Stdout)
+	return stdinTerm && stdoutTerm
 }
 
 // PickText is a lightweight terminal picker. It avoids Bubble Tea's full TUI,
@@ -58,6 +76,10 @@ func Pick(title string, items []Item) (string, error) {
 // richer picker is too heavy. Users can type a substring to filter, then select
 // a number from the displayed matches.
 func PickText(title string, items []Item) (string, error) {
+	return pickText(context.Background(), title, items)
+}
+
+func pickText(ctx context.Context, title string, items []Item) (string, error) {
 	if len(items) == 0 {
 		return "", fmt.Errorf("no items to select from")
 	}
@@ -71,7 +93,21 @@ func PickText(title string, items []Item) (string, error) {
 	}
 	defer func() { _ = tty.Close() }()
 
-	return pickTextFromReader(title, items, tty, tty)
+	return pickTextFromReadCloser(ctx, title, items, tty, tty)
+}
+
+// pickTextFromReadCloser interrupts a blocking terminal read when the command
+// context is cancelled. signalContext turns SIGTERM/SIGHUP into cancellation,
+// so merely checking ctx between reads would leave the process stuck forever.
+func pickTextFromReadCloser(ctx context.Context, title string, items []Item, input io.ReadCloser, output io.Writer) (string, error) {
+	stopInterrupt := context.AfterFunc(ctx, func() { _ = input.Close() })
+	defer stopInterrupt()
+
+	selected, err := pickTextFromReader(title, items, input, output)
+	if ctx.Err() != nil {
+		return "", ErrCancelled
+	}
+	return selected, err
 }
 
 func pickTextFromReader(title string, items []Item, input io.Reader, output io.Writer) (string, error) {
@@ -92,7 +128,7 @@ func pickTextFromReader(title string, items []Item, input io.Reader, output io.W
 			if limit > maxTextPickerItems {
 				limit = maxTextPickerItems
 			}
-			for i := 0; i < limit; i++ {
+			for i := range limit {
 				_, _ = fmt.Fprintf(output, "  %2d) %s\n", i+1, matches[i].Label)
 			}
 			if len(matches) > limit {

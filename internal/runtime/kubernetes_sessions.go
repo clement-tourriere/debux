@@ -144,9 +144,9 @@ func kubernetesDebugEnvMetadata(env []corev1.EnvVar) (profile, user string) {
 	return profile, user
 }
 
-// KubernetesBrowsePods returns lightweight running pod metadata for interactive navigation.
-// It avoids per-pod GET enrichment so large namespaces remain responsive.
-
+// KubernetesKill terminates the debux ephemeral container on a specific pod
+// (ephemeral containers cannot be removed from the pod spec, but killing
+// their daemon process terminates them) or deletes a debux copy pod.
 func KubernetesKill(ctx context.Context, target *Target, kubeconfig string, kubeContext string) error {
 	config, clientset, err := getK8sClient(kubeconfig, kubeContext)
 	if err != nil {
@@ -166,7 +166,7 @@ func KubernetesKill(ctx context.Context, target *Target, kubeconfig string, kube
 		if err := clientset.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil {
 			return fmt.Errorf("deleting debug copy pod %s/%s: %w", namespace, pod.Name, err)
 		}
-		fmt.Printf("Deleted debug copy pod %s/%s\n", namespace, pod.Name)
+		statusf("Deleted debug copy pod %s/%s\n", namespace, pod.Name)
 		return nil
 	}
 
@@ -182,13 +182,12 @@ func KubernetesKill(ctx context.Context, target *Target, kubeconfig string, kube
 		return fmt.Errorf("killing debug session on %s/%s: %w", namespace, target.Name, err)
 	}
 
-	fmt.Printf("Killed debug session on %s/%s (container: %s)\n", namespace, target.Name, containerName)
+	statusf("Killed debug session on %s/%s (container: %s)\n", namespace, target.Name, containerName)
 	return nil
 }
 
 // KubernetesKillAll terminates all running debux ephemeral containers across
 // all pods in the resolved namespace.
-
 func KubernetesKillAll(ctx context.Context, kubeconfig string, kubeContext string, namespace string) error {
 	config, clientset, err := getK8sClient(kubeconfig, kubeContext)
 	if err != nil {
@@ -215,10 +214,10 @@ func KubernetesKillAll(ctx context.Context, kubeconfig string, kubeContext strin
 					continue
 				}
 				if err := killInContainer(ctx, config, clientset, namespace, pod.Name, ec.Name); err != nil {
-					fmt.Printf("Warning: failed to kill %s on %s/%s: %v\n", ec.Name, namespace, pod.Name, err)
+					statusf("Warning: failed to kill %s on %s/%s: %v\n", ec.Name, namespace, pod.Name, err)
 					continue
 				}
-				fmt.Printf("Killed %s on %s/%s\n", ec.Name, namespace, pod.Name)
+				statusf("Killed %s on %s/%s\n", ec.Name, namespace, pod.Name)
 				killed++
 			}
 		}
@@ -237,22 +236,21 @@ func KubernetesKillAll(ctx context.Context, kubeconfig string, kubeContext strin
 	}
 
 	if killed == 0 && deletedCopies == 0 {
-		fmt.Println("No running debux sessions found")
+		statusln("No running debux sessions found")
 		return nil
 	}
 	if killed > 0 {
-		fmt.Printf("Killed %d debug session(s)\n", killed)
+		statusf("Killed %d debug session(s)\n", killed)
 	}
 	if deletedCopies > 0 {
-		fmt.Printf("Deleted %d debug copy pod(s)\n", deletedCopies)
+		statusf("Deleted %d debug copy pod(s)\n", deletedCopies)
 	}
 	return nil
 }
 
 // deleteAllKubernetesCopyPods deletes every debux copy pod in the namespace,
 // including terminated ones left behind by activeDeadlineSeconds.
-
-func deleteAllKubernetesCopyPods(ctx context.Context, clientset *kubernetes.Clientset, namespace string) (int, error) {
+func deleteAllKubernetesCopyPods(ctx context.Context, clientset kubernetes.Interface, namespace string) (int, error) {
 	deleted := 0
 	listOptions := metav1.ListOptions{
 		LabelSelector: debuxManagedByLabelKey + "=" + debuxManagedByLabelValue + "," + debuxModeLabelKey + "=" + debuxModeCopy,
@@ -265,10 +263,10 @@ func deleteAllKubernetesCopyPods(ctx context.Context, clientset *kubernetes.Clie
 		}
 		for _, pod := range pods.Items {
 			if err := clientset.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil {
-				fmt.Printf("Warning: failed to delete copy pod %s/%s: %v\n", namespace, pod.Name, err)
+				statusf("Warning: failed to delete copy pod %s/%s: %v\n", namespace, pod.Name, err)
 				continue
 			}
-			fmt.Printf("Deleted debug copy pod %s/%s\n", namespace, pod.Name)
+			statusf("Deleted debug copy pod %s/%s\n", namespace, pod.Name)
 			deleted++
 		}
 		if pods.Continue == "" {
@@ -318,8 +316,7 @@ kill "$pid"
 // killInContainer terminates the debux daemon process inside a debug
 // container. It must never signal PID 1: in the shared PID namespace that is
 // the target application's process, not the debug daemon.
-
-func killInContainer(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string) error {
+func killInContainer(ctx context.Context, config *rest.Config, clientset kubernetes.Interface, namespace, podName, containerName string) error {
 	req := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).

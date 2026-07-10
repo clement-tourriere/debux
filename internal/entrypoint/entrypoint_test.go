@@ -19,6 +19,26 @@ func TestDaemonRecordsPidWithBashpid(t *testing.T) {
 	}
 }
 
+func TestShellDoesNotImportTargetEnvironmentIntoSidecar(t *testing.T) {
+	for _, forbidden := range []string{
+		`export "$key"="$val"`,
+		`export PATH="${PATH}:${(j.:.)translated}"`,
+	} {
+		if strings.Contains(Script, forbidden) {
+			t.Fatalf("entrypoint still imports untrusted target environment via %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		`_debux_target_path="$val"`,
+		`exec env -i "${target_env[@]}"`,
+		`export PATH="$wrapper_dir:$PATH"`,
+	} {
+		if !strings.Contains(Script, required) {
+			t.Fatalf("entrypoint missing isolated target-wrapper behavior %q", required)
+		}
+	}
+}
+
 func TestShellBootstrapScriptIncludesDebuxZshConfig(t *testing.T) {
 	script := ShellBootstrapScript()
 	for _, want := range []string{

@@ -88,11 +88,15 @@ func runCp(cmd *cobra.Command, args []string) error {
 		target.Namespace = kubeNamespace
 		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
 
+		pullPolicy, err := resolvePullPolicy(configuredPullPolicy(""))
+		if err != nil {
+			return err
+		}
 		opts := runtime.DebugOpts{
 			Image:       resolveImage(""),
 			Kubeconfig:  kubeconfig,
 			KubeContext: kubeContext,
-			PullPolicy:  "",
+			PullPolicy:  pullPolicy,
 			Profile:     runtime.ProfileGeneral,
 		}
 		if srcRemote {

@@ -13,8 +13,15 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 
   - package-ecosystem: docker
-    directory: /
+    # The only Dockerfile lives here; "/" made every Dependabot docker run
+    # fail with "No Dockerfiles found", so the nixos/nix digest pin never
+    # received refresh PRs.
+    directory: /images/debug
     schedule:
       interval: weekly

@@ -157,17 +157,17 @@ func KubernetesNode(ctx context.Context, nodeName string, opts PodOpts) error {
 
 	if !opts.Keep {
 		defer func() {
-			fmt.Printf("Deleting node debug pod %s...\n", created.Name)
+			statusf("Deleting node debug pod %s...\n", created.Name)
 			_ = clientset.CoreV1().Pods(opts.Namespace).Delete(
 				context.WithoutCancel(ctx), created.Name, metav1.DeleteOptions{})
 		}()
 	}
 
-	fmt.Printf("Waiting for node debug pod %q on %s to start...\n", created.Name, nodeName)
+	statusf("Waiting for node debug pod %q on %s to start...\n", created.Name, nodeName)
 	if err := waitForPodRunning(ctx, clientset, opts.Namespace, created.Name); err != nil {
 		return err
 	}
 
-	fmt.Printf("Debugging node %s (pod: %s/%s, node root: /host)\n", nodeName, opts.Namespace, created.Name)
+	statusf("Debugging node %s (pod: %s/%s, node root: /host)\n", nodeName, opts.Namespace, created.Name)
 	return attachToPod(ctx, config, clientset, opts.Namespace, created.Name, "debug", tty)
 }

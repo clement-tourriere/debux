@@ -221,7 +221,9 @@ func KubernetesBrowseNamespaces(ctx context.Context, kubeconfig, kubeContext, qu
 	return result, false, nil
 }
 
-// KubernetesSessions returns running debux Kubernetes sessions that can be reattached.
+// KubernetesBrowsePods returns lightweight running pod metadata for
+// interactive navigation. It avoids per-pod GET enrichment so large
+// namespaces remain responsive.
 func KubernetesBrowsePods(ctx context.Context, kubeconfig, kubeContext, namespace, query string, maxResults int) ([]PodInfo, bool, error) {
 	config, _, err := getK8sClient(kubeconfig, kubeContext)
 	if err != nil {
@@ -345,14 +347,14 @@ func kubernetesListPods(ctx context.Context, kubeconfig, kubeContext, namespace,
 	return result, nil
 }
 
-func enrichPodInfos(ctx context.Context, clientset *kubernetes.Clientset, pods []PodInfo, limit int) {
+func enrichPodInfos(ctx context.Context, clientset kubernetes.Interface, pods []PodInfo, limit int) {
 	if limit <= 0 {
 		return
 	}
 	if len(pods) < limit {
 		limit = len(pods)
 	}
-	for i := 0; i < limit; i++ {
+	for i := range limit {
 		pod, err := clientset.CoreV1().Pods(pods[i].Namespace).Get(ctx, pods[i].Name, metav1.GetOptions{})
 		if err != nil {
 			continue
@@ -404,12 +406,6 @@ func KubernetesNamespaceExists(ctx context.Context, kubeconfig, kubeContext, nam
 		return false, nil
 	}
 	return false, fmt.Errorf("getting namespace %s: %w", namespace, err)
-}
-
-// KubernetesFindPods returns running pods whose name contains query.
-func KubernetesFindPods(ctx context.Context, kubeconfig, kubeContext, namespace, query string) ([]PodInfo, error) {
-	pods, _, err := KubernetesFindPodsLimited(ctx, kubeconfig, kubeContext, namespace, query)
-	return pods, err
 }
 
 // KubernetesFindPodsLimited returns running pods whose name contains query and
@@ -464,9 +460,8 @@ func KubernetesRunningContainers(ctx context.Context, kubeconfig, kubeContext, n
 	return containers, nil
 }
 
-// KubernetesKill terminates the debux ephemeral container on a specific pod by
-// killing PID 1 inside it. K8s ephemeral containers cannot be removed from the
-// pod spec, but killing their init process terminates them.
+// kubernetesDisplayContext returns the context name shown in session labels:
+// the explicit --context value, or the kubeconfig's current context.
 func kubernetesDisplayContext(kubeconfig, kubeContext string) string {
 	if kubeContext != "" {
 		return kubeContext
@@ -706,21 +701,20 @@ func findContainerID(pod *corev1.Pod, containerName string) string {
 }
 
 func findRunningDebuxContainer(pod *corev1.Pod) string {
-	running := runningDebuxEphemeralContainers(pod)
-	for _, ec := range pod.Spec.EphemeralContainers {
-		if _, ok := running[ec.Name]; ok && debuxEphemeralContainerHasMetadata(ec) {
-			return ec.Name
-		}
-	}
-	return ""
+	return findRunningDebuxContainerForKill(pod, "")
 }
 
 func findRunningDebuxContainerForKill(pod *corev1.Pod, targetContainer string) string {
-	if targetContainer == "" {
-		return findRunningDebuxContainer(pod)
+	matches := findRunningDebuxContainersForKill(pod, targetContainer)
+	if len(matches) == 0 {
+		return ""
 	}
+	return matches[0]
+}
 
+func findRunningDebuxContainersForKill(pod *corev1.Pod, targetContainer string) []string {
 	running := runningDebuxEphemeralContainers(pod)
+	var matches []string
 	for _, ec := range pod.Spec.EphemeralContainers {
 		if _, ok := running[ec.Name]; !ok {
 			continue
@@ -728,11 +722,11 @@ func findRunningDebuxContainerForKill(pod *corev1.Pod, targetContainer string) s
 		if !debuxEphemeralContainerHasMetadata(ec) {
 			continue
 		}
-		if ec.TargetContainerName == targetContainer {
-			return ec.Name
+		if targetContainer == "" || ec.TargetContainerName == targetContainer {
+			matches = append(matches, ec.Name)
 		}
 	}
-	return ""
+	return matches
 }
 
 // findRunningDebuxContainerForTarget returns a running debux ephemeral container
@@ -901,20 +895,20 @@ func KubernetesPod(ctx context.Context, opts PodOpts) error {
 	// Cleanup on exit
 	if !opts.Keep {
 		defer func() {
-			fmt.Printf("Deleting debug pod %s...\n", podName)
+			statusf("Deleting debug pod %s...\n", podName)
 			_ = clientset.CoreV1().Pods(opts.Namespace).Delete(
 				context.Background(), podName, metav1.DeleteOptions{})
 		}()
 	}
 
-	fmt.Printf("Waiting for debug pod %q to start...\n", podName)
+	statusf("Waiting for debug pod %q to start...\n", podName)
 
 	// Wait for the pod to be running
 	if err := waitForPodRunning(ctx, clientset, opts.Namespace, created.Name); err != nil {
 		return err
 	}
 
-	fmt.Printf("Attached to debug pod %s/%s\n", opts.Namespace, podName)
+	statusf("Attached to debug pod %s/%s\n", opts.Namespace, podName)
 
 	return attachToPod(ctx, config, clientset, opts.Namespace, podName, "debug", tty)
 }

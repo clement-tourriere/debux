@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
@@ -46,12 +47,12 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		return kubernetesExecWithPodCopy(ctx, config, clientset, namespace, pod, targetContainer, opts, displayContext)
 	}
 
-	containerName, debuxTarget, err := ensureKubernetesDebugContainer(ctx, clientset, namespace, pod, target.Container, displayContext, opts)
+	containerName, debuxTarget, err := ensureKubernetesDebugContainer(ctx, config, clientset, namespace, pod, target.Container, displayContext, opts)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Debugging %s/%s (container: %s)\n", namespace, podName, containerName)
+	statusf("Debugging %s/%s (container: %s)\n", namespace, podName, containerName)
 
 	// Exec into the daemon container to start an interactive shell
 	return execInPodWithMetadata(ctx, config, clientset, namespace, podName, containerName, debuxTarget, displayContext, opts.Command)
@@ -60,8 +61,15 @@ func KubernetesExec(ctx context.Context, target *Target, opts DebugOpts) error {
 // ensureKubernetesDebugContainer reuses a matching running debux ephemeral
 // container or creates a new daemon one and waits for it to start. It returns
 // the debug container name and the display label for the session.
+func ensureKubernetesDebugContainer(ctx context.Context, config *rest.Config, clientset kubernetes.Interface, namespace string, pod *corev1.Pod, requestedContainer, displayContext string, opts DebugOpts) (string, string, error) {
+	return ensureKubernetesDebugContainerWithKiller(ctx, config, clientset, namespace, pod, requestedContainer, displayContext, opts, killInContainer)
+}
 
-func ensureKubernetesDebugContainer(ctx context.Context, clientset *kubernetes.Clientset, namespace string, pod *corev1.Pod, requestedContainer, displayContext string, opts DebugOpts) (string, string, error) {
+type kubernetesContainerKiller func(context.Context, *rest.Config, kubernetes.Interface, string, string, string) error
+
+// ensureKubernetesDebugContainerWithKiller keeps termination injectable for
+// fake-client tests; production always passes killInContainer.
+func ensureKubernetesDebugContainerWithKiller(ctx context.Context, config *rest.Config, clientset kubernetes.Interface, namespace string, pod *corev1.Pod, requestedContainer, displayContext string, opts DebugOpts, killContainer kubernetesContainerKiller) (string, string, error) {
 	podName := pod.Name
 
 	if pod.DeletionTimestamp != nil {
@@ -77,15 +85,20 @@ func ensureKubernetesDebugContainer(ctx context.Context, clientset *kubernetes.C
 
 	debuxTarget := kubernetesDebugTargetLabel(displayContext, namespace, podName, targetContainer)
 
-	// Try to reuse an existing running debux container for the same target container.
+	// Try to reuse an existing running debux container for the same target
+	// container. For --fresh, remember every superseded daemon but keep them
+	// alive until the replacement has successfully started.
+	var superseded []string
 	if !opts.Fresh {
 		if existing := findRunningDebuxContainerForTarget(pod, targetContainer, opts.Profile, opts.User, opts.Image); existing != "" {
-			fmt.Printf("Reusing debug container %q\n", existing)
+			statusf("Reusing debug container %q\n", existing)
 			return existing, debuxTarget, nil
 		}
 		if other := findRunningDebuxContainerForTarget(pod, targetContainer, opts.Profile, opts.User, ""); other != "" {
-			fmt.Printf("Existing debug container %q uses a different image; creating a new one with %s\n", other, opts.Image)
+			statusf("Existing debug container %q uses a different image; creating a new one with %s\n", other, opts.Image)
 		}
+	} else {
+		superseded = findRunningDebuxContainersForKill(pod, targetContainer)
 	}
 
 	// Create a new ephemeral container in daemon mode.
@@ -165,14 +178,24 @@ func ensureKubernetesDebugContainer(ctx context.Context, clientset *kubernetes.C
 			debugContainerName, namespace, podName)
 	}
 
-	fmt.Printf("Waiting for debug container %q to start...\n", debugContainerName)
+	statusf("Waiting for debug container %q to start...\n", debugContainerName)
 
-	// Wait for the ephemeral container to be running.
-	// Pass the resourceVersion from the update response so the watch starts
-	// from the right point and we don't miss status changes that happen
-	// between the update and the watch setup.
-	if err := waitForEphemeralContainer(ctx, clientset, namespace, podName, debugContainerName, patchedPod.ResourceVersion); err != nil {
+	// Wait for the ephemeral container to be running. The waiter snapshots the
+	// current pod and watches from that exact resource version so setup and
+	// reconnect gaps cannot lose a state transition.
+	if err := waitForEphemeralContainer(ctx, clientset, namespace, podName, debugContainerName); err != nil {
 		return "", "", err
+	}
+
+	// A failed replacement must leave the previous working session intact.
+	// Once the new daemon is running, terminate every older daemon targeting
+	// the same container so repeated --fresh calls cannot accumulate sessions.
+	for _, oldContainer := range superseded {
+		if err := killContainer(ctx, config, clientset, namespace, podName, oldContainer); err != nil {
+			statusf("Warning: could not terminate superseded debug container %q: %v\n", oldContainer, err)
+			continue
+		}
+		statusf("Terminated superseded debug container %q\n", oldContainer)
 	}
 
 	return debugContainerName, debuxTarget, nil
@@ -181,8 +204,7 @@ func ensureKubernetesDebugContainer(ctx context.Context, clientset *kubernetes.C
 // updateEphemeralContainersWithRetry handles 409 Conflicts from controllers
 // touching the pod between our Get and the update by refetching the pod and
 // reapplying the ephemeral container.
-
-func updateEphemeralContainersWithRetry(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName string, pod *corev1.Pod, ec corev1.EphemeralContainer) (*corev1.Pod, error) {
+func updateEphemeralContainersWithRetry(ctx context.Context, clientset kubernetes.Interface, namespace, podName string, pod *corev1.Pod, ec corev1.EphemeralContainer) (*corev1.Pod, error) {
 	for attempt := 0; ; attempt++ {
 		pod.Spec.EphemeralContainers = append(pod.Spec.EphemeralContainers, ec)
 		patched, err := clientset.CoreV1().Pods(namespace).UpdateEphemeralContainers(ctx, podName, pod, metav1.UpdateOptions{})
@@ -231,68 +253,56 @@ const (
 	clusterAutoscalerSafeToEvictAnnotation = "cluster-autoscaler.kubernetes.io/safe-to-evict"
 )
 
-// buildKubernetesCopyPod renders the copy-mode debug pod for a source pod. It
-// returns the pod to create and the name of the debug container inside it.
-
-func waitForEphemeralContainer(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName, containerName, resourceVersion string) error {
-	watcher, err := clientset.CoreV1().Pods(namespace).Watch(ctx, metav1.ListOptions{
-		FieldSelector:   fmt.Sprintf("metadata.name=%s", podName),
-		ResourceVersion: resourceVersion,
-	})
-	if err != nil {
-		return fmt.Errorf("watching pod: %w", err)
-	}
-	defer watcher.Stop()
-
+// waitForEphemeralContainer waits until the debug ephemeral container is
+// running, surfacing image-pull and admission failures with diagnostics.
+func waitForEphemeralContainer(ctx context.Context, clientset kubernetes.Interface, namespace, podName, containerName string) error {
 	var lastReason string
-	timeout := time.After(2 * time.Minute)
+	current, watcher, err := watchPodFromCurrentState(ctx, clientset, namespace, podName)
+	if err != nil {
+		return fmt.Errorf("watching pod from current state: %w", err)
+	}
+	defer func() { watcher.Stop() }()
+	if done, stateErr := ephemeralContainerStartState(current, containerName, &lastReason); done {
+		return stateErr
+	}
+
+	restarts := 0
+	timeout := time.After(podStartTimeout)
 	for {
 		select {
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
-				return fmt.Errorf("watch closed while waiting for ephemeral container %q to start\n%s",
-					containerName, describeContainerFailure(ctx, clientset, namespace, podName, containerName))
+				if restarts >= maxPodWatchRestarts {
+					return fmt.Errorf("watch closed repeatedly while waiting for ephemeral container %q to start\n%s",
+						containerName, describeContainerFailure(ctx, clientset, namespace, podName, containerName))
+				}
+				restarts++
+				watcher.Stop()
+				current, replacement, watchErr := watchPodFromCurrentState(ctx, clientset, namespace, podName)
+				if watchErr != nil {
+					return fmt.Errorf("re-watching pod from current state: %w", watchErr)
+				}
+				watcher = replacement
+				if done, stateErr := ephemeralContainerStartState(current, containerName, &lastReason); done {
+					return stateErr
+				}
+				continue
 			}
 			switch event.Type {
 			case watch.Deleted:
 				return fmt.Errorf("pod %q was deleted while waiting for debug container %q to start (rollout or eviction?)", podName, containerName)
 			case watch.Error:
-				return fmt.Errorf("watch error while waiting for debug container %q: %v", containerName, k8serrors.FromObject(event.Object))
+				return fmt.Errorf("watch error while waiting for debug container %q: %w", containerName, k8serrors.FromObject(event.Object))
 			}
-			if event.Type == watch.Modified || event.Type == watch.Added {
-				pod, ok := event.Object.(*corev1.Pod)
-				if !ok {
-					continue
-				}
-				for _, cs := range pod.Status.EphemeralContainerStatuses {
-					if cs.Name != containerName {
-						continue
-					}
-					if cs.State.Running != nil {
-						return nil
-					}
-					if cs.State.Terminated != nil {
-						return fmt.Errorf("ephemeral container %q terminated: %s (exit code %d)",
-							containerName, cs.State.Terminated.Reason, cs.State.Terminated.ExitCode)
-					}
-					if w := cs.State.Waiting; w != nil {
-						switch w.Reason {
-						case "ImagePullBackOff", "ErrImagePull", "InvalidImageName",
-							"CrashLoopBackOff", "RunContainerError", "CreateContainerError",
-							"CreateContainerConfigError":
-							return containerStartFailureError(fmt.Sprintf("ephemeral container %q", containerName), w.Reason, w.Message)
-						}
-						// Print intermediate waiting status so the user can see progress
-						if w.Reason != "" && w.Reason != lastReason {
-							fmt.Printf("  Container status: %s", w.Reason)
-							if w.Message != "" {
-								fmt.Printf(" (%s)", w.Message)
-							}
-							fmt.Println()
-							lastReason = w.Reason
-						}
-					}
-				}
+			if event.Type != watch.Modified && event.Type != watch.Added {
+				continue
+			}
+			pod, ok := event.Object.(*corev1.Pod)
+			if !ok {
+				continue
+			}
+			if done, stateErr := ephemeralContainerStartState(pod, containerName, &lastReason); done {
+				return stateErr
 			}
 		case <-timeout:
 			return fmt.Errorf("timeout waiting for ephemeral container %q to start\n%s",
@@ -301,4 +311,36 @@ func waitForEphemeralContainer(ctx context.Context, clientset *kubernetes.Client
 			return ctx.Err()
 		}
 	}
+}
+
+func ephemeralContainerStartState(pod *corev1.Pod, containerName string, lastReason *string) (bool, error) {
+	for _, cs := range pod.Status.EphemeralContainerStatuses {
+		if cs.Name != containerName {
+			continue
+		}
+		if cs.State.Running != nil {
+			return true, nil
+		}
+		if cs.State.Terminated != nil {
+			return true, fmt.Errorf("ephemeral container %q terminated: %s (exit code %d)",
+				containerName, cs.State.Terminated.Reason, cs.State.Terminated.ExitCode)
+		}
+		if w := cs.State.Waiting; w != nil {
+			switch w.Reason {
+			case "ImagePullBackOff", "ErrImagePull", "InvalidImageName",
+				"CrashLoopBackOff", "RunContainerError", "CreateContainerError",
+				"CreateContainerConfigError":
+				return true, containerStartFailureError(fmt.Sprintf("ephemeral container %q", containerName), w.Reason, w.Message)
+			}
+			if w.Reason != "" && w.Reason != *lastReason {
+				statusf("  Container status: %s", w.Reason)
+				if w.Message != "" {
+					statusf(" (%s)", w.Message)
+				}
+				statusln()
+				*lastReason = w.Reason
+			}
+		}
+	}
+	return false, nil
 }

@@ -15,17 +15,21 @@ on:
         description: "Run kind/Kubernetes e2e"
         type: boolean
         required: false
-        default: false
+        default: true
 
 permissions:
   contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version-file: go.mod
       - run: CGO_ENABLED=0 go build -o bin/debux ./cmd/debux
@@ -34,15 +38,18 @@ jobs:
           DEBUX_IMAGE: ${{ inputs.debux_image || 'ghcr.io/clement-tourriere/debux:latest' }}
           DEBUX_PULL_POLICY: Always
 
+  # PR runs skip kind to keep PRs fast; the weekly schedule and manual
+  # dispatch cover the flagship Kubernetes path so it is never entirely
+  # without automated end-to-end coverage.
   kubernetes:
-    if: github.event_name == 'workflow_dispatch' && inputs.run_kubernetes
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_kubernetes)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version-file: go.mod
-      - uses: helm/kind-action@v1
+      - uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           cluster_name: debux-e2e
       - run: CGO_ENABLED=0 go build -o bin/debux ./cmd/debux

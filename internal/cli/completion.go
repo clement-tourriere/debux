@@ -262,17 +262,19 @@ func completeRuntimeTarget(cmd *cobra.Command, toComplete string) ([]string, cob
 	}
 
 	var completions []string
-	if strings.HasPrefix("docker://", toComplete) {
+	// The constant is intentionally the haystack: suggest a scheme while the
+	// user has typed only its prefix.
+	if strings.HasPrefix("docker://", toComplete) { //nolint:gocritic // see above
 		completions = appendCompletion(completions, "docker://", "Docker container picker", toComplete)
 	}
-	if strings.HasPrefix("k8s://", toComplete) {
+	if strings.HasPrefix("k8s://", toComplete) { //nolint:gocritic // scheme-prefix check
 		completions = appendCompletion(completions, "k8s://", "Kubernetes pod picker", toComplete)
 	}
 
 	// The historical shorthand `debux <container>` remains first-class. Complete
 	// running Docker container names without requiring users to type docker://,
 	// but avoid probing Docker while the user is clearly typing a URI scheme.
-	completePlainDocker := toComplete == "" || (!strings.HasPrefix("docker://", toComplete) && !strings.HasPrefix("k8s://", toComplete))
+	completePlainDocker := toComplete == "" || (!strings.HasPrefix("docker://", toComplete) && !strings.HasPrefix("k8s://", toComplete)) //nolint:gocritic // scheme-prefix checks
 	if completePlainDocker {
 		containers, err := listDockerContainersForCompletion()
 		if err != nil {
@@ -914,14 +916,13 @@ func listDockerContainersForCompletion() ([]runtime.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), completionTimeout)
 	defer cancel()
 
-	containers, err := runtime.DockerList(ctx)
+	containers, err := runtime.DockerList(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
+	// No sessions-first ordering here: uniqueSortedCompletions re-sorts
+	// completions alphabetically, so only the name order survives.
 	sort.SliceStable(containers, func(i, j int) bool {
-		if containers[i].HasDebuxSession != containers[j].HasDebuxSession {
-			return containers[i].HasDebuxSession
-		}
 		return containers[i].Name < containers[j].Name
 	})
 	return containers, nil

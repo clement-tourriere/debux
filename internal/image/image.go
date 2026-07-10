@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/moby/moby/client"
@@ -45,7 +46,7 @@ func ImageExists(ctx context.Context, cli *client.Client, ref string) bool {
 
 // PullImage pulls ref from a registry.
 func PullImage(ctx context.Context, cli *client.Client, ref string) error {
-	fmt.Printf("Pulling image %s...\n", ref)
+	fmt.Fprintf(os.Stderr, "Pulling image %s...\n", ref)
 	reader, err := cli.ImagePull(ctx, ref, client.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("pulling image: %w", err)
@@ -66,22 +67,22 @@ func PullImage(ctx context.Context, cli *client.Client, ref string) error {
 			return fmt.Errorf("reading pull response: %w", err)
 		}
 		if errMsg, ok := msg["error"].(string); ok && errMsg != "" {
-			fmt.Println()
+			fmt.Fprintln(os.Stderr)
 			return fmt.Errorf("pulling image %s: %s", ref, errMsg)
 		}
 		if detail, ok := msg["errorDetail"].(map[string]any); ok {
 			if errMsg, ok := detail["message"].(string); ok && errMsg != "" {
-				fmt.Println()
+				fmt.Fprintln(os.Stderr)
 				return fmt.Errorf("pulling image %s: %s", ref, errMsg)
 			}
 		}
 		if status, ok := msg["status"].(string); ok {
 			if progress, ok := msg["progress"].(string); ok && progress != "" {
-				fmt.Printf("\r  %s %s", status, progress)
+				fmt.Fprintf(os.Stderr, "\r  %s %s", status, progress)
 			}
 		}
 	}
-	fmt.Println()
+	fmt.Fprintln(os.Stderr)
 
 	return nil
 }

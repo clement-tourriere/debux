@@ -126,7 +126,7 @@ func buildKubernetesCopyPod(namespace string, sourcePod *corev1.Pod, targetConta
 	return copyPod, debugContainerName, nil
 }
 
-func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace string, sourcePod *corev1.Pod, targetContainer string, opts DebugOpts, displayContext string) error {
+func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clientset kubernetes.Interface, namespace string, sourcePod *corev1.Pod, targetContainer string, opts DebugOpts, displayContext string) error {
 	copyPod, debugContainerName, err := buildKubernetesCopyPod(namespace, sourcePod, targetContainer, opts, displayContext)
 	if err != nil {
 		return err
@@ -145,12 +145,12 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 			printKeptCopyPod(displayContext, namespace, created.Name, opts.TTL)
 			return
 		}
-		fmt.Printf("Deleting debug copy pod %s...\n", created.Name)
+		statusf("Deleting debug copy pod %s...\n", created.Name)
 		_ = clientset.CoreV1().Pods(namespace).Delete(context.Background(), created.Name, metav1.DeleteOptions{})
 	}()
 
-	fmt.Printf("Waiting for debug copy pod %q to start...\n", created.Name)
-	if err := waitForContainerRunning(ctx, clientset, namespace, created.Name, debugContainerName, created.ResourceVersion); err != nil {
+	statusf("Waiting for debug copy pod %q to start...\n", created.Name)
+	if err := waitForContainerRunning(ctx, clientset, namespace, created.Name, debugContainerName); err != nil {
 		return err
 	}
 	keepPod = opts.Keep
@@ -162,12 +162,12 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 
 	targetContainerID := findContainerID(runningCopyPod, targetContainer)
 	if targetContainerID == "" {
-		fmt.Printf("Warning: could not resolve container ID for target container %q in copy pod %s/%s; filesystem/env integration may be limited\n", targetContainer, namespace, created.Name)
+		statusf("Warning: could not resolve container ID for target container %q in copy pod %s/%s; filesystem/env integration may be limited\n", targetContainer, namespace, created.Name)
 	}
 
-	fmt.Printf("Debugging copy %s/%s (container: %s, source: %s)\n", namespace, created.Name, debugContainerName, sourcePod.Name)
+	statusf("Debugging copy %s/%s (container: %s, source: %s)\n", namespace, created.Name, debugContainerName, sourcePod.Name)
 	if opts.TTL > 0 {
-		fmt.Printf("Copy pod auto-expires in %s (activeDeadlineSeconds)\n", opts.TTL)
+		statusf("Copy pod auto-expires in %s (activeDeadlineSeconds)\n", opts.TTL)
 	}
 
 	return execInPodWithCommand(ctx, config, clientset, namespace, created.Name, debugContainerName, copyPodShellCommand(targetContainerID, opts.Command))
@@ -175,7 +175,6 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 
 // printKeptCopyPod tells the user how to get back to (or get rid of) a copy
 // pod that outlives this session.
-
 func printKeptCopyPod(kubeContext, namespace, podName string, ttl time.Duration) {
 	targetURI := kubernetesTargetURI(kubeContext, namespace, podName)
 	scopeURI := kubernetesScopeURI(kubeContext, namespace)
@@ -192,10 +191,10 @@ func printKeptCopyPod(kubeContext, namespace, podName string, ttl time.Duration)
 
 func printTerminalStatusLine(format string, args ...any) {
 	if stdioIsTTY() {
-		fmt.Printf(format+"\033[K\n", args...)
+		statusf(format+"\033[K\n", args...)
 		return
 	}
-	fmt.Printf(format+"\n", args...)
+	statusf(format+"\n", args...)
 }
 
 func kubernetesTargetURI(kubeContext, namespace, podName string) string {
@@ -222,7 +221,6 @@ func kubernetesTargetURIWithContainer(kubeContext, namespace, podName, container
 
 // isKubernetesCopyPod reports whether pod is a copy pod created by debux
 // --copy mode, as opposed to a user pod debux debugs via ephemeral containers.
-
 func isKubernetesCopyPod(pod *corev1.Pod) bool {
 	return pod.Labels[debuxManagedByLabelKey] == debuxManagedByLabelValue &&
 		pod.Labels[debuxModeLabelKey] == debuxModeCopy
@@ -231,7 +229,6 @@ func isKubernetesCopyPod(pod *corev1.Pod) bool {
 // findCopyPodDebugContainer returns the name of the debux debug container in a
 // copy pod, identified by its DEBUX_DAEMON marker env var (the name can be
 // debux-N when the source pod already had a container named debux).
-
 func findCopyPodDebugContainer(pod *corev1.Pod) string {
 	for _, c := range pod.Spec.Containers {
 		for _, env := range c.Env {
@@ -246,8 +243,7 @@ func findCopyPodDebugContainer(pod *corev1.Pod) string {
 // kubernetesReattachToCopyPod opens a shell inside the debug container of an
 // existing debux copy pod (typically one created with --keep), instead of
 // debugging the copy pod as if it were a regular target.
-
-func kubernetesReattachToCopyPod(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace string, pod *corev1.Pod, requestedContainer, displayContext string, opts DebugOpts) error {
+func kubernetesReattachToCopyPod(ctx context.Context, config *rest.Config, clientset kubernetes.Interface, namespace string, pod *corev1.Pod, requestedContainer, displayContext string, opts DebugOpts) error {
 	killHint := fmt.Sprintf("debux kill %s", kubernetesTargetURI(displayContext, namespace, pod.Name))
 
 	if pod.DeletionTimestamp != nil {
@@ -285,18 +281,17 @@ func kubernetesReattachToCopyPod(ctx context.Context, config *rest.Config, clien
 	if source == "" {
 		source = "unknown"
 	}
-	fmt.Printf("Reattaching to debug copy pod %s/%s (container: %s, source: %s)\n", namespace, pod.Name, debugContainerName, source)
+	statusf("Reattaching to debug copy pod %s/%s (container: %s, source: %s)\n", namespace, pod.Name, debugContainerName, source)
 	if remaining, ok := copyPodTimeRemaining(pod); ok {
-		fmt.Printf("Copy pod expires in %s (activeDeadlineSeconds)\n", remaining)
+		statusf("Copy pod expires in %s (activeDeadlineSeconds)\n", remaining)
 	}
 
-	defer fmt.Printf("Detached from %s/%s; the pod is kept. Delete it with: %s\n", namespace, pod.Name, killHint)
+	defer statusf("Detached from %s/%s; the pod is kept. Delete it with: %s\n", namespace, pod.Name, killHint)
 	return execInPodWithCommand(ctx, config, clientset, namespace, pod.Name, debugContainerName, copyPodShellCommand(targetContainerID, opts.Command))
 }
 
 // copyPodTimeRemaining returns how long the pod has left before its
 // activeDeadlineSeconds deadline expires it.
-
 func copyPodTimeRemaining(pod *corev1.Pod) (time.Duration, bool) {
 	if pod.Spec.ActiveDeadlineSeconds == nil || pod.Status.StartTime == nil {
 		return 0, false
@@ -316,10 +311,10 @@ func copyPodShellCommand(targetContainerID string, command []string) []string {
 		if len(shortID) > 12 {
 			shortID = shortID[:12]
 		}
-		cmd = fmt.Sprintf("target_cid=%q; target_cid_short=%q; target_pid=''; if [ -n \"$target_cid\" ]; then for p in /proc/[0-9]*; do [ -r \"$p/cgroup\" ] || continue; if grep -q \"$target_cid\" \"$p/cgroup\" 2>/dev/null || grep -q \"$target_cid_short\" \"$p/cgroup\" 2>/dev/null; then target_pid=\"${p##*/}\"; break; fi; done; fi; if [ -n \"$target_pid\" ] && [ -d \"/proc/$target_pid/root\" ]; then export DEBUX_TARGET_ROOT=\"/proc/$target_pid/root\"; export DEBUX_TARGET_ENVIRON=\"/proc/$target_pid/environ\"; export DEBUX_TARGET_CWD_LINK=\"/proc/$target_pid/cwd\"; fi; %s", targetContainerID, shortID, cmd)
+		// shellQuote (single quotes), not Go %q: inside sh double quotes,
+		// $/`/\ would still expand. grep -F treats the ID as a literal, not a
+		// regex. The ID comes from the kubelet, but quoting costs nothing.
+		cmd = fmt.Sprintf("target_cid=%s; target_cid_short=%s; target_pid=''; if [ -n \"$target_cid\" ]; then for p in /proc/[0-9]*; do [ -r \"$p/cgroup\" ] || continue; if grep -qF \"$target_cid\" \"$p/cgroup\" 2>/dev/null || grep -qF \"$target_cid_short\" \"$p/cgroup\" 2>/dev/null; then target_pid=\"${p##*/}\"; break; fi; done; fi; if [ -n \"$target_pid\" ] && [ -d \"/proc/$target_pid/root\" ]; then export DEBUX_TARGET_ROOT=\"/proc/$target_pid/root\"; export DEBUX_TARGET_ENVIRON=\"/proc/$target_pid/environ\"; export DEBUX_TARGET_CWD_LINK=\"/proc/$target_pid/cwd\"; fi; %s", shellQuote(targetContainerID), shellQuote(shortID), cmd)
 	}
 	return []string{"sh", "-c", cmd}
 }
-
-// findRunningDebuxContainer looks for an existing running Debux ephemeral
-// container on the given pod. Returns its name, or "" if none found.

@@ -4,7 +4,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,7 +78,13 @@ func load() (Config, error) {
 		return Config{}, fmt.Errorf("reading %s: %w", path, err)
 	}
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	// Strict decoding: a typo'd key ("profil:", "pullPolicy:") would
+	// otherwise be silently ignored and the built-in default silently applied
+	// — for `profile` that can mean running a more privileged session than
+	// the user configured.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return Config{}, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return cfg, nil

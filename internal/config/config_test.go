@@ -71,3 +71,21 @@ func TestGetMissingFileIsEmpty(t *testing.T) {
 		t.Fatalf("missing config should be empty, got %+v", cfg)
 	}
 }
+
+// TestGetRejectsUnknownKeys locks the strict-decode behavior: a typo'd key
+// ("profil:") must be reported instead of silently applying built-in defaults
+// — for profile that could mean a more privileged session than configured.
+func TestGetRejectsUnknownKeys(t *testing.T) {
+	writeConfig(t, `profil: restricted
+`)
+	if cfg := Get(); cfg.Profile != "" {
+		t.Fatalf("unknown key should not populate config, got %+v", cfg)
+	}
+
+	// The valid file still loads after the strict decoder change.
+	writeConfig(t, `profile: restricted
+`)
+	if cfg := Get(); cfg.Profile != "restricted" {
+		t.Fatalf("valid config did not load: %+v", cfg)
+	}
+}

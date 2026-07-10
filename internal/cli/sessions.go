@@ -78,7 +78,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	rt, kubeContext, namespace, nameFilter, err := sessionScope(cmd, args)
+	rt, kubeContext, namespace, nameFilter, scopeTarget, err := sessionScope(cmd, args)
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func runList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--all-namespaces cannot be combined with namespace %q", namespace)
 	}
 
-	sessions, problems := collectDebugSessions(ctx, cmd, rt, kubeContext, namespace, flagAllNamespaces)
+	sessions, problems := collectDebugSessions(ctx, cmd, rt, scopeTarget, kubeContext, namespace, flagAllNamespaces)
 	sessions = filterDebugSessions(sessions, nameFilter)
 	if len(sessions) == 0 {
 		if len(problems) > 0 {
@@ -119,7 +119,7 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--all-namespaces cannot be combined with namespace %q", flagNamespace)
 	}
 
-	return attachFromPicker(ctx, cmd, rt, flagKubeContext, flagNamespace, flagAllNamespaces, "Select a debux session to reattach (type to search)")
+	return attachFromPicker(ctx, cmd, rt, nil, flagKubeContext, flagNamespace, flagAllNamespaces, "Select a debux session to reattach (type to search)")
 }
 
 func attachExplicitTarget(ctx context.Context, cmd *cobra.Command, rawTarget string) error {
@@ -151,10 +151,10 @@ func attachExplicitTarget(ctx context.Context, cmd *cobra.Command, rawTarget str
 		}
 	}
 	if target.Name == "" {
-		return attachFromPicker(ctx, cmd, target.Runtime, kubeContext, namespace, flagAllNamespaces, "Select a debux session to reattach (type to search)")
+		return attachFromPicker(ctx, cmd, target.Runtime, target, kubeContext, namespace, flagAllNamespaces, "Select a debux session to reattach (type to search)")
 	}
 
-	sessions, problems := collectDebugSessions(ctx, cmd, target.Runtime, kubeContext, namespace, false)
+	sessions, problems := collectDebugSessions(ctx, cmd, target.Runtime, target, kubeContext, namespace, false)
 	matches := sessionsMatchingTarget(sessions, target, namespace)
 	if len(matches) == 0 {
 		if len(problems) > 0 {
@@ -169,7 +169,7 @@ func attachExplicitTarget(ctx context.Context, cmd *cobra.Command, rawTarget str
 		for i, match := range matches {
 			items[i] = picker.Item{Label: formatDebugSessionLabel(match), Value: strconv.Itoa(i)}
 		}
-		chosen, err := picker.Pick("Select a matching debux session to reattach (type to search)", items)
+		chosen, err := picker.Pick(ctx, "Select a matching debux session to reattach (type to search)", items)
 		if err != nil {
 			return err
 		}
@@ -184,8 +184,8 @@ func attachExplicitTarget(ctx context.Context, cmd *cobra.Command, rawTarget str
 	return runExec(cmd, []string{session.Target})
 }
 
-func attachFromPicker(ctx context.Context, cmd *cobra.Command, rt, kubeContext, namespace string, allNamespaces bool, title string) error {
-	sessions, problems := collectDebugSessions(ctx, cmd, rt, kubeContext, namespace, allNamespaces)
+func attachFromPicker(ctx context.Context, cmd *cobra.Command, rt string, dockerTarget *runtime.Target, kubeContext, namespace string, allNamespaces bool, title string) error {
+	sessions, problems := collectDebugSessions(ctx, cmd, rt, dockerTarget, kubeContext, namespace, allNamespaces)
 	if len(sessions) == 0 {
 		if len(problems) > 0 {
 			return fmt.Errorf("no running debux sessions found, but some runtimes could not be checked:\n  %s", strings.Join(errorStrings(problems), "\n  "))
@@ -197,7 +197,7 @@ func attachFromPicker(ctx context.Context, cmd *cobra.Command, rt, kubeContext, 
 	for i, session := range sessions {
 		items[i] = picker.Item{Label: formatDebugSessionLabel(session), Value: strconv.Itoa(i)}
 	}
-	chosen, err := picker.Pick(title, items)
+	chosen, err := picker.Pick(ctx, title, items)
 	if err != nil {
 		return err
 	}
@@ -218,7 +218,11 @@ func sessionsMatchingTarget(sessions []runtime.DebugSessionInfo, target *runtime
 		}
 		switch target.Runtime {
 		case "docker":
-			if session.Name == target.Name || session.Target == "docker://"+target.Name {
+			scheme := "docker"
+			if target.PreferPodman {
+				scheme = "podman"
+			}
+			if session.Name == target.Name || session.Target == scheme+"://"+target.Name {
 				matches = append(matches, session)
 			}
 		case "kubernetes":
@@ -237,7 +241,7 @@ func sessionsMatchingTarget(sessions []runtime.DebugSessionInfo, target *runtime
 	return matches
 }
 
-func sessionScope(cmd *cobra.Command, args []string) (rt, kubeContext, namespace, nameFilter string, err error) {
+func sessionScope(cmd *cobra.Command, args []string) (rt, kubeContext, namespace, nameFilter string, target *runtime.Target, err error) {
 	rt = ""
 	kubernetesFlagsSet := flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig") || flagChanged(cmd, "namespace")
 	if kubernetesFlagsSet || flagAllNamespaces {
@@ -246,42 +250,55 @@ func sessionScope(cmd *cobra.Command, args []string) (rt, kubeContext, namespace
 		namespace = flagNamespace
 	}
 	if len(args) == 0 {
-		return rt, kubeContext, namespace, "", nil
+		return rt, kubeContext, namespace, "", nil, nil
 	}
 
-	target, err := runtime.ParseTarget(args[0])
+	target, err = runtime.ParseTarget(args[0])
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("invalid target: %w", err)
+		return "", "", "", "", nil, fmt.Errorf("invalid target: %w", err)
 	}
 	if target.Runtime != "docker" && target.Runtime != "kubernetes" {
-		return "", "", "", "", fmt.Errorf("listing sessions is not supported for runtime %q", target.Runtime)
+		return "", "", "", "", nil, fmt.Errorf("listing sessions is not supported for runtime %q", target.Runtime)
 	}
 	if target.Runtime != "kubernetes" && kubernetesFlagsSet {
-		return "", "", "", "", fmt.Errorf("--context, --kubeconfig, and --namespace are only supported for Kubernetes targets; use k8s://... or remove the flag")
+		return "", "", "", "", nil, fmt.Errorf("--context, --kubeconfig, and --namespace are only supported for Kubernetes targets; use k8s://... or remove the flag")
 	}
 
 	rt = target.Runtime
-	nameFilter = target.Name
 	if rt == "kubernetes" {
 		applyKubeNamespaceFlagContainerShorthand(cmd, target)
 		kubeContext, err = resolveKubeContext(cmd, target.Context)
 		if err != nil {
-			return "", "", "", "", err
+			return "", "", "", "", nil, err
 		}
 		namespace, err = resolveKubeNamespace(cmd, target.Namespace)
 		if err != nil {
-			return "", "", "", "", err
+			return "", "", "", "", nil, err
 		}
 	}
-	return rt, kubeContext, namespace, nameFilter, nil
+	// Read the name after the pod/container shorthand rewrite, so
+	// `debux list k8s://api-pod/app -n prod` filters by the pod, not the
+	// container name.
+	nameFilter = target.Name
+	return rt, kubeContext, namespace, nameFilter, target, nil
 }
 
-func collectDebugSessions(ctx context.Context, cmd *cobra.Command, rt, kubeContext, namespace string, allNamespaces bool) ([]runtime.DebugSessionInfo, []error) {
+// debugSessionScopeTimeout bounds each daemon/cluster query during a session
+// scan: scopes remembered from history may point at clusters that are
+// currently unreachable (VPN down, deleted cluster), and without a deadline
+// `debux list`/`attach`/`kill` would block on TCP timeouts for minutes.
+const debugSessionScopeTimeout = 10 * time.Second
+
+func collectDebugSessions(ctx context.Context, cmd *cobra.Command, rt string, dockerTarget *runtime.Target, kubeContext, namespace string, allNamespaces bool) ([]runtime.DebugSessionInfo, []error) {
 	var sessions []runtime.DebugSessionInfo
 	var problems []error
 
 	if rt == "" || rt == "docker" {
-		items, err := runtime.DockerSessions(ctx)
+		items, err := func() ([]runtime.DebugSessionInfo, error) {
+			scopedCtx, cancel := context.WithTimeout(ctx, debugSessionScopeTimeout)
+			defer cancel()
+			return runtime.DockerSessions(scopedCtx, dockerTarget)
+		}()
 		if err != nil {
 			problems = append(problems, fmt.Errorf("docker: %w", err))
 		} else {
@@ -292,7 +309,11 @@ func collectDebugSessions(ctx context.Context, cmd *cobra.Command, rt, kubeConte
 		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
 		scopes := kubernetesSessionScopes(kubeconfig, kubeContext, namespace, !allNamespaces)
 		for _, scope := range scopes {
-			items, err := runtime.KubernetesSessions(ctx, kubeconfig, scope.context, scope.namespace, allNamespaces)
+			items, err := func() ([]runtime.DebugSessionInfo, error) {
+				scopedCtx, cancel := context.WithTimeout(ctx, debugSessionScopeTimeout)
+				defer cancel()
+				return runtime.KubernetesSessions(scopedCtx, kubeconfig, scope.context, scope.namespace, allNamespaces)
+			}()
 			if err != nil {
 				problems = append(problems, fmt.Errorf("kubernetes %s: %w", scope.label(), err))
 			} else {
@@ -395,7 +416,7 @@ func filterDebugSessions(sessions []runtime.DebugSessionInfo, name string) []run
 	}
 	var filtered []runtime.DebugSessionInfo
 	for _, session := range sessions {
-		if session.Name == name || session.Source == name || strings.Contains(session.Target, "/"+name) || strings.Contains(session.Target, "/"+name+"/") {
+		if session.Name == name || session.Source == name || strings.Contains(session.Target, "/"+name) {
 			filtered = append(filtered, session)
 		}
 	}
@@ -458,9 +479,6 @@ func humanDuration(d time.Duration) string {
 	}
 	if d >= time.Hour {
 		return d.Truncate(time.Minute).String()
-	}
-	if d >= time.Minute {
-		return d.Truncate(time.Second).String()
 	}
 	return d.Truncate(time.Second).String()
 }

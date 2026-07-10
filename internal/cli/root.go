@@ -317,7 +317,9 @@ func resolvePullPolicy(policy string) (string, error) {
 	case "never":
 		return "Never", nil
 	default:
-		return "", fmt.Errorf("invalid --pull-policy %q: must be one of Always, IfNotPresent, Never", policy)
+		// The value may come from --pull-policy or the config file's
+		// pull-policy key; name both so a config typo is findable.
+		return "", fmt.Errorf("invalid pull policy %q (from --pull-policy or the config file): must be one of Always, IfNotPresent, Never", policy)
 	}
 }
 

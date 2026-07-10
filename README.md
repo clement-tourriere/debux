@@ -76,7 +76,7 @@ debux docker://
 ```
 
 The installer supports Linux/macOS on amd64/arm64 and installs to `~/.local/bin` by default.
-Release assets are checksum-verified. If `cosign` is installed and the release includes signature assets, the installer also verifies `checksums.txt` before using it.
+Release assets are checksum-verified. If `cosign` is installed, the installer also verifies the `checksums.txt` signature and refuses to install when the signature assets are missing (set `DEBUX_ALLOW_UNSIGNED=1` to accept checksum-only verification).
 
 ```bash
 # Pin a version
@@ -766,7 +766,11 @@ cosign verify \
   ghcr.io/clement-tourriere/debux:0.2.0
 ```
 
-If `HOMEBREW_TAP_GITHUB_TOKEN` is configured, GoReleaser also publishes a Homebrew formula to `clement-tourriere/homebrew-tap`.
+If `HOMEBREW_TAP_GITHUB_TOKEN` is configured, GoReleaser also publishes a Homebrew cask to `clement-tourriere/homebrew-tap`:
+
+```bash
+brew install --cask clement-tourriere/tap/debux
+```
 
 After installation, keep the CLI current with:
 

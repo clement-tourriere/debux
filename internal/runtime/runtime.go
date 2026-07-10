@@ -139,7 +139,6 @@ type PodOpts struct {
 	KubeContext string
 	Keep        bool
 	HostNetwork bool
-	Privileged  bool
 	User        string
 	PullPolicy  string
 	Profile     string   // security profile (general, baseline, restricted, netadmin, sysadmin)

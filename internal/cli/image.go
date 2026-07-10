@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"fmt"
+
 	"github.com/clement-tourriere/debux/internal/runtime"
 	"github.com/spf13/cobra"
 )
@@ -28,19 +30,17 @@ started. Its filesystem is copied into the debug container and exposed at /targe
 func runImage(cmd *cobra.Command, args []string) error {
 	imageRef := args[0]
 	var command []string
-	if dash := cmd.ArgsLenAtDash(); dash >= 0 && dash <= 1 {
+	if dash := cmd.ArgsLenAtDash(); dash >= 0 {
+		if dash > 1 {
+			return fmt.Errorf("expected exactly one image before --, got %d arguments", dash)
+		}
 		command = args[max(dash, 1):]
 	} else if len(args) > 1 {
 		command = args[1:]
 	}
 
-	debugImage := flagImage
-	if debugImage == "" {
-		debugImage = runtime.DefaultImage
-	}
-
 	opts := runtime.ImageOpts{
-		DebugImage: debugImage,
+		DebugImage: resolveImage(flagImage),
 		Privileged: flagPrivileged,
 		User:       flagUser,
 		AutoRemove: flagRemove,

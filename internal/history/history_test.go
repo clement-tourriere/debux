@@ -8,7 +8,7 @@ import (
 func TestAppendLoadAndCapHistory(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	for i := 0; i < maxEntries+5; i++ {
+	for i := range maxEntries + 5 {
 		if err := Append(Entry{StartedAt: time.Unix(int64(i), 0), Target: "docker://app"}); err != nil {
 			t.Fatalf("Append() error = %v", err)
 		}

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,13 @@ import (
 )
 
 const DefaultRepo = "clement-tourriere/debux"
+
+// Overridable in tests so the full pipeline (resolve → download → verify →
+// extract → replace) can run against httptest servers.
+var (
+	apiBaseURL      = "https://api.github.com"
+	downloadBaseURL = "https://github.com"
+)
 
 type Options struct {
 	Repo           string
@@ -135,7 +143,7 @@ func resolveTag(ctx context.Context, repo, targetVersion string) (string, error)
 		return normalizeTag(targetVersion), nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/repos/%s/releases/latest", apiBaseURL, repo), nil)
 	if err != nil {
 		return "", err
 	}
@@ -184,7 +192,7 @@ func downloadReleaseBinary(ctx context.Context, repo, tag, archive string) (stri
 		}
 	}()
 
-	baseURL := fmt.Sprintf("https://github.com/%s/releases/download/%s", repo, tag)
+	baseURL := fmt.Sprintf("%s/%s/releases/download/%s", downloadBaseURL, repo, tag)
 	archivePath := filepath.Join(tmp, archive)
 	if err := downloadFile(ctx, baseURL+"/"+archive, archivePath); err != nil {
 		return "", err
@@ -338,7 +346,7 @@ func extractBinary(archivePath, binaryPath string) error {
 	tr := tar.NewReader(gz)
 	for {
 		header, err := tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -352,9 +360,17 @@ func extractBinary(archivePath, binaryPath string) error {
 		if err != nil {
 			return fmt.Errorf("creating extracted binary: %w", err)
 		}
-		if _, err := io.Copy(out, tr); err != nil {
+		// The archive is checksum-verified, but cap the decompressed size
+		// anyway so a hostile release cannot fill the disk.
+		const maxBinarySize = int64(512 << 20)
+		n, err := io.Copy(out, io.LimitReader(tr, maxBinarySize+1))
+		if err != nil {
 			_ = out.Close()
 			return fmt.Errorf("extracting debux: %w", err)
+		}
+		if n > maxBinarySize {
+			_ = out.Close()
+			return fmt.Errorf("extracted binary exceeds %d bytes; refusing suspicious archive", maxBinarySize)
 		}
 		if err := out.Close(); err != nil {
 			return fmt.Errorf("closing extracted binary: %w", err)
@@ -387,10 +403,31 @@ func verifyBinaryVersion(ctx context.Context, path, tag string) error {
 		return fmt.Errorf("checking downloaded binary version: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	want := normalizeVersion(tag)
-	if want != "" && !strings.Contains(string(out), want) {
+	got, ok := binaryVersionFromOutput(string(out))
+	if want == "" || !ok || got != want {
 		return fmt.Errorf("downloaded binary reports %q but %s was requested — the release assets may be stale or tampered with", strings.TrimSpace(string(out)), tag)
 	}
 	return nil
+}
+
+// binaryVersionFromOutput parses the two version formats emitted by debux:
+// `debux version X (...)` from --version and `debux X` from the version
+// subcommand. Returning one token lets callers compare it exactly instead of
+// accepting substring collisions such as 10.8.40 for 0.8.4.
+func binaryVersionFromOutput(output string) (string, bool) {
+	line, _, _ := strings.Cut(strings.TrimSpace(output), "\n")
+	fields := strings.Fields(line)
+	var version string
+	switch {
+	case len(fields) >= 3 && fields[0] == "debux" && fields[1] == "version":
+		version = fields[2]
+	case len(fields) >= 2 && fields[0] == "debux":
+		version = fields[1]
+	default:
+		return "", false
+	}
+	version = normalizeVersion(version)
+	return version, version != ""
 }
 
 // isHomebrewManagedPath reports whether a resolved binary path lives inside a

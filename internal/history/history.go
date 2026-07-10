@@ -71,12 +71,22 @@ func Load() ([]Entry, error) {
 // A corrupt history file is moved aside and recording starts over — refusing
 // to append forever because one write was torn would silently disable history.
 func Append(entry Entry) error {
+	path, err := Path()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating history directory: %w", err)
+	}
+
+	// The read-modify-write below is not atomic across processes: two debux
+	// sessions starting together would each read the same file and the last
+	// rename would silently drop the other's entry.
+	release := acquireAppendLock(path)
+	defer release()
+
 	entries, err := Load()
 	if err != nil {
-		path, pathErr := Path()
-		if pathErr != nil {
-			return err
-		}
 		_ = os.Rename(path, path+".corrupt")
 		entries = nil
 	}
@@ -86,14 +96,6 @@ func Append(entry Entry) error {
 	entries = append([]Entry{entry}, entries...)
 	if len(entries) > maxEntries {
 		entries = entries[:maxEntries]
-	}
-
-	path, err := Path()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("creating history directory: %w", err)
 	}
 	data, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
@@ -122,6 +124,34 @@ func Append(entry Entry) error {
 		return fmt.Errorf("writing history: %w", err)
 	}
 	return nil
+}
+
+// acquireAppendLock takes a best-effort cross-process lock via an O_EXCL lock
+// file, stealing locks older than a few seconds (a killed process). History
+// is advisory, so on a wedged lock it gives up after a short wait instead of
+// blocking the debug session; the caller then risks losing one entry, which
+// beats not debugging.
+func acquireAppendLock(path string) (release func()) {
+	lockPath := path + ".lock"
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			_ = f.Close()
+			return func() { _ = os.Remove(lockPath) }
+		}
+		if !os.IsExist(err) {
+			return func() {}
+		}
+		if info, statErr := os.Stat(lockPath); statErr == nil && time.Since(info.ModTime()) > 5*time.Second {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return func() {}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // NewEntry constructs a history entry from a resolved target and options.

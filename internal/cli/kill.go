@@ -111,19 +111,19 @@ func runKill(cmd *cobra.Command, args []string) error {
 			if target.Name != "" {
 				return fmt.Errorf("--all kills every session in scope and cannot be combined with target %q; drop the target name (e.g. k8s://<namespace>/ --all) or remove --all", target.Name)
 			}
-			return killAll(ctx, cmd, rt, kubeContext, target.Namespace)
+			return killAll(ctx, cmd, rt, target, kubeContext, target.Namespace)
 		}
 
 		// An empty target name (docker:// or k8s://ns/) opens the session
 		// picker scoped to that runtime and namespace.
 		if target.Name == "" {
-			return killInteractive(ctx, cmd, rt, kubeContext, target.Namespace, flagAllNamespaces)
+			return killInteractive(ctx, cmd, rt, target, kubeContext, target.Namespace, flagAllNamespaces)
 		}
 
 		// Kill specific target
 		switch rt {
 		case "docker":
-			return runtime.DockerKill(ctx, target.Name)
+			return runtime.DockerKill(ctx, target)
 		case "kubernetes":
 			kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
 			return runtime.KubernetesKill(ctx, target, kubeconfig, kubeContext)
@@ -133,7 +133,7 @@ func runKill(cmd *cobra.Command, args []string) error {
 	}
 
 	if flagKillAll {
-		return killAll(ctx, cmd, rt, flagKubeContext, flagNamespace)
+		return killAll(ctx, cmd, rt, nil, flagKubeContext, flagNamespace)
 	}
 
 	// No target, no --all: show interactive picker across Docker and the
@@ -142,13 +142,15 @@ func runKill(cmd *cobra.Command, args []string) error {
 	if kubernetesFlagsSet {
 		pickerRuntime = "kubernetes"
 	}
-	return killInteractive(ctx, cmd, pickerRuntime, flagKubeContext, flagNamespace, flagAllNamespaces)
+	return killInteractive(ctx, cmd, pickerRuntime, nil, flagKubeContext, flagNamespace, flagAllNamespaces)
 }
 
-func killAll(ctx context.Context, cmd *cobra.Command, rt string, kubeContext string, namespace string) error {
+// dockerTarget carries the daemon selection (podman:// vs docker://) through
+// scoped operations; nil means the default Docker daemon.
+func killAll(ctx context.Context, cmd *cobra.Command, rt string, dockerTarget *runtime.Target, kubeContext string, namespace string) error {
 	switch rt {
 	case "docker":
-		return runtime.DockerKillAll(ctx)
+		return runtime.DockerKillAll(ctx, dockerTarget)
 	case "kubernetes":
 		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
 		return runtime.KubernetesKillAll(ctx, kubeconfig, kubeContext, namespace)
@@ -159,8 +161,8 @@ func killAll(ctx context.Context, cmd *cobra.Command, rt string, kubeContext str
 
 // killInteractive shows a picker over exact active debux sessions. rt scopes
 // the search to one runtime ("docker"/"kubernetes"); empty includes both.
-func killInteractive(ctx context.Context, cmd *cobra.Command, rt, kubeContext, namespace string, allNamespaces bool) error {
-	sessions, problems := collectDebugSessions(ctx, cmd, rt, kubeContext, namespace, allNamespaces)
+func killInteractive(ctx context.Context, cmd *cobra.Command, rt string, dockerTarget *runtime.Target, kubeContext, namespace string, allNamespaces bool) error {
+	sessions, problems := collectDebugSessions(ctx, cmd, rt, dockerTarget, kubeContext, namespace, allNamespaces)
 	if len(sessions) == 0 {
 		if len(problems) > 0 {
 			return fmt.Errorf("no running debux sessions found, but some runtimes could not be checked:\n  %s", strings.Join(errorStrings(problems), "\n  "))
@@ -173,7 +175,7 @@ func killInteractive(ctx context.Context, cmd *cobra.Command, rt, kubeContext, n
 		items[i] = picker.Item{Label: formatDebugSessionLabel(session), Value: fmt.Sprintf("%d", i)}
 	}
 
-	chosen, err := picker.Pick("Select a debug session to kill", items)
+	chosen, err := picker.Pick(ctx, "Select a debug session to kill", items)
 	if err != nil {
 		return err
 	}
@@ -193,7 +195,7 @@ func killDebugSession(ctx context.Context, cmd *cobra.Command, session runtime.D
 
 	switch target.Runtime {
 	case "docker":
-		return runtime.DockerKill(ctx, target.Name)
+		return runtime.DockerKill(ctx, target)
 	case "kubernetes":
 		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
 		kubeContext := target.Context

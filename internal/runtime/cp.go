@@ -36,7 +36,7 @@ func DockerCopyFrom(ctx context.Context, target *Target, srcPath, dstPath string
 	if err := untarToLocal(copyResult.Content, dstPath); err != nil {
 		return fmt.Errorf("extracting %s from %s: %w", srcPath, name, err)
 	}
-	fmt.Printf("Copied %s:%s to %s\n", name, srcPath, dstPath)
+	statusf("Copied %s:%s to %s\n", name, srcPath, dstPath)
 	return nil
 }
 
@@ -58,7 +58,7 @@ func DockerCopyTo(ctx context.Context, target *Target, srcPath, dstPath string) 
 	if _, err := cli.CopyToContainer(ctx, name, client.CopyToContainerOptions{DestinationPath: dstPath, Content: content}); err != nil {
 		return fmt.Errorf("copying %s to %s:%s (the destination directory must exist): %w", srcPath, name, dstPath, err)
 	}
-	fmt.Printf("Copied %s to %s:%s\n", srcPath, name, dstPath)
+	statusf("Copied %s to %s:%s\n", srcPath, name, dstPath)
 	return nil
 }
 
@@ -97,19 +97,33 @@ func KubernetesCopyFrom(ctx context.Context, target *Target, opts DebugOpts, src
 
 	pr, pw := io.Pipe()
 	var stderr bytes.Buffer
+	execDone := make(chan error, 1)
 	go func() {
 		err := execPodStream(ctx, session.config, session.clientset, session.namespace, session.podName, session.containerName,
 			[]string{"/bin/sh", "-c", script}, nil, pw, &stderr)
 		pw.CloseWithError(err)
+		execDone <- err
 	}()
 
-	if err := untarToLocal(pr, dstPath); err != nil {
+	untarErr := untarToLocal(pr, dstPath)
+	// If extraction stopped early, closing the reader unblocks the exec
+	// stream's writes; waiting for it makes reading the stderr buffer safe.
+	_ = pr.CloseWithError(untarErr)
+	execErr := <-execDone
+
+	if err := untarErr; err != nil || execErr != nil {
+		if err == nil {
+			// The archive ended cleanly but tar in the toolbox still failed
+			// (e.g. a file changed mid-read); don't report a partial copy as
+			// success.
+			err = execErr
+		}
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return fmt.Errorf("copying %s from %s/%s: %s: %w", srcPath, session.namespace, session.podName, msg, err)
 		}
 		return fmt.Errorf("copying %s from %s/%s: %w", srcPath, session.namespace, session.podName, err)
 	}
-	fmt.Printf("Copied %s/%s:%s to %s\n", session.namespace, session.podName, srcPath, dstPath)
+	statusf("Copied %s/%s:%s to %s\n", session.namespace, session.podName, srcPath, dstPath)
 	return nil
 }
 
@@ -138,13 +152,13 @@ func KubernetesCopyTo(ctx context.Context, target *Target, opts DebugOpts, srcPa
 		}
 		return fmt.Errorf("copying %s to %s/%s:%s: %w", srcPath, session.namespace, session.podName, dstPath, err)
 	}
-	fmt.Printf("Copied %s to %s/%s:%s\n", srcPath, session.namespace, session.podName, dstPath)
+	statusf("Copied %s to %s/%s:%s\n", srcPath, session.namespace, session.podName, dstPath)
 	return nil
 }
 
 type kubernetesCpSessionInfo struct {
 	config        *rest.Config
-	clientset     *kubernetes.Clientset
+	clientset     kubernetes.Interface
 	namespace     string
 	podName       string
 	containerName string
@@ -165,7 +179,7 @@ func kubernetesCpSession(ctx context.Context, target *Target, opts DebugOpts) (*
 	}
 
 	displayContext := kubernetesDisplayContext(opts.Kubeconfig, opts.KubeContext)
-	containerName, _, err := ensureKubernetesDebugContainer(ctx, clientset, namespace, pod, target.Container, displayContext, opts)
+	containerName, _, err := ensureKubernetesDebugContainer(ctx, config, clientset, namespace, pod, target.Container, displayContext, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +199,7 @@ func kubernetesTargetRootPath(p string) string {
 }
 
 // execPodStream runs a non-TTY command in a pod container with raw streams.
-func execPodStream(ctx context.Context, config *rest.Config, clientset *kubernetes.Clientset, namespace, podName, containerName string, command []string, stdin io.Reader, stdout, stderr io.Writer) error {
+func execPodStream(ctx context.Context, config *rest.Config, clientset kubernetes.Interface, namespace, podName, containerName string, command []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	req := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).

@@ -229,77 +229,29 @@ if [[ -n "${DEBUX_TOOLS:-}" ]]; then
   unset _debux_tools_marker _debux_tool
 fi
 
-# Import target container environment variables
-_debux_import_target_env() {
+# Capture only the target's PATH for wrapper discovery. The target environment
+# is untrusted and must not be exported into the sidecar shell: variables such
+# as PYTHONHOME, GCONV_PATH, OPENSSL_CONF, and tool-specific hooks can make a
+# sidecar binary load or execute files controlled by the target. Target
+# binaries launched through .chroot-exec still receive their original full
+# environment, matching docker exec without contaminating sidecar tools.
+_debux_capture_target_path() {
   local environ_file="${DEBUX_TARGET_ENVIRON:-/proc/1/environ}"
   [[ -f "$environ_file" ]] || return 0
 
-  # Save sidecar's PATH before target env modification (used by wrapper generator)
   _debux_sidecar_path="$PATH"
-
-  local -a skip_exact=(
-    HOME USER LOGNAME SHELL TERM COLUMNS LINES HOSTNAME PWD OLDPWD SHLVL _ TMPDIR
-    NOTIFY_SOCKET SSH_AUTH_SOCK XDG_RUNTIME_DIR container
-  )
-  local -a path_colon_vars=(
-    PYTHONPATH LD_LIBRARY_PATH MANPATH PERL5LIB NODE_PATH
-    GEM_PATH GOPATH CLASSPATH PKG_CONFIG_PATH
-  )
-  local -a path_single_vars=(
-    VIRTUAL_ENV JAVA_HOME CONDA_PREFIX GEM_HOME GOROOT
-    CARGO_HOME RUSTUP_HOME NVM_DIR PYENV_ROOT RBENV_ROOT
-  )
 
   local key val entry
   while IFS= read -r -d '' entry; do
     key="${entry%%=*}"
     val="${entry#*=}"
-    [[ -z "$key" || "$key" == "$entry" ]] && continue
-    [[ "$key" =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]] || continue
-
-    # Skip blocklist: exact matches
-    if (( ${skip_exact[(Ie)$key]} )); then
-      continue
-    fi
-    # Skip blocklist: pattern matches
-    if [[ "$key" == LANG || "$key" == LC_* || "$key" == DEBUX_* || "$key" == KUBERNETES_* ]]; then
-      continue
-    fi
-
-    if [[ "$key" == "PATH" ]]; then
-      # Translate each PATH component and append to current PATH
-      local -a translated=()
-      local component
-      for component in "${(@s.:.)val}"; do
-        [[ -n "$component" ]] || continue
-        translated+=("${DEBUX_TARGET_ROOT}${component}")
-      done
-      # Save original target PATH for wrapper generation
-      _debux_target_path="$val"
-      export PATH="${PATH}:${(j.:.)translated}"
-
-    elif (( ${path_colon_vars[(Ie)$key]} )); then
-      # Colon-separated path vars: translate each component
-      local -a translated=()
-      local component
-      for component in "${(@s.:.)val}"; do
-        [[ -n "$component" ]] || continue
-        translated+=("${DEBUX_TARGET_ROOT}${component}")
-      done
-      export "$key"="${(j.:.)translated}"
-
-    elif (( ${path_single_vars[(Ie)$key]} )); then
-      # Single-path vars: prepend target root
-      export "$key"="${DEBUX_TARGET_ROOT}${val}"
-
-    else
-      # Everything else: export as-is
-      export "$key"="$val"
-    fi
+    [[ "$key" == "PATH" ]] || continue
+    _debux_target_path="$val"
+    break
   done < <(command cat "$environ_file" 2>/dev/null)
 }
-_debux_import_target_env
-unfunction _debux_import_target_env
+_debux_capture_target_path
+unfunction _debux_capture_target_path
 
 # Generate chroot wrapper scripts for target binaries
 _debux_generate_wrappers() {
@@ -347,14 +299,18 @@ HELPER_EOF
     done
   done
 
-  # Walk each target PATH dir and create wrappers for missing commands
+  # Walk each target PATH dir and create wrappers for missing commands. Names
+  # and directories come from the untrusted target filesystem and are written
+  # into shell scripts, so only a safe character set is accepted.
   local dir
   for dir in "${(@s.:.)_debux_target_path}"; do
     [[ -n "$dir" ]] || continue
+    [[ "$dir" =~ '^[A-Za-z0-9./_+-]+$' ]] || continue
     local target_dir="${DEBUX_TARGET_ROOT}${dir}"
     [[ -d "$target_dir" ]] || continue
     for bin_path in "$target_dir"/*(N^/); do
       local bin_name="${bin_path:t}"
+      [[ "$bin_name" =~ '^[A-Za-z0-9._+-]+$' ]] || continue
       # Skip if sidecar already has this command or wrapper already exists
       (( ${+sidecar_cmds[$bin_name]} )) && continue
       [[ -e "$wrapper_dir/$bin_name" ]] && continue
@@ -374,7 +330,8 @@ HELPER_EOF
       ln -sf "$canonical" "$wrapper_dir/$alias_name"
   done
 
-  # Prepend wrapper dir to PATH (before /proc/1/root/... entries)
+  # Only generated wrappers enter the sidecar PATH; raw target directories do
+  # not, so unsafe/skipped names cannot bypass .chroot-exec.
   export PATH="$wrapper_dir:$PATH"
   unset _debux_target_path _debux_sidecar_path
 }

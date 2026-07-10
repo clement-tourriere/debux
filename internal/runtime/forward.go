@@ -1,8 +1,10 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
 	"os"
@@ -11,11 +13,12 @@ import (
 	"time"
 
 	dbximage "github.com/clement-tourriere/debux/internal/image"
+	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
 )
@@ -29,6 +32,11 @@ type PortMapping struct {
 // ParsePortMappings parses [LOCAL:]REMOTE specs.
 func ParsePortMappings(specs []string) ([]PortMapping, error) {
 	mappings := make([]PortMapping, 0, len(specs))
+	// Duplicates must be rejected up front: the Docker relay keys its port
+	// bindings by remote port (a duplicate would silently drop a mapping),
+	// and two mappings sharing a local port cannot both listen.
+	seenLocal := make(map[uint16]string, len(specs))
+	seenRemote := make(map[uint16]string, len(specs))
 	for _, spec := range specs {
 		local, remote, hasLocal := strings.Cut(spec, ":")
 		if !hasLocal {
@@ -45,6 +53,14 @@ func ParsePortMappings(specs []string) ([]PortMapping, error) {
 				return nil, fmt.Errorf("invalid port %q: %w", spec, err)
 			}
 		}
+		if prev, ok := seenLocal[localPort]; ok {
+			return nil, fmt.Errorf("local port %d requested by both %q and %q", localPort, prev, spec)
+		}
+		if prev, ok := seenRemote[remotePort]; ok {
+			return nil, fmt.Errorf("remote port %d requested by both %q and %q", remotePort, prev, spec)
+		}
+		seenLocal[localPort] = spec
+		seenRemote[remotePort] = spec
 		mappings = append(mappings, PortMapping{Local: localPort, Remote: remotePort})
 	}
 	return mappings, nil
@@ -91,7 +107,11 @@ func DockerForward(ctx context.Context, target *Target, mappings []PortMapping, 
 
 	netName, targetIP := dockerContainerAddress(info)
 	if targetIP == "" {
-		return fmt.Errorf("target container %q has no reachable network address (network mode %q)", target.Name, info.HostConfig.NetworkMode)
+		networkMode := ""
+		if info.HostConfig != nil {
+			networkMode = string(info.HostConfig.NetworkMode)
+		}
+		return fmt.Errorf("target container %q has no reachable network address (network mode %q)", target.Name, networkMode)
 	}
 
 	if err := dbximage.EnsureImageWithPolicy(ctx, cli, image, pullPolicy); err != nil {
@@ -151,9 +171,9 @@ func DockerForward(ctx context.Context, target *Target, mappings []PortMapping, 
 	}
 
 	for _, m := range mappings {
-		fmt.Printf("Forwarding 127.0.0.1:%d -> %s:%d\n", m.Local, strings.TrimPrefix(info.Name, "/"), m.Remote)
+		statusf("Forwarding 127.0.0.1:%d -> %s:%d\n", m.Local, strings.TrimPrefix(info.Name, "/"), m.Remote)
 	}
-	fmt.Println("Press Ctrl-C to stop forwarding")
+	statusln("Press Ctrl-C to stop forwarding")
 
 	select {
 	case <-ctx.Done():
@@ -196,9 +216,12 @@ func dockerContainerLogTail(ctx context.Context, cli *client.Client, containerID
 		return ""
 	}
 	defer func() { _ = reader.Close() }()
-	data := make([]byte, 2048)
-	n, _ := reader.Read(data)
-	return strings.TrimSpace(string(data[:n]))
+	// The relay container runs without a TTY, so the log stream is
+	// stdcopy-multiplexed; decode it or the error message shown to the user
+	// starts with raw frame-header bytes.
+	var buf bytes.Buffer
+	_, _ = stdcopy.StdCopy(&buf, &buf, io.LimitReader(reader, 2048))
+	return strings.TrimSpace(buf.String())
 }
 
 // KubernetesForward streams local ports to a pod via the Kubernetes
@@ -244,7 +267,7 @@ func KubernetesForward(ctx context.Context, target *Target, kubeconfig, kubeCont
 	go func() {
 		select {
 		case <-readyCh:
-			fmt.Println("Press Ctrl-C to stop forwarding")
+			statusln("Press Ctrl-C to stop forwarding")
 		case <-ctx.Done():
 		}
 	}()

@@ -31,6 +31,9 @@ Environment:
   DEBUX_REPO            GitHub repo, owner/name (default: ${repo})
   DEBUX_ALLOW_SOURCE_BUILD=1
                          Allow fallback to go install if a release asset is missing
+  DEBUX_ALLOW_UNSIGNED=1
+                         With cosign installed, allow checksum-only verification
+                         when a release has no signature assets
 EOF
   }
 
@@ -155,12 +158,15 @@ EOF
     if ! command -v cosign >/dev/null 2>&1; then
       return 0
     fi
+    # Fail closed: an attacker able to tamper with release assets could also
+    # strip the signature files, so missing signatures must not silently
+    # downgrade to checksum-only verification (mirrors `debux update`).
     if ! download "${base_url}/checksums.txt.sig" "$checksums_sig_path" 2>/dev/null; then
-      echo "warning: cosign is installed but checksums.txt.sig was not found; continuing with checksum-only verification" >&2
+      missing_signature_asset "checksums.txt.sig"
       return 0
     fi
     if ! download "${base_url}/checksums.txt.pem" "$checksums_cert_path" 2>/dev/null; then
-      echo "warning: cosign is installed but checksums.txt.pem was not found; continuing with checksum-only verification" >&2
+      missing_signature_asset "checksums.txt.pem"
       return 0
     fi
     # The release tag is always resolved by now (including for "latest"), so
@@ -171,6 +177,16 @@ EOF
       --certificate-identity "https://github.com/${repo}/.github/workflows/release.yml@refs/tags/${tag}" \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com \
       "$checksums_path" >/dev/null
+  }
+
+  missing_signature_asset() {
+    if [ "${DEBUX_ALLOW_UNSIGNED:-}" = "1" ]; then
+      echo "warning: $1 was not found; continuing with checksum-only verification (DEBUX_ALLOW_UNSIGNED=1)" >&2
+      return 0
+    fi
+    echo "error: cosign is installed but $1 was not found for ${tag}" >&2
+    echo "Refusing to install without signature verification. Set DEBUX_ALLOW_UNSIGNED=1 to accept checksum-only verification." >&2
+    exit 1
   }
 
   # Downloads via curl/wget are normally not quarantined, but clear xattrs and
@@ -271,6 +287,19 @@ EOF
     # download never clobbers a working install.
     if ! "$found" --help >/dev/null 2>&1; then
       echo "error: downloaded binary failed smoke test: ${found} --help" >&2
+      echo "Keeping any existing install at ${install_path}." >&2
+      exit 1
+    fi
+    # Bind the binary to the requested release (defense-in-depth on top of the
+    # checksum/signature verification, mirroring `debux update`).
+    reported_line="$("$found" --version 2>/dev/null | head -n 1 || true)"
+    reported_version="$(printf '%s\n' "$reported_line" | awk '
+      NR == 1 && $1 == "debux" && $2 == "version" && NF >= 3 { print $3; exit }
+      NR == 1 && $1 == "debux" && NF >= 2 { print $2; exit }
+    ')"
+    reported_version="${reported_version#v}"
+    if [ "$reported_version" != "${tag#v}" ]; then
+      echo "error: downloaded binary reports \"${reported_line}\", expected version ${tag#v}" >&2
       echo "Keeping any existing install at ${install_path}." >&2
       exit 1
     fi

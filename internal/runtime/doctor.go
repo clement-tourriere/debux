@@ -137,7 +137,7 @@ func KubernetesDoctor(ctx context.Context, kubeconfig, kubeContext, namespace, p
 	return checks
 }
 
-func kubernetesAccessCheck(ctx context.Context, clientset *kubernetes.Clientset, namespace, verb, resource, subresource string) DoctorCheck {
+func kubernetesAccessCheck(ctx context.Context, clientset kubernetes.Interface, namespace, verb, resource, subresource string) DoctorCheck {
 	review := &authv1.SelfSubjectAccessReview{
 		Spec: authv1.SelfSubjectAccessReviewSpec{
 			ResourceAttributes: &authv1.ResourceAttributes{

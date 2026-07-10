@@ -86,7 +86,28 @@ func SaveTUIState(state TUIState) error {
 	if err != nil {
 		return fmt.Errorf("marshaling TUI state: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	// Atomic temp+rename, like every other debux state file: a crash mid-write
+	// must not leave a torn YAML that gets warned about on every launch.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tui-options-*")
+	if err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 	return nil
