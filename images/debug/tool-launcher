@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Every generated tool link points here, not to a cwd-sensitive mise shim.
+set -euo pipefail
+# shellcheck source=images/debug/environment.sh
+source /etc/debux/environment.sh
+command_name="${0##*/}"
+working_dir="$PWD"
+# Remove our dispatch directory to avoid recursion after a concurrent remove.
+IFS=: read -r -a path_parts <<< "$PATH"
+tool_path=""
+for part in "${path_parts[@]}"; do
+  [[ "$part" == "$DEBUX_TOOL_BIN" ]] && continue
+  tool_path="${tool_path:+$tool_path:}$part"
+done
+export PATH="$tool_path"
+# Discover trusted tool configuration at /, but execute in the caller's cwd.
+# mise exec also supplies runtime variables (JAVA_HOME, etc.), unlike raw links.
+cd /
+exec /usr/local/bin/mise exec -- /usr/bin/env -C "$working_dir" -- "$command_name" "$@"

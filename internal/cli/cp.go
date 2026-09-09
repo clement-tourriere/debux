@@ -31,6 +31,13 @@ When copying INTO a target, the destination is treated as a directory.`,
 		SilenceErrors: true,
 	}
 	addKubernetesFlags(cmd)
+	cmd.Flags().String("profile", runtime.ProfileGeneral, "Kubernetes security profile (defaults to config)")
+	cmd.Flags().String("image", "", "Kubernetes debug image (defaults to config)")
+	cmd.Flags().String("user", "", "Kubernetes debug user uid[:gid]")
+	cmd.Flags().String("pull-policy", "", "Kubernetes debug image pull policy")
+	registerProfileFlagCompletion(cmd)
+	registerImageFlagCompletion(cmd)
+	registerPullPolicyFlagCompletion(cmd)
 	return cmd
 }
 
@@ -68,7 +75,7 @@ func runCp(cmd *cobra.Command, args []string) error {
 
 	switch target.Runtime {
 	case "docker":
-		if kubernetesFlagsChanged(cmd) {
+		if kubernetesFlagsChanged(cmd) || flagChanged(cmd, "profile") || flagChanged(cmd, "image") || flagChanged(cmd, "user") || flagChanged(cmd, "pull-policy") {
 			return fmt.Errorf("--context, --kubeconfig, and --namespace are only supported for Kubernetes targets; use k8s://... or remove the flag")
 		}
 		if srcRemote {
@@ -88,16 +95,21 @@ func runCp(cmd *cobra.Command, args []string) error {
 		target.Namespace = kubeNamespace
 		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
 
-		pullPolicy, err := resolvePullPolicy(configuredPullPolicy(""))
+		profile, err := resolveProfile(cmd)
+		if err != nil {
+			return err
+		}
+		pullPolicy, err := resolvePullPolicy(configuredPullPolicy(flagString(cmd, "pull-policy")))
 		if err != nil {
 			return err
 		}
 		opts := runtime.DebugOpts{
-			Image:       resolveImage(""),
+			Image:       resolveImage(flagString(cmd, "image")),
 			Kubeconfig:  kubeconfig,
 			KubeContext: kubeContext,
 			PullPolicy:  pullPolicy,
-			Profile:     runtime.ProfileGeneral,
+			Profile:     profile,
+			User:        flagString(cmd, "user"),
 		}
 		if srcRemote {
 			return runtime.KubernetesCopyFrom(ctx, target, opts, srcPath, dstPath)

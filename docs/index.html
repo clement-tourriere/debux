@@ -6,7 +6,7 @@
     <title>debux — Debug any container</title>
     <meta
       name="description"
-      content="debux gives you an OrbStack/Docker Debug-like shell for Docker and Kubernetes containers, powered by Nix. Debug distroless, scratch and minimal images without rebuilding them."
+      content="debux gives you an OrbStack/Docker Debug-like shell for Docker and Kubernetes containers, with preinstalled tools and on-demand installs. Debug distroless, scratch and minimal images without rebuilding them."
     />
     <meta name="theme-color" content="#0a1020" />
     <meta property="og:title" content="debux — Debug any container" />
@@ -981,6 +981,10 @@
           align-items: flex-start;
         }
       }
+      @media (prefers-reduced-motion: reduce) {
+        html { scroll-behavior: auto; }
+        *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+      }
     </style>
   </head>
   <body>
@@ -1024,7 +1028,7 @@
           <span class="eyebrow">Free, open-source container debugging</span>
           <h1>Debug any container. <span class="gradient-text">Even the ones with nothing inside.</span></h1>
           <p class="hero-lead">
-            debux gives you an OrbStack/Docker Debug-style shell for Docker and Kubernetes: a rich Nix-powered toolbox that joins the target container's namespaces and lets you inspect distroless, scratch, Alpine and minimal images without rebuilding them.
+            debux gives you an OrbStack/Docker Debug-style shell for Docker and Kubernetes: a rich, ready-to-use toolbox that joins the target container's namespaces and lets you inspect distroless, scratch, Alpine and minimal images without rebuilding them.
           </p>
           <div class="hero-actions">
             <a class="button primary" href="#quickstart">Start debugging</a>
@@ -1044,7 +1048,7 @@
             <span class="line"><span class="prompt">[debux]</span> eks-preprod-01:prod/api/app /proc/1/root/app # target</span>
             <span class="line"><span class="prompt">[debux]</span> eks-preprod-01:prod/api/app /proc/1/root # strace -p 1</span>
             <span class="line dim">attach to target PID namespace, filesystem and network</span>
-            <span class="line"><span class="prompt">[debux]</span> eks-preprod-01:prod/api/app /proc/1/root # dctl install postgresql</span>
+            <span class="line"><span class="prompt">[debux]</span> eks-preprod-01:prod/api/app /proc/1/root # dctl install yq</span>
           </div>
         </div>
       </section>
@@ -1101,8 +1105,8 @@
             </article>
             <article class="card">
               <div class="feature-icon">✦</div>
-              <h3>Nix-powered toolbox</h3>
-              <p>Start with a curated set of tools, then install more with <code>dctl install</code>. Docker stores persist globally; Kubernetes keeps tools when you reuse the same debug container.</p>
+              <h3>Ready-to-use toolbox</h3>
+              <p>Start with a curated set of tools, then install more with <code>dctl install</code>. Docker stores persist per image and security identity; Kubernetes keeps tools when you reuse the same debug container.</p>
             </article>
           </div>
         </section>
@@ -1249,7 +1253,7 @@ mise run image-build</code></pre>
             </article>
           </div>
           <div class="callout info" style="margin-top: 1rem;">
-            Inside the shell, run <code>target</code> to jump into the target filesystem. If you run a command the toolbox lacks but the target has, debux runs the target's own binary via <code>chroot</code> into <code>$DEBUX_TARGET_ROOT</code> with the target's original environment — just like <code>docker exec</code>. Otherwise it offers to install the tool with Nix.
+            Inside the shell, run <code>target</code> to jump into the target filesystem. If you run a command the toolbox lacks but the target has, debux runs the target's own binary via <code>chroot</code> into <code>$DEBUX_TARGET_ROOT</code> with the target's original environment — just like <code>docker exec</code>. Otherwise it offers to install the tool with <code>dctl</code>, backed by mise.
           </div>
         </section>
 
@@ -1302,8 +1306,8 @@ debux docker://my-nginx --read-only-volumes</code></pre>
             <strong>Stopped, exited or crash-looping?</strong> debux does not error — it copies the target container's filesystem, including its writable layer (logs, crash artifacts, modified config), into a debug container at <code>/target</code>. The original container is never started, and changes outside mounted volumes are discarded on exit. This matches a key <code>docker debug</code> capability.
           </div>
           <div class="card" style="margin-top: 1rem;">
-            <h3>Persistent Nix store</h3>
-            <p>Docker mode uses image-specific Nix volumes such as <code>debux-nix-store-&lt;image-id&gt;</code>. This keeps installed packages persistent while avoiding stale store volumes after rebuilding the debug image. Treat those volumes as trusted debug-session state; tools installed with <code>dctl</code> can affect later sessions using the same debug image.</p>
+            <h3>Persistent tool store</h3>
+            <p>Docker mode uses image- and security-specific volumes under <code>/var/lib/debux</code>, separate from system tools. Installed tools and history persist for matching sessions. Changing user, profile, privilege or capabilities selects a separate store. Treat installed tools as trusted session state; old Nix volumes are left untouched, not imported. Upgrading requires a one-time tool reinstall with <code>dctl</code> or <code>--tools</code>; old tools/history remain accessible with the old image, and the new image has no Nix runtime or fallback.</p>
           </div>
         </section>
 
@@ -1343,7 +1347,7 @@ debux k8s://prod/api-pod/app --fresh --pull-policy=Always</code></pre>
 debux k8s://prod/api-pod/app --copy
 
 # Long-lived copy session: survives rollouts, kept after exit,
-# self-destructs after 48h (kubelet-enforced activeDeadlineSeconds)
+# workloads stop after 48h (kubelet-enforced activeDeadlineSeconds)
 debux k8s://prod/api-pod/app --copy --keep --ttl=48h
 debux k8s://prod/debux-copy-abc12        # reattach later
 debux kill k8s://prod/debux-copy-abc12   # delete it
@@ -1354,7 +1358,7 @@ debux pod -n prod
 # Keep standalone pod after exit
 debux pod -n prod --keep
 
-# Debug a node (like kubectl debug node/, with the Nix toolbox)
+# Debug a node (like kubectl debug node/, with the Debux toolbox)
 debux node                      # node picker
 debux node worker-1 --profile=sysadmin --keep</code></pre>
             </div>
@@ -1368,12 +1372,11 @@ debux node worker-1 --profile=sysadmin --keep</code></pre>
           <div class="callout" style="margin-top: 1rem;">
             <strong>Kubernetes toolbox persistence:</strong> ephemeral containers cannot add new volumes, so debux cannot mount your local Docker toolbox/history into pods. Reuse the same debug container on the same pod to keep installed tools/history, or bake common tools into a custom debug image and pass it with <code>--image</code>.
             <pre><code>FROM ghcr.io/clement-tourriere/debux:latest
-ARG NIXPKGS_REF=github:NixOS/nixpkgs/1c3fe55ad329cbcb28471bb30f05c9827f724c76
-RUN NIX_CONFIG="experimental-features = nix-command flakes" \
-    nix profile add --profile /nix/var/debux-profile \
-      "${NIXPKGS_REF}#postgresql" \
-      "${NIXPKGS_REF}#redis" \
-      "${NIXPKGS_REF}#kubectl"</code></pre>
+RUN apk add --no-cache postgresql-17-client
+# Keep baked tool state writable by the restricted profile too.
+USER 65534:0
+RUN dctl install kubectl ripgrep
+USER 0</code></pre>
           </div>
           <div class="table-wrap" style="margin-top: 1rem;">
             <table>
@@ -1445,7 +1448,7 @@ exec zsh</code></pre>
           </div>
         </section>
 
-        <section id="shell" class="doc-section" data-search data-title="Inside the debug shell dctl Nix tools target filesystem">
+        <section id="shell" class="doc-section" data-search data-title="Inside the debug shell dctl mise tools target filesystem">
           <div class="section-heading">
             <h2>Inside the shell</h2>
             <p>The debug shell is zsh with common tools, target-aware helpers, and a small package manager named <code>dctl</code>.</p>
@@ -1460,10 +1463,11 @@ cat $DEBUX_TARGET_ROOT/etc/hosts</code></pre>
             </article>
             <article class="card">
               <h3>Install missing tools</h3>
-              <pre><code>dctl search postgres
-dctl install postgresql
+              <pre><code>dctl install --help
+dctl search postgres
+dctl install yq
 dctl list
-dctl remove postgresql</code></pre>
+dctl remove yq</code></pre>
             </article>
             <article class="card">
               <h3>Debug processes and network</h3>
@@ -1480,7 +1484,7 @@ tcpdump -i any</code></pre>
             </article>
             <article class="card">
               <h3>Preload tools at startup</h3>
-              <p>Use <code>--tools</code> to auto-install nixpkgs packages before the shell opens. A value can be literal packages or the name of a tool set defined in your <a class="link" href="#config">config file</a>.</p>
+              <p>Use <code>--tools</code> to auto-install tools before the shell opens. Optional <code>name@version</code> pins and familiar aliases such as <code>python3</code> and <code>rg</code> are supported. A value can be literal packages or the name of a tool set defined in your <a class="link" href="#config">config file</a>.</p>
               <pre><code>debux my-app --tools py-spy --tools gdb
 debux k8s://prod/api --tools python</code></pre>
             </article>
@@ -1565,12 +1569,12 @@ debux docker://my-app -- curl -fsS localhost/health
 debux k8s://prod/api-pod/app -- ps aux
 
 # Use it as a CI gate
-debux k8s://prod/api-pod/app -- sh -c 'test -f /app/ready'</code></pre>
+debux k8s://prod/api-pod/app -- sh -c 'test -f "$DEBUX_TARGET_ROOT/app/ready"'</code></pre>
             </div>
             <div class="card code-card">
               <button class="copy" data-copy>Copy</button>
               <pre><code># Know before an incident whether debugging is allowed:
-# per-profile Kubernetes RBAC preflight
+# operation-specific Kubernetes RBAC preflight
 debux doctor k8s://prod/api-pod/app --profile=restricted
 
 # Machine-readable, non-zero exit on any failing check
@@ -1578,7 +1582,7 @@ debux doctor k8s://prod/api-pod/app --json --strict</code></pre>
             </div>
           </div>
           <div class="callout info" style="margin-top: 1rem;">
-            <strong><code>debux doctor</code>:</strong> with no target it checks the debux binary, Docker, and the current Kubernetes context. With a target it focuses on that runtime and, for Kubernetes, evaluates the chosen security profile's required RBAC — a good CI check before granting or relying on debug access.
+            <strong><code>debux doctor</code>:</strong> with no target it checks the debux binary, Docker, and the current Kubernetes context. With a target it focuses on that runtime and, for Kubernetes, checks the chosen operation's RBAC (<code>--mode ephemeral|copy|pod|node|forward</code>) and reports the security profile — a good CI check before granting or relying on debug access.
           </div>
         </section>
 
@@ -1602,7 +1606,7 @@ tools:
               <h3>Keys and tool sets</h3>
               <ul class="clean-list">
                 <li><code>image</code>, <code>profile</code>, <code>pull-policy</code>, <code>terminal</code> set defaults for the matching flags.</li>
-                <li><code>tools</code> maps a set name to a list of nixpkgs packages.</li>
+                <li><code>tools</code> maps a set name to tool names, optionally <code>name@version</code>.</li>
                 <li><code>--tools python</code> expands a configured set; <code>--tools socat</code> also accepts literal packages.</li>
               </ul>
               <pre><code># Auto-installs python3, py-spy and gdb at session start
@@ -1652,6 +1656,8 @@ debux k8s://prod/api --tools python</code></pre>
             </table>
           </div>
           <p class="note"><code>--no-volumes</code> only disables direct volume mounts into the debug container, and <code>--read-only-volumes</code> makes those direct mounts read-only to reduce accidental writes. Neither is a security boundary if the debug container can still access the target through <code>/proc/1/root</code>. Kubernetes ephemeral containers also cannot add new volumes, so debux cannot mount your local Docker toolbox/history into arbitrary pods. Reusing the same debug container on the same pod keeps its installed tools; across pods, bake common tools into a custom debug image and pass it with <code>--image</code>.</p>
+          <p class="note">See the generated <a class="link" href="https://github.com/clement-tourriere/debux/blob/main/docs/rbac.md">operation-specific RBAC reference</a> and <a class="link" href="https://github.com/clement-tourriere/debux/blob/main/docs/reference.md">complete CLI reference</a>. In-place debugging and copying files reject <code>hostPID</code> / <code>shareProcessNamespace</code> pods rather than exposing the wrong PID-1 filesystem. A copied pod runs new workload/init processes and may share PVCs: it is not a snapshot and can have production side effects.</p>
+          <p class="note">Malformed configuration fails operational commands instead of silently changing privileges. Fix it or explicitly bypass it with <code>DEBUX_CONFIG=/dev/null</code>. Kubernetes <code>cp</code> honors the configured profile. Automatic reuse requires matching creation options; <code>attach</code> selects the exact existing session and does not apply new creation flags.</p>
           <p class="note">RBAC implication: granting a user permission to update <code>pods/ephemeralcontainers</code> and create <code>pods/exec</code> is effectively granting the ability to run code inside selected pods. Treat it like production shell access.</p>
           <div class="card code-card" style="margin-top: 1rem;">
             <button class="copy" data-copy>Copy</button>
@@ -1664,10 +1670,10 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "create"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["create", "get"]
   - apiGroups: [""]
     resources: ["pods/ephemeralcontainers"]
     verbs: ["update"]</code></pre>
@@ -1693,7 +1699,7 @@ debux k8s://prod/api/app \
         <section id="store" class="doc-section" data-search data-title="Persistent store volumes cleanup">
           <div class="section-heading">
             <h2>Store management</h2>
-            <p>Docker installed packages and shell history persist in image-specific Nix volumes. Use the store commands to inspect or clean those Docker stores. Runtime <code>dctl install</code> uses the debug image's pinned nixpkgs revision unless a custom image overrides <code>NIXPKGS_REF</code>.</p>
+            <p>Docker tools and history persist in image- and security-specific volumes. Tools download prebuilt binaries or compile on demand using the included build toolchain and development headers; Redis and PostgreSQL need no custom image. <code>ggshield</code> is preinstalled from Wolfi APK packages on both architectures; explicit version overrides use its Python package. Matching fresh containers reuse saved installations, even offline. <code>dctl install TOOL</code> reuses its pinned version; <code>dctl install TOOL@latest</code> explicitly upgrades, and <code>dctl update</code> only refreshes metadata. Later downloads need their own vulnerability review. Mise is not the whole nixpkgs catalogue: uncommon backends can still need extra prerequisites. Debux never silently elevates privileges to install a tool.</p>
           </div>
           <div class="grid two">
             <div class="card code-card">
@@ -1704,7 +1710,7 @@ debux store clean</code></pre>
             </div>
             <div class="card">
               <h3>When to clean?</h3>
-              <p>Clean the store if you want to reclaim disk space, reset installed tools, or remove old image-specific Docker Nix volumes after frequent debug image rebuilds. Kubernetes does not use these local Docker volumes.</p>
+              <p>Clean the store if you want to reclaim disk space, reset installed tools, or remove old Docker tool volumes, including legacy Nix stores after frequent debug image rebuilds. Kubernetes does not use these local Docker volumes.</p>
             </div>
           </div>
         </section>
@@ -1741,7 +1747,7 @@ debux store clean</code></pre>
                 <tr><td><code>--read-only-volumes</code></td><td>Mount target volumes read-only in the debug container to reduce accidental writes. This is not an isolation boundary if <code>/proc/1/root</code> is accessible.</td></tr>
                 <tr><td><code>--env KEY=VALUE</code></td><td>Inject an extra environment variable into the debug container (repeatable, both runtimes).</td></tr>
                 <tr><td><code>--cap-add CAP</code></td><td>Add a Linux capability to the debug container (repeatable, both runtimes).</td></tr>
-                <tr><td><code>--tools name-or-packages</code></td><td>Auto-install a config tool set or nixpkgs packages at session start (repeatable).</td></tr>
+                <tr><td><code>--tools name-or-packages</code></td><td>Auto-install a config tool set or tools (optionally name@version) at session start (repeatable).</td></tr>
                 <tr><td><code>--pull-policy</code></td><td>Debug image pull policy for Docker/Kubernetes: <code>Always</code>, <code>IfNotPresent</code>, <code>Never</code>.</td></tr>
                 <tr><td><code>--privileged</code></td><td>Run privileged (Docker); Kubernetes alias for <code>--profile=sysadmin</code>.</td></tr>
                 <tr><td><code>--context</code></td><td>Kubernetes kube context name. Prefer this for context names containing slashes.</td></tr>
@@ -1753,7 +1759,7 @@ debux store clean</code></pre>
           </div>
         </section>
 
-        <section id="troubleshooting" class="doc-section" data-search data-title="Troubleshooting errors docker context colima podman RBAC image pull stale store">
+        <section id="troubleshooting" class="doc-section" data-search data-title="Troubleshooting errors Zellij getcwd unreachable docker context colima podman RBAC image pull stale store">
           <div class="section-heading">
             <h2>Troubleshooting</h2>
             <p>Most failures come from image pull policy, cluster security policy, stale Docker volumes, or trying to debug a container that is not running.</p>
@@ -1769,17 +1775,15 @@ DOCKER_HOST=unix:///path/to/docker.sock debux my-app</code></pre>
             </article>
             <article class="card">
               <h3><code>openat etc/passwd: path escapes from parent</code></h3>
-              <p>Your cluster runtime rejected NixOS-style absolute symlinks in <code>/etc/passwd</code> or <code>/etc/group</code>. Rebuild and push the latest debug image, then retry with <code>--pull-policy=Always</code>.</p>
-              <pre><code>mise run image-build
-docker push ghcr.io/clement-tourriere/debux:latest
+              <p>Older Nix-based images could be rejected because of absolute symlinks in <code>/etc/passwd</code> or <code>/etc/group</code>. Upgrade to the current release, then create a fresh container with its matching image.</p>
+              <pre><code>debux update
 debux k8s://prod/api/app --fresh --pull-policy=Always</code></pre>
             </article>
             <article class="card">
               <h3><code>/bin/sh: no such file or directory</code> in Docker</h3>
-              <p>This usually means an old Nix store volume was mounted over a rebuilt debug image. Recent debux versions use image-specific volumes. Upgrade and clean old stores if needed.</p>
-              <pre><code>mise run install
-debux store clean
-debux docker://my-container --fresh</code></pre>
+              <p>With older Nix-based images, this usually means a stale store volume was mounted over a rebuilt image. Current images keep system binaries outside mutable tool storage. Upgrade and start fresh; deleting existing state is not required. <code>debux store clean</code> is an optional destructive reset of all unused Debux tools/history stores, not just Nix stores.</p>
+              <pre><code>debux update
+debux docker://my-container --fresh --pull-policy=Always</code></pre>
             </article>
             <article class="card">
               <h3>Ephemeral containers denied</h3>
@@ -1797,9 +1801,8 @@ debux k8s://prod/api/app --profile=baseline</code></pre>
             </article>
             <article class="card">
               <h3><code>dctl install</code> permission denied in restricted mode</h3>
-              <p>The pod likely pulled an older debug image whose Nix store is root-only. Rebuild and push the current image, then start a fresh restricted session and force a pull.</p>
-              <pre><code>mise run image-build
-docker push ghcr.io/clement-tourriere/debux:latest
+              <p>The pod may have pulled an older image with a root-only store. The current image supports tool installation as root and UID 65534. Upgrade to the current release, then start a fresh restricted session and force a pull.</p>
+              <pre><code>debux update
 
 debux k8s://prod/api/app \
   --profile=restricted \
@@ -1807,6 +1810,17 @@ debux k8s://prod/api/app \
   --pull-policy=Always</code></pre>
             </article>
           </div>
+        </section>
+
+        <section id="zellij" class="doc-section" data-search data-title="Zellij panic current_dir getcwd unreachable terminal 997">
+          <div class="section-heading">
+            <h2>Zellij and foreign-root working directories</h2>
+            <p>Linux can report a directory entered through <code>/proc/&lt;pid&gt;/root</code> as <code>(unreachable)</code>: it is outside the debugger's own filesystem root. The shell retains a logical <code>$PWD</code>, but <code>getcwd()</code>-based programs can fail. Zellij 0.45.1 unwraps this error when starting its server; changing its socket directory does not fix it.</p>
+          </div>
+          <pre><code>pane_dir="$PWD"
+cd /
+zellij options --default-cwd "$pane_dir" --default-shell /bin/zsh</code></pre>
+          <p>Start the server from the debugger's own root and inspect files through absolute <code>$DEBUX_TARGET_ROOT</code> paths. Stray <code>997;2n</code> text after the crash is a terminal theme-status reply, not a package error. Clear pending input with Ctrl+C; if reports continue, <code>printf '\033[?2031l'</code> disables the theme notification subscription.</p>
         </section>
 
         <section id="faq" class="doc-section" data-search data-title="FAQ frequently asked questions">
@@ -1825,7 +1839,7 @@ debux k8s://prod/api/app \
             </article>
             <article class="card">
               <h3>Why is the debug image large?</h3>
-              <p>It includes Nix and a curated toolbox. Docker reports uncompressed local size. The size buys fast, predictable tools in locked-down containers.</p>
+              <p>It includes precompiled system tools, zsh plugins, mise and build prerequisites for on-demand compilation, without a Nix runtime or source-build closure. The build toolchain increases the base footprint; installed tools and caches persist separately in Docker volumes. Docker reports uncompressed local size; registry transfer sizes are smaller. Both architectures are scanned and tested before publication.</p>
             </article>
             <article class="card">
               <h3>Why do files show as writable?</h3>
@@ -1837,7 +1851,7 @@ debux k8s://prod/api/app \
             </article>
             <article class="card">
               <h3>My pods get replaced by deploys or Karpenter — can a session survive?</h3>
-              <p>Ephemeral containers die with their pod. Use <code>--copy --keep</code> instead: the copy pod is not owned by your Deployment (rollouts skip it), carries <code>karpenter.sh/do-not-disrupt</code> against consolidation, and self-destructs after <code>--ttl</code> (default 24h) so nothing leaks. Reattach by targeting the copy pod; delete it with <code>debux kill</code>.</p>
+              <p>Ephemeral containers die with their pod. Use <code>--copy --keep</code> instead: the copy pod is not owned by your Deployment (rollouts skip it), carries <code>karpenter.sh/do-not-disrupt</code> against consolidation, and stops its workloads after <code>--ttl</code> (default 24h). The expired pod remains visible as Failed until deleted. Reattach to a live copy pod by targeting it; delete it with <code>debux kill</code>.</p>
             </article>
           </div>
         </section>
@@ -1862,7 +1876,7 @@ debux k8s://prod/api/app \
         <div class="search-input-wrap">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m21 21-4.3-4.3m1.3-5.2a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
           <h2 id="searchTitle" class="sr-only">Search documentation</h2>
-          <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Search debux docs…" />
+          <input id="searchInput" type="search" role="combobox" aria-label="Search documentation" aria-controls="searchResults" aria-autocomplete="list" aria-expanded="false" autocomplete="off" spellcheck="false" placeholder="Search debux docs…" />
           <kbd>Esc</kbd>
         </div>
         <div class="search-results" id="searchResults" role="listbox" aria-label="Search results"></div>
@@ -1874,11 +1888,17 @@ debux k8s://prod/api/app \
       const $ = (selector, root = document) => root.querySelector(selector);
       const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
+      // Code samples can scroll horizontally; make them keyboard-scrollable
+      // in browsers that do not focus scroll containers automatically.
+      $$('pre').forEach((block) => { block.tabIndex = 0; });
+
       const modal = $("#searchModal");
       const input = $("#searchInput");
       const results = $("#searchResults");
       let activeIndex = 0;
       let currentResults = [];
+      let searchOpener;
+      const pageShell = $('.shell');
 
       const docs = $$('[data-search]').map((section) => {
         const heading = section.dataset.title || section.querySelector('h1,h2,h3')?.textContent || section.id;
@@ -1892,17 +1912,23 @@ debux k8s://prod/api/app \
       });
 
       function openSearch() {
+        if (!modal.classList.contains('open')) searchOpener = document.activeElement;
         modal.classList.add('open');
+        pageShell.inert = true;
+        input.setAttribute('aria-expanded', 'true');
         document.body.style.overflow = 'hidden';
         input.value = '';
         activeIndex = 0;
         renderResults(docs.slice(0, 8));
-        setTimeout(() => input.focus(), 20);
+        input.focus();
       }
 
       function closeSearch() {
         modal.classList.remove('open');
+        pageShell.inert = false;
+        input.setAttribute('aria-expanded', 'false');
         document.body.style.overflow = '';
+        searchOpener?.focus();
       }
 
       function scoreDoc(doc, terms) {
@@ -1939,17 +1965,19 @@ debux k8s://prod/api/app \
         currentResults = items;
         activeIndex = Math.min(activeIndex, Math.max(0, items.length - 1));
         if (!items.length) {
+          input.removeAttribute('aria-activedescendant');
           results.innerHTML = '<div class="search-empty">No results. Try “kubernetes”, “dctl”, “copy”, “security”, or “store”.</div>';
           return;
         }
         results.innerHTML = items
           .map((item, index) => `
-            <a class="result" role="option" aria-selected="${index === activeIndex}" href="#${item.id}" data-result-index="${index}">
+            <a class="result" id="search-result-${index}" role="option" tabindex="-1" aria-selected="${index === activeIndex}" href="#${item.id}" data-result-index="${index}">
               <strong>${escapeHtml(item.title)}</strong>
               <span>${escapeHtml(excerpt(item.text, input.value))}</span>
             </a>
           `)
           .join('');
+        input.setAttribute('aria-activedescendant', `search-result-${activeIndex}`);
       }
 
       function escapeHtml(value) {
@@ -1961,6 +1989,9 @@ debux k8s://prod/api/app \
         if (!item) return;
         closeSearch();
         location.hash = item.id;
+        const destination = document.getElementById(item.id);
+        destination?.setAttribute('tabindex', '-1');
+        destination?.focus({ preventScroll: true });
       }
 
       $$('.search-trigger').forEach((button) => button.addEventListener('click', openSearch));
@@ -1973,6 +2004,7 @@ debux k8s://prod/api/app \
           return;
         }
         if (!modal.classList.contains('open')) return;
+        if (event.key === 'Tab') { event.preventDefault(); input.focus(); }
         if (event.key === 'Escape') closeSearch();
         if (event.key === 'ArrowDown') {
           event.preventDefault();

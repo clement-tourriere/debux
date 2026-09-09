@@ -17,6 +17,9 @@ import (
 
 func buildKubernetesCopyPod(namespace string, sourcePod *corev1.Pod, targetContainer string, opts DebugOpts, displayContext string) (*corev1.Pod, string, error) {
 	spec := *sourcePod.Spec.DeepCopy()
+	if spec.HostPID {
+		return nil, "", fmt.Errorf("--copy does not support hostPID pods; use debux node for intentional host debugging")
+	}
 
 	// The copied pod should be scheduler-managed, not pinned to the original node.
 	spec.NodeName = ""
@@ -41,6 +44,9 @@ func buildKubernetesCopyPod(namespace string, sourcePod *corev1.Pod, targetConta
 
 	existingNames := make(map[string]struct{}, len(spec.Containers))
 	for _, c := range spec.Containers {
+		existingNames[c.Name] = struct{}{}
+	}
+	for _, c := range spec.InitContainers {
 		existingNames[c.Name] = struct{}{}
 	}
 
@@ -132,6 +138,7 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 		return err
 	}
 
+	statusln("Warning: --copy starts a fresh instance of every workload/init container and may share persistent volumes; it can have production side effects.")
 	created, err := clientset.CoreV1().Pods(namespace).Create(ctx, copyPod, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("creating debug copy pod: %w", err)
@@ -146,7 +153,7 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 			return
 		}
 		statusf("Deleting debug copy pod %s...\n", created.Name)
-		_ = clientset.CoreV1().Pods(namespace).Delete(context.Background(), created.Name, metav1.DeleteOptions{})
+		cleanupKubernetesPod(ctx, clientset, created)
 	}()
 
 	statusf("Waiting for debug copy pod %q to start...\n", created.Name)
@@ -316,5 +323,9 @@ func copyPodShellCommand(targetContainerID string, command []string) []string {
 		// regex. The ID comes from the kubelet, but quoting costs nothing.
 		cmd = fmt.Sprintf("target_cid=%s; target_cid_short=%s; target_pid=''; if [ -n \"$target_cid\" ]; then for p in /proc/[0-9]*; do [ -r \"$p/cgroup\" ] || continue; if grep -qF \"$target_cid\" \"$p/cgroup\" 2>/dev/null || grep -qF \"$target_cid_short\" \"$p/cgroup\" 2>/dev/null; then target_pid=\"${p##*/}\"; break; fi; done; fi; if [ -n \"$target_pid\" ] && [ -d \"/proc/$target_pid/root\" ]; then export DEBUX_TARGET_ROOT=\"/proc/$target_pid/root\"; export DEBUX_TARGET_ENVIRON=\"/proc/$target_pid/environ\"; export DEBUX_TARGET_CWD_LINK=\"/proc/$target_pid/cwd\"; fi; %s", shellQuote(targetContainerID), shellQuote(shortID), cmd)
 	}
+	// A missing/unresolvable cgroup ID must never fall back to the sandbox's
+	// PID 1. The toolbox remains useful for a crash-looping app, but target
+	// filesystem integration is explicitly disabled until a PID is found.
+	cmd = "export DEBUX_TARGET_ROOT=/dev/null DEBUX_TARGET_ENVIRON=/dev/null DEBUX_TARGET_CWD_LINK=/dev/null; " + cmd
 	return []string{"sh", "-c", cmd}
 }

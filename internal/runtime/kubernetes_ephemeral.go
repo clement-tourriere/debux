@@ -71,6 +71,9 @@ type kubernetesContainerKiller func(context.Context, *rest.Config, kubernetes.In
 // fake-client tests; production always passes killInContainer.
 func ensureKubernetesDebugContainerWithKiller(ctx context.Context, config *rest.Config, clientset kubernetes.Interface, namespace string, pod *corev1.Pod, requestedContainer, displayContext string, opts DebugOpts, killContainer kubernetesContainerKiller) (string, string, error) {
 	podName := pod.Name
+	if err := validateKubernetesTargetNamespace(pod); err != nil {
+		return "", "", err
+	}
 
 	if pod.DeletionTimestamp != nil {
 		return "", "", fmt.Errorf("pod %s/%s is terminating; wait for the replacement pod or pick another target", namespace, podName)
@@ -89,13 +92,18 @@ func ensureKubernetesDebugContainerWithKiller(ctx context.Context, config *rest.
 	// container. For --fresh, remember every superseded daemon but keep them
 	// alive until the replacement has successfully started.
 	var superseded []string
+	// Always means a newly pulled container, not a shell in an old image.
+	if opts.PullPolicy == "Always" {
+		opts.Fresh = true
+	}
+	optionsHash := sessionOptionsHash(opts, findContainerID(pod, targetContainer))
 	if !opts.Fresh {
-		if existing := findRunningDebuxContainerForTarget(pod, targetContainer, opts.Profile, opts.User, opts.Image); existing != "" {
+		if existing := findRunningDebuxContainerForTarget(pod, targetContainer, opts.Profile, opts.User, opts.Image, optionsHash); existing != "" {
 			statusf("Reusing debug container %q\n", existing)
 			return existing, debuxTarget, nil
 		}
 		if other := findRunningDebuxContainerForTarget(pod, targetContainer, opts.Profile, opts.User, ""); other != "" {
-			statusf("Existing debug container %q uses a different image; creating a new one with %s\n", other, opts.Image)
+			statusf("Existing debug container %q has incompatible or unknown options; creating a new one with %s\n", other, opts.Image)
 		}
 	} else {
 		superseded = findRunningDebuxContainersForKill(pod, targetContainer)
@@ -121,6 +129,7 @@ func ensureKubernetesDebugContainerWithKiller(ctx context.Context, config *rest.
 				{Name: "DEBUX_DAEMON", Value: "1"},
 				{Name: "DEBUX_SECURITY_PROFILE", Value: opts.Profile},
 				{Name: "DEBUX_DEBUG_USER", Value: opts.User},
+				{Name: sessionOptionsEnv, Value: optionsHash},
 				{Name: "HOME", Value: "/root"},
 				{Name: "ZDOTDIR", Value: "/tmp"},
 			},

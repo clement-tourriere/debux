@@ -25,12 +25,10 @@ func TestFormatTargetURIKubernetesContextNamespaceContainer(t *testing.T) {
 }
 
 func TestBuildExecArgsDoesNotAddKubernetesOnlyFlagsForDocker(t *testing.T) {
-	oldContext, oldNamespace := flagKubeContext, flagNamespace
-	flagKubeContext, flagNamespace = "prod-context", "prod"
-	t.Cleanup(func() { flagKubeContext, flagNamespace = oldContext, oldNamespace })
-
 	cmd := &cobra.Command{}
 	cmd.Flags().String("kubeconfig", "/tmp/kubeconfig", "")
+	cmd.Flags().String("context", "prod-context", "")
+	cmd.Flags().String("namespace", "prod", "")
 
 	got := buildExecArgs(cmd, tuiLaunch{
 		target:          "docker://app",

@@ -6,9 +6,6 @@ import (
 )
 
 func TestKillAllNamespacesConflictsWithNamespace(t *testing.T) {
-	resetKillTestFlags()
-	defer resetKillTestFlags()
-
 	cmd := newKillCmd()
 	cmd.SetArgs([]string{"--all-namespaces", "--namespace", "prod"})
 	err := cmd.Execute()
@@ -18,20 +15,10 @@ func TestKillAllNamespacesConflictsWithNamespace(t *testing.T) {
 }
 
 func TestKillAllNamespacesConflictsWithKillAll(t *testing.T) {
-	resetKillTestFlags()
-	defer resetKillTestFlags()
-
 	cmd := newKillCmd()
 	cmd.SetArgs([]string{"--all-namespaces", "--all"})
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "interactive kill picker") {
 		t.Fatalf("expected --all conflict, got %v", err)
 	}
-}
-
-func resetKillTestFlags() {
-	flagAllNamespaces = false
-	flagKillAll = false
-	flagNamespace = ""
-	flagKubeContext = ""
 }

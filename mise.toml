@@ -1,10 +1,10 @@
 [tools]
-go = "1.26.5"
+go = "1.26.8"
 golangci-lint = "2.10.1"
 goreleaser = "2.15.4"
 hk = "1.44.2"
 pkl = "0.31.1"
-"pipx:commitizen" = "4.13.7"
+uv = "0.12.10"
 
 [vars]
 binary = "debux"
@@ -34,6 +34,22 @@ run = "docker build -t {{vars.image}} -f images/debug/Dockerfile ."
 [tasks.image-push]
 description = "Push the Docker debug image"
 run = "docker push {{vars.image}}"
+
+[tasks."docs:generate"]
+description = "Generate CLI and RBAC reference documentation"
+run = "go run ./cmd/debux-docs"
+
+[tasks."docs:check"]
+description = "Check documentation drift and release script regressions"
+run = ["go run ./cmd/debux-docs --check", "uv run --script scripts/test_release.py"]
+
+[tasks."docs:test"]
+description = "Run documentation browser and accessibility checks (npm ci --prefix docs first)"
+run = "npm test --prefix docs"
+
+[tasks."image:scan"]
+description = "Scan the local debux:security toolbox image with pinned Syft/Grype"
+run = "scripts/scan-image.sh docker:debux:security"
 
 [tasks.docs]
 description = "Serve the documentation site locally"
@@ -87,7 +103,19 @@ run = "hk run pre-commit"
 
 [tasks.verify]
 description = "Run the same lightweight checks expected before release"
-run = "bash -lc 'set -euo pipefail; go mod tidy; git diff --exit-code -- go.mod go.sum; go test -race ./...; golangci-lint run; scripts/govulncheck.sh ./...'"
+# Run directly in mise's environment; a login shell can reset PATH to macOS's
+# system Python/Go instead of the selected tools.
+run = [
+  "go mod tidy -diff",
+  "go test -race ./...",
+  "golangci-lint run",
+  "scripts/govulncheck.sh ./...",
+  "go run ./cmd/debux-docs --check",
+  "uv run --script scripts/test_release.py",
+  "uv run --script scripts/test_image_security.py",
+  "shellcheck install.sh scripts/*.sh internal/entrypoint/*.sh images/debug/dctl images/debug/environment.sh images/debug/tool-launcher",
+  "zsh -n internal/entrypoint/zshrc",
+]
 
 [tasks.check]
 description = "Run repository verification checks"
@@ -114,11 +142,12 @@ fi
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
-if GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=tag.gpgSign GIT_CONFIG_VALUE_0=false cz bump --yes >"$tmp" 2>&1; then
+if GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=tag.gpgSign GIT_CONFIG_VALUE_0=false uvx --python 3.11 --from commitizen==4.13.7 cz bump --yes >"$tmp" 2>&1; then
   cat "$tmp"
   exit 0
+else
+  status=$?
 fi
-status=$?
 cat "$tmp"
 if grep -Eq '\[(NO_COMMITS_FOUND|NO_COMMITS_TO_BUMP)\]' "$tmp"; then
   echo "No release bump needed: no eligible conventional commits since ${latest_tag:-the latest tag}."

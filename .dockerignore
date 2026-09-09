@@ -1,0 +1,13 @@
+# Only toolbox build inputs belong in the Docker context, never local config,
+# credentials, git history, binaries, or documentation test dependencies.
+**
+!images/
+!images/debug/
+!images/debug/Dockerfile
+!images/debug/dctl
+!images/debug/environment.sh
+!images/debug/tool-launcher
+!internal/
+!internal/entrypoint/
+!internal/entrypoint/script.sh
+!internal/entrypoint/zshrc

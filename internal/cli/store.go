@@ -8,10 +8,10 @@ import (
 func newStoreCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "store",
-		Short: "Inspect or clean debux Docker Nix store volumes",
-		Long: `Inspect or clean the Docker volumes debux uses for persistent Nix data.
+		Short: "Inspect or clean debux Docker tool store volumes",
+		Long: `Inspect or clean the Docker volumes debux uses for persistent tools and history.
 
-Docker debug sessions use image-specific Nix store volumes so installed tools can
+Docker debug sessions use image- and security-specific tool volumes so installed tools can
 survive across sessions without breaking rebuilt debug images.`,
 		Example: `  debux store info
   debux store clean`,

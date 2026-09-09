@@ -42,6 +42,10 @@ and checks common Kubernetes RBAC permissions for debug sessions.`,
   debux doctor --json`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			mode, _ := cmd.Flags().GetString("mode")
+			if _, err := runtime.KubernetesPermissions(mode); err != nil {
+				return err
+			}
 			profile, err := resolveProfile(cmd)
 			if err != nil {
 				return err
@@ -70,7 +74,8 @@ and checks common Kubernetes RBAC permissions for debug sessions.`,
 		},
 	}
 	addKubernetesFlags(cmd)
-	cmd.Flags().StringVar(&flagProfile, "profile", runtime.ProfileGeneral, "Kubernetes security profile to evaluate")
+	cmd.Flags().String("mode", "ephemeral", "Kubernetes operation to check: ephemeral, copy, pod, node, forward")
+	cmd.Flags().String("profile", runtime.ProfileGeneral, "Kubernetes security profile to evaluate")
 	registerProfileFlagCompletion(cmd)
 	configureTargetCompletion(cmd)
 	cmd.Flags().BoolVar(&outputJSON, "json", false, "Print diagnostics as JSON")
@@ -79,6 +84,7 @@ and checks common Kubernetes RBAC permissions for debug sessions.`,
 }
 
 func buildDoctorReport(ctx context.Context, cmd *cobra.Command, args []string, profile string) (doctorReport, error) {
+	mode, _ := cmd.Flags().GetString("mode")
 	report := doctorReport{
 		Version:      version.Details(),
 		DefaultImage: runtime.DefaultImage,
@@ -103,7 +109,7 @@ func buildDoctorReport(ctx context.Context, cmd *cobra.Command, args []string, p
 		if err != nil {
 			return doctorReport{}, err
 		}
-		report.Sections = append(report.Sections, doctorReportSection{Name: "Kubernetes", Checks: downgradeUnavailableRuntime(runtime.KubernetesDoctor(ctx, kubeconfig, flagKubeContext, kubeNamespace, "", "", profile))})
+		report.Sections = append(report.Sections, doctorReportSection{Name: "Kubernetes", Checks: downgradeUnavailableRuntime(runtime.KubernetesDoctor(ctx, kubeconfig, flagString(cmd, "context"), kubeNamespace, "", "", profile, mode))})
 		return report, nil
 	}
 
@@ -128,7 +134,7 @@ func buildDoctorReport(ctx context.Context, cmd *cobra.Command, args []string, p
 			return doctorReport{}, err
 		}
 		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
-		report.Sections = append(report.Sections, doctorReportSection{Name: "Kubernetes", Checks: runtime.KubernetesDoctor(ctx, kubeconfig, kubeContext, kubeNamespace, target.Name, target.Container, profile)})
+		report.Sections = append(report.Sections, doctorReportSection{Name: "Kubernetes", Checks: runtime.KubernetesDoctor(ctx, kubeconfig, kubeContext, kubeNamespace, target.Name, target.Container, profile, mode)})
 	default:
 		if doctorKubernetesFlagsChanged(cmd) {
 			return doctorReport{}, fmt.Errorf("kubernetes flags are only supported for Kubernetes targets; use k8s://... or remove the flag")
@@ -139,7 +145,7 @@ func buildDoctorReport(ctx context.Context, cmd *cobra.Command, args []string, p
 }
 
 func doctorKubernetesFlagsChanged(cmd *cobra.Command) bool {
-	return flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig") || flagChanged(cmd, "namespace") || flagChanged(cmd, "profile")
+	return flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig") || flagChanged(cmd, "namespace") || flagChanged(cmd, "profile") || flagChanged(cmd, "mode")
 }
 
 // downgradeUnavailableRuntime softens "runtime not configured/reachable" from

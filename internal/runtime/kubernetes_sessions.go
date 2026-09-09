@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -71,6 +72,7 @@ func kubernetesSessionsForPod(pod *corev1.Pod, displayContext string) []DebugSes
 				Namespace:       pod.Namespace,
 				TargetContainer: pod.Annotations[debuxTargetContainerAnnotation],
 				DebugName:       debugName,
+				ID:              string(pod.UID),
 				Source:          pod.Annotations[debuxSourcePodAnnotation],
 				Image:           image,
 				Profile:         profile,
@@ -111,6 +113,7 @@ func kubernetesSessionsForPod(pod *corev1.Pod, displayContext string) []DebugSes
 			Namespace:       pod.Namespace,
 			TargetContainer: ec.TargetContainerName,
 			DebugName:       ec.Name,
+			ID:              string(pod.UID),
 			Image:           ec.Image,
 			Profile:         profile,
 			User:            user,
@@ -197,6 +200,7 @@ func KubernetesKillAll(ctx context.Context, kubeconfig string, kubeContext strin
 	namespace = resolveTargetNamespace(namespace, kubeconfig, kubeContext)
 
 	killed := 0
+	var failures []error
 	listOptions := metav1.ListOptions{
 		FieldSelector: "status.phase=Running",
 		Limit:         kubernetesPodListLimit,
@@ -215,6 +219,7 @@ func KubernetesKillAll(ctx context.Context, kubeconfig string, kubeContext strin
 				}
 				if err := killInContainer(ctx, config, clientset, namespace, pod.Name, ec.Name); err != nil {
 					statusf("Warning: failed to kill %s on %s/%s: %v\n", ec.Name, namespace, pod.Name, err)
+					failures = append(failures, fmt.Errorf("killing %s/%s/%s: %w", namespace, pod.Name, ec.Name, err))
 					continue
 				}
 				statusf("Killed %s on %s/%s\n", ec.Name, namespace, pod.Name)
@@ -231,13 +236,11 @@ func KubernetesKillAll(ctx context.Context, kubeconfig string, kubeContext strin
 	// Copy pods are swept regardless of phase so kept and expired
 	// (DeadlineExceeded) ones are cleaned up too.
 	deletedCopies, err := deleteAllKubernetesCopyPods(ctx, clientset, namespace)
-	if err != nil {
-		return err
-	}
+	failures = append(failures, err)
 
 	if killed == 0 && deletedCopies == 0 {
-		statusln("No running debux sessions found")
-		return nil
+		statusln("No sessions removed")
+		return errors.Join(failures...)
 	}
 	if killed > 0 {
 		statusf("Killed %d debug session(s)\n", killed)
@@ -245,13 +248,14 @@ func KubernetesKillAll(ctx context.Context, kubeconfig string, kubeContext strin
 	if deletedCopies > 0 {
 		statusf("Deleted %d debug copy pod(s)\n", deletedCopies)
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 // deleteAllKubernetesCopyPods deletes every debux copy pod in the namespace,
 // including terminated ones left behind by activeDeadlineSeconds.
 func deleteAllKubernetesCopyPods(ctx context.Context, clientset kubernetes.Interface, namespace string) (int, error) {
 	deleted := 0
+	var failures []error
 	listOptions := metav1.ListOptions{
 		LabelSelector: debuxManagedByLabelKey + "=" + debuxManagedByLabelValue + "," + debuxModeLabelKey + "=" + debuxModeCopy,
 		Limit:         kubernetesPodListLimit,
@@ -262,7 +266,9 @@ func deleteAllKubernetesCopyPods(ctx context.Context, clientset kubernetes.Inter
 			return deleted, fmt.Errorf("listing debug copy pods: %w", err)
 		}
 		for _, pod := range pods.Items {
-			if err := clientset.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil {
+			uid := pod.UID
+			if err := clientset.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}}); err != nil {
+				failures = append(failures, fmt.Errorf("deleting %s/%s: %w", namespace, pod.Name, err))
 				statusf("Warning: failed to delete copy pod %s/%s: %v\n", namespace, pod.Name, err)
 				continue
 			}
@@ -274,7 +280,7 @@ func deleteAllKubernetesCopyPods(ctx context.Context, clientset kubernetes.Inter
 		}
 		listOptions.Continue = pods.Continue
 	}
-	return deleted, nil
+	return deleted, errors.Join(failures...)
 }
 
 // killDebuxDaemonScript locates and signals the debux daemon process inside a

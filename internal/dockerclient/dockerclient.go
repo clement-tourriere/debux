@@ -95,13 +95,16 @@ func currentContextEndpoint() (host, tlsDir string, err error) {
 	if name == "" {
 		data, err := os.ReadFile(filepath.Join(dir, "config.json"))
 		if err != nil {
-			return "", "", nil // no docker CLI config: use the default socket
+			if os.IsNotExist(err) {
+				return "", "", nil
+			}
+			return "", "", fmt.Errorf("reading Docker CLI config: %w", err)
 		}
 		var cfg struct {
 			CurrentContext string `json:"currentContext"`
 		}
-		if json.Unmarshal(data, &cfg) != nil {
-			return "", "", nil
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return "", "", fmt.Errorf("parsing Docker CLI config (refusing to select another daemon): %w", err)
 		}
 		name = cfg.CurrentContext
 	}

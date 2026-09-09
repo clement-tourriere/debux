@@ -162,7 +162,7 @@ func DockerForward(ctx context.Context, target *Target, mappings []PortMapping, 
 		return fmt.Errorf("creating forward container: %w", err)
 	}
 	defer func() {
-		_, _ = cli.ContainerRemove(context.WithoutCancel(ctx), resp.ID, client.ContainerRemoveOptions{Force: true})
+		cleanupDockerContainer(ctx, cli, resp.ID)
 	}()
 
 	waitResult := cli.ContainerWait(ctx, resp.ID, client.ContainerWaitOptions{Condition: container.WaitConditionNextExit})
@@ -227,6 +227,8 @@ func dockerContainerLogTail(ctx context.Context, cli *client.Client, containerID
 // KubernetesForward streams local ports to a pod via the Kubernetes
 // port-forward subresource (same plumbing as kubectl port-forward).
 func KubernetesForward(ctx context.Context, target *Target, kubeconfig, kubeContext string, mappings []PortMapping) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	config, clientset, err := getK8sClient(kubeconfig, kubeContext)
 	if err != nil {
 		return err

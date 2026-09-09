@@ -10,7 +10,7 @@ on:
       debux_image:
         description: "Debug image to test"
         required: false
-        default: "ghcr.io/clement-tourriere/debux:latest"
+        default: ""
       run_kubernetes:
         description: "Run kind/Kubernetes e2e"
         type: boolean
@@ -33,16 +33,26 @@ jobs:
         with:
           go-version-file: go.mod
       - run: CGO_ENABLED=0 go build -o bin/debux ./cmd/debux
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        if: inputs.debux_image == ''
+      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        if: inputs.debux_image == ''
+        with:
+          context: .
+          file: images/debug/Dockerfile
+          load: true
+          tags: debux:e2e
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
       - run: scripts/e2e-docker.sh
         env:
-          DEBUX_IMAGE: ${{ inputs.debux_image || 'ghcr.io/clement-tourriere/debux:latest' }}
-          DEBUX_PULL_POLICY: Always
+          DEBUX_IMAGE: ${{ inputs.debux_image || 'debux:e2e' }}
+          DEBUX_PULL_POLICY: ${{ inputs.debux_image && 'Always' || 'Never' }}
 
-  # PR runs skip kind to keep PRs fast; the weekly schedule and manual
-  # dispatch cover the flagship Kubernetes path so it is never entirely
-  # without automated end-to-end coverage.
+  # Exercise both the candidate CLI and candidate toolbox, including on PRs.
+  # A manual image override provides a separate published-image compatibility run.
   kubernetes:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_kubernetes)
+    if: github.event_name != 'workflow_dispatch' || inputs.run_kubernetes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -53,7 +63,21 @@ jobs:
         with:
           cluster_name: debux-e2e
       - run: CGO_ENABLED=0 go build -o bin/debux ./cmd/debux
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        if: inputs.debux_image == ''
+      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        if: inputs.debux_image == ''
+        with:
+          context: .
+          file: images/debug/Dockerfile
+          load: true
+          tags: debux:e2e
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - run: kind load docker-image debux:e2e --name debux-e2e
+        if: inputs.debux_image == ''
       - run: scripts/e2e-kubernetes.sh
         env:
-          DEBUX_IMAGE: ${{ inputs.debux_image || 'ghcr.io/clement-tourriere/debux:latest' }}
-          DEBUX_PULL_POLICY: Always
+          DEBUX_E2E_TOOL_TESTS: ${{ inputs.debux_image && '0' || '1' }}
+          DEBUX_IMAGE: ${{ inputs.debux_image || 'debux:e2e' }}
+          DEBUX_PULL_POLICY: ${{ inputs.debux_image && 'Always' || 'Never' }}

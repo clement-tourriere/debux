@@ -16,8 +16,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var flagAllNamespaces bool
-
 func newListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "list [target-scope]",
@@ -41,7 +39,7 @@ Kubernetes scope or flags to focus the cluster lookup.`,
 		SilenceErrors: true,
 	}
 	addKubernetesFlags(cmd)
-	cmd.Flags().BoolVarP(&flagAllNamespaces, "all-namespaces", "A", false, "Kubernetes: list sessions across all namespaces")
+	cmd.Flags().BoolP("all-namespaces", "A", false, "Kubernetes: list sessions across all namespaces")
 	configureTargetCompletion(cmd)
 	return cmd
 }
@@ -56,8 +54,9 @@ func newAttachCmd() *cobra.Command {
 With no target, debux opens a searchable picker over active Docker sessions plus
 Kubernetes sessions in the current namespace and recent Kubernetes namespaces
 from debux history. Type to filter by namespace, pod, target URI, or source;
-selecting a session reuses the exact debug image, user, and profile recorded on
-that session when available.`,
+selecting a session attaches to that exact debug container after validating its
+identity. Existing privileges are retained. Creation flags are not accepted;
+use exec to request a new session with different settings.`,
 		Example: `  debux attach
   debux attach k8s://@eks-preprod-01
   debux attach --context eks-preprod-01 --namespace gim
@@ -68,8 +67,11 @@ that session when available.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	addExecFlags(cmd)
-	cmd.Flags().BoolVarP(&flagAllNamespaces, "all-namespaces", "A", false, "Kubernetes: include sessions across all namespaces in the picker")
+	addKubernetesFlags(cmd)
+	cmd.Flags().String("debug-container", "", "Select an exact debug container when several sessions share a target")
+	cmd.Flags().String("session-id", "", "Require the listed immutable session ID")
+	_ = cmd.Flags().MarkHidden("session-id")
+	cmd.Flags().BoolP("all-namespaces", "A", false, "Kubernetes: include sessions across all namespaces in the picker")
 	configureTargetCompletion(cmd)
 	return cmd
 }
@@ -82,11 +84,11 @@ func runList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if flagAllNamespaces && namespace != "" {
+	if flagBool(cmd, "all-namespaces") && namespace != "" {
 		return fmt.Errorf("--all-namespaces cannot be combined with namespace %q", namespace)
 	}
 
-	sessions, problems := collectDebugSessions(ctx, cmd, rt, scopeTarget, kubeContext, namespace, flagAllNamespaces)
+	sessions, problems := collectDebugSessions(ctx, cmd, rt, scopeTarget, kubeContext, namespace, flagBool(cmd, "all-namespaces"))
 	sessions = filterDebugSessions(sessions, nameFilter)
 	if len(sessions) == 0 {
 		if len(problems) > 0 {
@@ -112,14 +114,14 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	}
 
 	rt := ""
-	if flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig") || flagChanged(cmd, "namespace") || flagAllNamespaces {
+	if flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig") || flagChanged(cmd, "namespace") || flagBool(cmd, "all-namespaces") {
 		rt = "kubernetes"
 	}
-	if flagAllNamespaces && flagNamespace != "" {
-		return fmt.Errorf("--all-namespaces cannot be combined with namespace %q", flagNamespace)
+	if flagBool(cmd, "all-namespaces") && flagString(cmd, "namespace") != "" {
+		return fmt.Errorf("--all-namespaces cannot be combined with namespace %q", flagString(cmd, "namespace"))
 	}
 
-	return attachFromPicker(ctx, cmd, rt, nil, flagKubeContext, flagNamespace, flagAllNamespaces, "Select a debux session to reattach (type to search)")
+	return attachFromPicker(ctx, cmd, rt, nil, flagString(cmd, "context"), flagString(cmd, "namespace"), flagBool(cmd, "all-namespaces"), "Select a debux session to reattach (type to search)")
 }
 
 func attachExplicitTarget(ctx context.Context, cmd *cobra.Command, rawTarget string) error {
@@ -146,16 +148,16 @@ func attachExplicitTarget(ctx context.Context, cmd *cobra.Command, rawTarget str
 		if err != nil {
 			return err
 		}
-		if flagAllNamespaces && namespace != "" {
+		if flagBool(cmd, "all-namespaces") && namespace != "" {
 			return fmt.Errorf("--all-namespaces cannot be combined with namespace %q", namespace)
 		}
 	}
 	if target.Name == "" {
-		return attachFromPicker(ctx, cmd, target.Runtime, target, kubeContext, namespace, flagAllNamespaces, "Select a debux session to reattach (type to search)")
+		return attachFromPicker(ctx, cmd, target.Runtime, target, kubeContext, namespace, flagBool(cmd, "all-namespaces"), "Select a debux session to reattach (type to search)")
 	}
 
 	sessions, problems := collectDebugSessions(ctx, cmd, target.Runtime, target, kubeContext, namespace, false)
-	matches := sessionsMatchingTarget(sessions, target, namespace)
+	matches := selectedDebugSessions(cmd, sessionsMatchingTarget(sessions, target, namespace))
 	if len(matches) == 0 {
 		if len(problems) > 0 {
 			return fmt.Errorf("no running debux session found for %s, and some runtimes could not be checked:\n  %s", rawTarget, strings.Join(errorStrings(problems), "\n  "))
@@ -180,12 +182,12 @@ func attachExplicitTarget(ctx context.Context, cmd *cobra.Command, rawTarget str
 		session = matches[idx]
 	}
 
-	applySessionLaunchFlags(cmd, session)
-	return runExec(cmd, []string{session.Target})
+	return attachDebugSession(ctx, cmd, session)
 }
 
 func attachFromPicker(ctx context.Context, cmd *cobra.Command, rt string, dockerTarget *runtime.Target, kubeContext, namespace string, allNamespaces bool, title string) error {
 	sessions, problems := collectDebugSessions(ctx, cmd, rt, dockerTarget, kubeContext, namespace, allNamespaces)
+	sessions = selectedDebugSessions(cmd, sessions)
 	if len(sessions) == 0 {
 		if len(problems) > 0 {
 			return fmt.Errorf("no running debux sessions found, but some runtimes could not be checked:\n  %s", strings.Join(errorStrings(problems), "\n  "))
@@ -206,8 +208,7 @@ func attachFromPicker(ctx context.Context, cmd *cobra.Command, rt string, docker
 		return fmt.Errorf("invalid session selection %q", chosen)
 	}
 
-	applySessionLaunchFlags(cmd, sessions[idx])
-	return runExec(cmd, []string{sessions[idx].Target})
+	return attachDebugSession(ctx, cmd, sessions[idx])
 }
 
 func sessionsMatchingTarget(sessions []runtime.DebugSessionInfo, target *runtime.Target, namespace string) []runtime.DebugSessionInfo {
@@ -244,10 +245,10 @@ func sessionsMatchingTarget(sessions []runtime.DebugSessionInfo, target *runtime
 func sessionScope(cmd *cobra.Command, args []string) (rt, kubeContext, namespace, nameFilter string, target *runtime.Target, err error) {
 	rt = ""
 	kubernetesFlagsSet := flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig") || flagChanged(cmd, "namespace")
-	if kubernetesFlagsSet || flagAllNamespaces {
+	if kubernetesFlagsSet || flagBool(cmd, "all-namespaces") {
 		rt = "kubernetes"
-		kubeContext = flagKubeContext
-		namespace = flagNamespace
+		kubeContext = flagString(cmd, "context")
+		namespace = flagString(cmd, "namespace")
 	}
 	if len(args) == 0 {
 		return rt, kubeContext, namespace, "", nil, nil
@@ -427,13 +428,13 @@ func printDebugSessions(sessions []runtime.DebugSessionInfo) {
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "RUNTIME\tKIND\tTARGET\tDEBUG\tSTATUS\tREATTACH")
 	for _, session := range sessions {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\tdebux attach %s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\tdebux %s\n",
 			session.Runtime,
 			shortDebugSessionKind(session.Kind),
 			session.Target,
 			emptyAs(session.DebugName, "-"),
 			debugSessionStatus(session),
-			session.Target,
+			terminalShellCommand(debugSessionAttachArgs(session)),
 		)
 	}
 	_ = tw.Flush()
@@ -491,34 +492,27 @@ func errorStrings(errs []error) []string {
 	return out
 }
 
-func applySessionLaunchFlags(cmd *cobra.Command, session runtime.DebugSessionInfo) {
-	flagFresh = false
-	flagCopy = false
-	clearFlagValue(cmd, "fresh", "false")
-	clearFlagValue(cmd, "copy", "false")
-	clearFlagValue(cmd, "keep", "false")
-	clearFlagValue(cmd, "ttl", defaultCopyPodTTL)
-	if session.Image != "" {
-		flagImage = session.Image
-		_ = cmd.Flags().Set("image", session.Image)
+func debugSessionAttachArgs(session runtime.DebugSessionInfo) []string {
+	args := []string{"attach", session.Target, "--debug-container", session.DebugName}
+	if session.ID != "" {
+		args = append(args, "--session-id", session.ID)
 	}
-	flagUser = session.User
-	_ = cmd.Flags().Set("user", session.User)
-	if session.Runtime == "kubernetes" {
-		profile := session.Profile
-		if profile == "" {
-			profile = runtime.ProfileGeneral
-		}
-		flagProfile = profile
-		_ = cmd.Flags().Set("profile", profile)
-	}
+	return args
 }
 
-func clearFlagValue(cmd *cobra.Command, name, value string) {
-	flag := cmd.Flags().Lookup(name)
-	if flag == nil {
-		return
+func attachDebugSession(ctx context.Context, cmd *cobra.Command, session runtime.DebugSessionInfo) error {
+	kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
+	return runtime.AttachDebugSession(ctx, session, kubeconfig)
+}
+
+func selectedDebugSessions(cmd *cobra.Command, sessions []runtime.DebugSessionInfo) []runtime.DebugSessionInfo {
+	name, _ := cmd.Flags().GetString("debug-container")
+	id, _ := cmd.Flags().GetString("session-id")
+	var matches []runtime.DebugSessionInfo
+	for _, session := range sessions {
+		if (name == "" || session.DebugName == name) && (id == "" || session.ID == id) {
+			matches = append(matches, session)
+		}
 	}
-	_ = flag.Value.Set(value)
-	flag.Changed = false
+	return matches
 }

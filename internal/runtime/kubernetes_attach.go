@@ -5,12 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/clement-tourriere/debux/internal/entrypoint"
 	"github.com/moby/term"
@@ -67,6 +69,8 @@ func execInPodWithMetadata(ctx context.Context, config *rest.Config, clientset k
 }
 
 func bootstrapPodShell(ctx context.Context, config *rest.Config, clientset kubernetes.Interface, namespace, podName, containerName string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	req := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).
@@ -164,7 +168,7 @@ func execInPodWithCommand(ctx context.Context, config *rest.Config, clientset ku
 		streamOpts.Stderr = os.Stderr
 	}
 
-	return kubernetesExecError(exec.StreamWithContext(ctx, streamOpts))
+	return streamKubernetesSession(ctx, exec, streamOpts)
 }
 
 // attachToPod attaches to a container's primary process (kubectl attach
@@ -211,7 +215,22 @@ func attachToPod(ctx context.Context, config *rest.Config, clientset kubernetes.
 		streamOpts.Stderr = os.Stderr
 	}
 
-	return kubernetesExecError(exec.StreamWithContext(ctx, streamOpts))
+	return streamKubernetesSession(ctx, exec, streamOpts)
+}
+
+// client-go can leave its stdin-copy goroutine alive after a remote command
+// ends. Give it a private pipe; only our cancellable pump owns the real stdin.
+func streamKubernetesSession(ctx context.Context, executor remotecommand.Executor, opts remotecommand.StreamOptions) error {
+	input, output := io.Pipe()
+	closePipe := func() { _ = input.Close(); _ = output.Close() }
+	stop, err := startSessionInput(os.Stdin, output, closePipe, output.Close)
+	if err != nil {
+		closePipe()
+		return err
+	}
+	defer stop()
+	opts.Stdin = input
+	return kubernetesExecError(executor.StreamWithContext(ctx, opts))
 }
 
 type terminalSizeQueue struct {

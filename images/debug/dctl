@@ -1,104 +1,150 @@
 #!/usr/bin/env bash
-# dctl - debux package manager
+# dctl - the Debux tool interface. The implementation is deliberately private:
+# users need neither mise activation nor project configuration.
 set -euo pipefail
+
+show_help() {
+  case "${1:-}" in
+    install)
+      printf '%s\n' 'Usage: dctl install <pkg> [pkg...]' '' \
+        'Install a tool or reuse its saved pinned version.' \
+        'Use name@version to select a version; name@latest explicitly upgrades.' \
+        'Examples: dctl install yq redis postgresql' \
+        '          dctl install ggshield@1.54.0'
+      ;;
+    remove)
+      printf '%s\n' 'Usage: dctl remove <pkg> [pkg...]' '' \
+        'Remove user-installed tools. Preinstalled image tools remain available.'
+      ;;
+    search)
+      printf '%s\n' 'Usage: dctl search <query>' '' 'Search available tool names/backends.'
+      ;;
+    list)
+      printf '%s\n' 'Usage: dctl list' '' 'List preinstalled and user-installed tools.'
+      ;;
+    update)
+      printf '%s\n' 'Usage: dctl update' '' \
+        'Refresh tool metadata without upgrading installed versions.' \
+        'Use dctl install <pkg>@latest to upgrade a tool.'
+      ;;
+    "")
+      printf '%s\n' 'dctl - debux package manager' '' \
+        'Usage:' \
+        '  dctl install <pkg> [pkg...]   Install/reuse tools (name@version; @latest to upgrade)' \
+        '  dctl remove <pkg> [pkg...]    Remove user-installed tools' \
+        '  dctl search <query>           Search available tools' \
+        '  dctl list                     List base and user-installed tools' \
+        '  dctl update                   Refresh tool metadata' \
+        '  dctl help [command]           Show help (also COMMAND --help)'
+      ;;
+    *) echo "Unknown dctl command: $1 (see dctl help)" >&2; return 2;;
+  esac
+}
+
+# Help must work without a writable HOME/store or even an installed backend.
+case "${1:-}" in
+  ""|--help|-h) show_help; exit 0;;
+  help)
+    if [[ $# -gt 2 ]]; then echo 'Usage: dctl help [command]' >&2; exit 2; fi
+    show_help "${2:-}"
+    exit 0
+    ;;
+  install|remove|search|list|update)
+    for arg in "$@"; do
+      if [[ "$arg" == --help || "$arg" == -h ]]; then show_help "$1"; exit 0; fi
+    done
+    ;;
+  *) show_help "$1"; exit 2;;
+esac
+
 cd /
+# shellcheck source=images/debug/environment.sh
+source /etc/debux/environment.sh
+# Installers must not inherit the lock (a spawned daemon could hold it forever).
+mise() { /usr/local/bin/mise "$@" 9>&-; }
 
-# Ensure nix experimental features are available regardless of /etc/nix/nix.conf
-export NIX_CONFIG="experimental-features = nix-command flakes"
-
-# User-installed packages go in a separate nix profile (persisted in /nix/var volume)
-DEBUX_PROFILE="/nix/var/debux-profile"
-NIXPKGS_REF="${NIXPKGS_REF:-nixpkgs}"
-
-ensure_home() {
-  if [[ -z "${HOME:-}" || ! -d "$HOME" || ! -w "$HOME" || ! -O "$HOME" ]]; then
-    local uid
-    uid="$(id -u 2>/dev/null || echo 0)"
-    export HOME="/tmp/debux-home-$uid"
-    mkdir -p "$HOME"
-  fi
-}
-
-ensure_nix_writable() {
-  if [[ $EUID -eq 0 ]]; then
-    return 0
-  fi
-  if [[ -w /nix/store && -w /nix/var && -w /nix/var/nix/db ]]; then
-    return 0
-  fi
-
-  cat >&2 <<'EOF'
-
-This debug container is running as non-root, but the Nix store is not writable.
-
-To install tools with dctl under --profile=restricted, rebuild and push the
-current debux debug image, then start a fresh session:
-
-  mise run image-build
-  docker push ghcr.io/clement-tourriere/debux:latest
-  debux k8s://... --profile=restricted --fresh --pull-policy=Always
-
-Alternatively, use --profile=general for a root debug container.
-EOF
-  return 1
-}
-
-ensure_home
-
-# Command-to-nixpkgs mapping for common mismatches
-declare -A ALIASES=(
-  [nvim]=neovim
-  [python]=python3
-  [node]=nodejs
-  [npm]=nodejs
-  [npx]=nodejs
-  [cc]=gcc
-  [c++]=gcc
-  [g++]=gcc
-  [make]=gnumake
-  [ip]=iproute2
-  [ss]=iproute2
-  [netstat]=nettools
-  [ifconfig]=nettools
-  [ping]=inetutils
-  [telnet]=inetutils
-  [nc]=nmap
-  [ncat]=nmap
-  [cargo]=rustc
-  [pgrep]=procps
-  [pkill]=procps
-  [free]=procps
-  [watch]=procps
-  [xargs]=findutils
-  [locate]=findutils
-  [sed]=gnused
-  [awk]=gawk
-  [diff]=diffutils
-  [tar]=gnutar
-  [unzip]=unzip
-  [zip]=zip
-  [ag]=silver-searcher
-  [rg]=ripgrep
-  [fd]=fd
-  [bat]=bat
-  [tmux]=tmux
-  [http]=httpie
-  [https]=httpie
-  [delta]=delta
-  [lazygit]=lazygit
-  [k9s]=k9s
-  [stern]=stern
-  [kubectx]=kubectx
-  [kustomize]=kustomize
-)
+if [[ -z "${HOME:-}" || ! -d "$HOME" || ! -w "$HOME" || ! -O "$HOME" ]]; then
+  HOME="/tmp/debux-home-$(id -u)"
+  export HOME
+  mkdir -p "$HOME"
+fi
 
 resolve_pkg() {
-  local pkg="$1"
-  if [[ -n "${ALIASES[$pkg]+x}" ]]; then
-    echo "${ALIASES[$pkg]}"
-  else
-    echo "$pkg"
+  local pkg="$1" version=""
+  if [[ ! "$pkg" =~ ^[a-zA-Z0-9][a-zA-Z0-9._+/@:-]*$ ]]; then
+    echo "Invalid tool '$pkg'. Use a tool name, optionally name@version." >&2
+    return 2
   fi
+  if [[ "$pkg" == *@* ]]; then
+    version="@${pkg##*@}"
+    pkg="${pkg%@*}"
+  fi
+  case "$pkg" in
+    python3) pkg=python;;
+    nodejs|npm|npx) pkg=node;;
+    nvim) pkg=neovim;;
+    rg) pkg=ripgrep;;
+    ag|silver-searcher) pkg=the_silver_searcher;;
+    http|https|httpie) pkg=pipx:httpie;;
+    # Aqua's ggshield binaries don't support Linux ARM64. Version overrides
+    # consistently use the upstream Python package on both architectures.
+    ggshield) pkg=pipx:ggshield;;
+    cargo|rustc) pkg=rust;;
+    postgresql|psql|pg_dump|pg_restore|pg_dumpall|pg_isready|pg_ctl|initdb) pkg=postgres;;
+    redis-cli|redis-server|redis-benchmark|redis-sentinel) pkg=redis;;
+    cc|c++|g++) pkg=gcc;;
+    make|gnumake) pkg='make';;
+    ip|ss) pkg=iproute2;;
+    netstat|ifconfig|nettools) pkg=net-tools;;
+    ping) pkg=iputils;;
+    nc|ncat) pkg=nmap;;
+    pgrep|pkill|free|watch) pkg=procps;;
+    xargs) pkg=findutils;;
+    awk) pkg=gawk;;
+    gnused) pkg='sed';;
+    gnugrep) pkg='grep';;
+    diff) pkg=diffutils;;
+    tar|gnutar) pkg=libarchive-tools;;
+  esac
+  printf '%s%s\n' "$pkg" "$version"
+}
+
+ensure_writable() {
+  if [[ ! -w "$DEBUX_DATA_DIR" || ! -w "$MISE_DATA_DIR" ]]; then
+    echo "The Debux tool store is not writable by UID $(id -u). Start a fresh session with the current image." >&2
+    return 1
+  fi
+  # Serialize changes across shells sharing this store. Never chmod a foreign
+  # store or change privileges to make an installation succeed.
+  exec 9>"$DEBUX_DATA_DIR/.dctl.lock"
+  flock -x 9
+}
+
+refresh_commands() {
+  local commands new old name
+  commands="$(mise bin-paths --bin-names)" || return
+  new="$(mktemp -d "$DEBUX_DATA_DIR/.bin.XXXXXXXX")" || return
+  while IFS= read -r name; do
+    [[ -z "$name" ]] && continue
+    if [[ ! "$name" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.+-]*$ ]]; then
+      echo "Refusing unsafe executable name: $name" >&2
+      rm -rf -- "$new"
+      return 1
+    fi
+    ln -sf /usr/local/libexec/debux-tool "$new/$name" || { rm -rf -- "$new"; return 1; }
+  done <<< "$commands"
+  old="$(readlink "$DEBUX_TOOL_BIN")" || { rm -rf -- "$new"; return 1; }
+  # All files are ready before publishing; running shells never see half of
+  # the next command set. bin is a symlink in the image's initial empty store.
+  if ! { rm -f "$DEBUX_DATA_DIR/.bin-next" &&
+    ln -s "$new" "$DEBUX_DATA_DIR/.bin-next" &&
+    mv -Tf "$DEBUX_DATA_DIR/.bin-next" "$DEBUX_TOOL_BIN"; }; then
+    rm -rf -- "$new"
+    return 1
+  fi
+  case "$old" in
+    "$DEBUX_DATA_DIR"/.bin.*) rm -rf -- "$old";;
+  esac
 }
 
 case "${1:-}" in
@@ -108,26 +154,53 @@ case "${1:-}" in
       echo "Usage: dctl install <pkg> [pkg...]" >&2
       exit 2
     fi
-
-    ensure_nix_writable || exit 1
-
+    ensure_writable
     status=0
     for pkg in "$@"; do
-      resolved=$(resolve_pkg "$pkg")
-      if [[ "$resolved" != "$pkg" ]]; then
-        echo -e "\e[36m$pkg\e[0m → \e[32m$resolved\e[0m"
+      resolved="$(resolve_pkg "$pkg")" || { status=1; continue; }
+      if [[ "$resolved" != *@* ]]; then
+        # --tools may run again in a fresh container sharing this volume. Reuse
+        # its pinned installation without resolving latest or rebuilding it.
+        # --installed excludes incomplete/removed installations so they retry.
+        # Don't resolve a registry backend just to check an APK-only package
+        # such as gcc. Use the installed inventory and the baked jq, not a user
+        # override that would recursively dispatch through mise.
+        saved="$(mise ls --global --current --installed --json | /usr/bin/jq -er --arg tool "$resolved" \
+          'if type != "object" then error("Invalid installed-tool inventory") else (.[$tool] // [] | length) end')" || { status=1; continue; }
+        if [[ "$saved" -gt 0 ]]; then
+          echo "$resolved is already installed in the saved tool store."
+          continue
+        fi
+        baked="$resolved"
+        # Bare ggshield uses the baked APK; an explicit pipx:ggshield request
+        # still installs a user override. Removal resolves to that same backend.
+        if [[ "$pkg" == ggshield ]]; then baked=ggshield; fi
+        if apk info -e -- "$baked" >/dev/null 2>&1; then
+          echo "$baked is already provided by the image."
+          continue
+        fi
+      fi
+      # Python CLIs use a pinned user-space helper only when needed. Keeping
+      # uv out of the base saves ~47 MB without asking users to configure pipx.
+      if [[ "$resolved" == pipx:* ]] && ! command -v uv >/dev/null 2>&1; then
+        echo "Installing Python-tool support (uv)..."
+        mise use --global --pin uv@0.12.10 || { status=1; continue; }
+        refresh_commands || { status=1; continue; }
       fi
       echo "Installing $resolved..."
-      if nix profile add --profile "$DEBUX_PROFILE" "$NIXPKGS_REF#$resolved"; then
-        echo -e "\e[32mInstalled $resolved.\e[0m"
+      # Installed dependency binaries (e.g. uv) must be on the installer's PATH,
+      # not reached recursively through our dispatch links.
+      # Installing PostgreSQL should install tools, not initialize a database
+      # (and initdb intentionally refuses root). Users can run initdb explicitly.
+      if POSTGRES_SKIP_INITDB=1 mise exec -- /usr/local/bin/mise use --global --pin -- "$resolved"; then
+        echo "Installed $resolved."
       else
         status=1
-        echo ""
-        echo -e "  \e[31mFailed to install '$resolved'.\e[0m"
-        echo "  It may not exist in nixpkgs, or it may currently fail to build."
-        echo "  Try: dctl search $pkg"
+        echo "Could not install '$resolved'. Try: dctl search $pkg" >&2
+        echo "Not every OS package is a mise tool; system packages may require a custom image. System dependencies are not installed automatically." >&2
       fi
     done
+    refresh_commands || status=1
     exit "$status"
     ;;
   remove)
@@ -136,46 +209,51 @@ case "${1:-}" in
       echo "Usage: dctl remove <pkg> [pkg...]" >&2
       exit 2
     fi
-    ensure_nix_writable || exit 1
+    ensure_writable
+    status=0
     for pkg in "$@"; do
-      resolved=$(resolve_pkg "$pkg")
-      # Use --json to reliably check if the element exists (avoids ANSI / whitespace issues)
-      if nix profile list --profile "$DEBUX_PROFILE" --json 2>/dev/null | jq -e --arg pkg "$resolved" '.elements[$pkg]' >/dev/null 2>&1; then
-        nix profile remove --profile "$DEBUX_PROFILE" "$resolved"
-        echo -e "\e[32mRemoved $resolved.\e[0m"
+      resolved="$(resolve_pkg "$pkg")" || { status=1; continue; }
+      name="${resolved%@*}"
+      # Only touch tools in the user profile, never baked OS packages.
+      installed="$(mise ls --global --current -- "$name")" || { status=1; continue; }
+      if [[ -z "$installed" ]]; then
+        echo "Package '$name' not found in user profile (base tools cannot be removed)."
+        continue
+      fi
+      if mise use --global --remove "$name" && mise uninstall -- "$name"; then
+        echo "Removed $name."
       else
-        echo "Package '$resolved' not found in profile."
+        status=1
       fi
     done
+    refresh_commands || status=1
+    exit "$status"
     ;;
   search)
     shift
-    if [[ $# -eq 0 ]]; then
+    if [[ $# -ne 1 || -z "$1" ]]; then
       echo "Usage: dctl search <query>" >&2
       exit 2
     fi
-    nix search "$NIXPKGS_REF" "$1" 2>/dev/null || echo "Search failed. Try: nix search $NIXPKGS_REF $1"
+    registry="$(mise registry)"
+    query="$(resolve_pkg "$1" 2>/dev/null)" || query="$1"
+    if [[ "$query" == pipx:* ]]; then
+      echo "$query — Python package backend (dctl install $query)"
+    elif ! grep -iF -- "${query%@*}" <<< "$registry"; then
+      echo "No registry shorthand matched '$1'. OS packages are not all available through mise."
+    fi
     ;;
   list)
     echo "Base packages (from image):"
-    nix-env -q 2>/dev/null || true
-    echo ""
+    cat /usr/share/debux/base-packages.txt
+    echo
     echo "User-installed packages:"
-    nix profile list --profile "$DEBUX_PROFILE" 2>/dev/null || echo "  (none)"
+    mise ls --global --current
     ;;
   update)
-    ensure_nix_writable || exit 1
-    nix flake metadata --refresh "$NIXPKGS_REF" >/dev/null
-    echo -e "\e[32mRefreshed nixpkgs flake metadata.\e[0m"
+    ensure_writable
+    mise cache clear
+    echo "Refreshed tool metadata. Installed versions stay pinned; use dctl install <pkg>@latest to update a tool."
     ;;
-  *)
-    echo "dctl - debux package manager"
-    echo ""
-    echo "Usage:"
-    echo "  dctl install <pkg> [pkg...]   Install packages from nixpkgs"
-    echo "  dctl remove <pkg> [pkg...]    Remove installed packages"
-    echo "  dctl search <query>           Search available packages"
-    echo "  dctl list                     List installed packages"
-    echo "  dctl update                   Update package index"
-    ;;
+  *) echo "Unknown dctl command: $1 (see dctl help)" >&2; exit 2;;
 esac

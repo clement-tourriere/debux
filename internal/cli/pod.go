@@ -43,28 +43,28 @@ func runPod(cmd *cobra.Command, args []string) error {
 	keep, _ := cmd.Flags().GetBool("keep")
 	hostNetwork, _ := cmd.Flags().GetBool("host-network")
 
-	pullPolicy, err := resolvePullPolicy(configuredPullPolicy(flagPullPolicy))
+	pullPolicy, err := resolvePullPolicy(configuredPullPolicy(flagString(cmd, "pull-policy")))
 	if err != nil {
 		return err
 	}
 
-	if err := runtime.ValidateEnvVars(flagEnv); err != nil {
+	if err := runtime.ValidateEnvVars(flagStrings(cmd, "env")); err != nil {
 		return err
 	}
 
 	opts := runtime.PodOpts{
-		Image:       resolveImage(flagImage),
+		Image:       resolveImage(flagString(cmd, "image")),
 		Namespace:   namespace,
 		Kubeconfig:  kubeconfig,
-		KubeContext: flagKubeContext,
+		KubeContext: flagString(cmd, "context"),
 		Keep:        keep,
 		HostNetwork: hostNetwork,
-		User:        flagUser,
+		User:        flagString(cmd, "user"),
 		PullPolicy:  pullPolicy,
 		Profile:     profile,
-		Env:         flagEnv,
-		CapAdd:      flagCapAdd,
-		Tools:       config.ResolveTools(flagTools),
+		Env:         flagStrings(cmd, "env"),
+		CapAdd:      flagStrings(cmd, "cap-add"),
+		Tools:       config.ResolveTools(flagStrings(cmd, "tools")),
 	}
 
 	ctx, cancel := signalContext()

@@ -37,7 +37,11 @@ By design, debux may expose the target filesystem, process namespace, network na
 
 ## Trust model and operational risks
 
-- Docker debug sessions persist Nix tools and shell history in Debux-managed Docker volumes. Treat those volumes as trusted state and run `debux store clean` if you want to discard installed tools.
-- The installer and self-updater require release checksums. When `cosign` is available and signature assets are present, they also verify `checksums.txt` with GitHub OIDC signatures.
+- Docker debug sessions persist installed tools and shell history in Debux-managed Docker volumes. Treat those volumes as trusted state and run `debux store clean` if you want to discard installed tools.
+- The installer and self-updater require release checksums. When `cosign` is available, they also require and verify `checksums.txt` signatures with GitHub OIDC identity checks (unless checksum-only verification is explicitly requested).
 - The debug image is signed with keyless cosign in release workflows. Verify images before using them in high-trust environments.
-- Kubernetes e2e scripts operate on the current kube-context and delete their test namespace on exit. They refuse arbitrary namespace names unless `DEBUX_E2E_ALLOW_ARBITRARY_NAMESPACE=1` is set.
+- Kubernetes e2e scripts operate on the current kube-context and delete their newly created test namespace on exit. They refuse existing namespaces and arbitrary namespace names unless `DEBUX_E2E_ALLOW_ARBITRARY_NAMESPACE=1` is set. Run them only in an isolated test cluster.
+- Malformed Debux/Docker context configuration fails closed instead of silently selecting a higher-privilege profile or another daemon. Bypassing Debux config requires explicit `DEBUX_CONFIG=/dev/null`.
+- Automatic reuse verifies creation-option metadata. `attach` intentionally keeps the exact existing session's privileges; changed defaults do not reduce an already running container's privileges.
+- In-place debugging and file copying reject pod/host-shared PID namespaces rather than assuming PID 1 is the selected application's root. Copy mode starts new workload/init processes, may share persistent volumes, and is not a filesystem snapshot.
+- Go vulnerabilities and toolbox-image vulnerabilities are separate CI checks. The weekly Toolbox security workflow inventories Wolfi/APK packages with Grype/Syft. Both architectures of the exact publication archive are scanned without exclusions; tools installed later with `dctl` still require separate assessment. See the refresh process in `CONTRIBUTING.md`.

@@ -288,6 +288,7 @@ func debuxEphemeralPod(profile, user, image string) *corev1.Pod {
 				{Name: "DEBUX_DAEMON", Value: "1"},
 				{Name: "DEBUX_SECURITY_PROFILE", Value: profile},
 				{Name: "DEBUX_DEBUG_USER", Value: user},
+				{Name: sessionOptionsEnv, Value: sessionOptionsHash(DebugOpts{Image: image, Profile: profile, User: user}, "")},
 			},
 		},
 		TargetContainerName: "app",

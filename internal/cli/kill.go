@@ -11,8 +11,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var flagKillAll bool
-
 func newKillCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "kill [target]",
@@ -55,8 +53,8 @@ including recent Kubernetes contexts and namespaces from debux history. Use
 	}
 
 	addKubernetesFlags(cmd)
-	cmd.Flags().BoolVar(&flagKillAll, "all", false, "Kill all running debux sessions for the selected runtime")
-	cmd.Flags().BoolVarP(&flagAllNamespaces, "all-namespaces", "A", false, "Kubernetes: include sessions across all namespaces in the picker")
+	cmd.Flags().Bool("all", false, "Kill all running debux sessions for the selected runtime")
+	cmd.Flags().BoolP("all-namespaces", "A", false, "Kubernetes: include sessions across all namespaces in the picker")
 	configureTargetCompletion(cmd)
 
 	return cmd
@@ -69,14 +67,14 @@ func runKill(cmd *cobra.Command, args []string) error {
 	// Determine runtime from args or default to Docker. If Kubernetes-only flags
 	// are present without a target, prefer Kubernetes for --all/interactive kill.
 	rt := "docker"
-	kubernetesFlagsSet := flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig") || flagChanged(cmd, "namespace") || flagAllNamespaces
+	kubernetesFlagsSet := flagChanged(cmd, "context") || flagChanged(cmd, "kubeconfig") || flagChanged(cmd, "namespace") || flagBool(cmd, "all-namespaces")
 	if kubernetesFlagsSet {
 		rt = "kubernetes"
 	}
-	if flagAllNamespaces && flagNamespace != "" {
-		return fmt.Errorf("--all-namespaces cannot be combined with namespace %q", flagNamespace)
+	if flagBool(cmd, "all-namespaces") && flagString(cmd, "namespace") != "" {
+		return fmt.Errorf("--all-namespaces cannot be combined with namespace %q", flagString(cmd, "namespace"))
 	}
-	if flagAllNamespaces && flagKillAll {
+	if flagBool(cmd, "all-namespaces") && flagBool(cmd, "all") {
 		return fmt.Errorf("--all-namespaces is only supported for the interactive kill picker; use --namespace with --all to sweep one namespace")
 	}
 	if len(args) > 0 {
@@ -100,11 +98,11 @@ func runKill(cmd *cobra.Command, args []string) error {
 		}
 		target.Namespace = kubeNamespace
 
-		if flagAllNamespaces && target.Namespace != "" {
+		if flagBool(cmd, "all-namespaces") && target.Namespace != "" {
 			return fmt.Errorf("--all-namespaces cannot be combined with namespace %q", target.Namespace)
 		}
 
-		if flagKillAll {
+		if flagBool(cmd, "all") {
 			// --all kills every session in scope; combining it with a specific
 			// target name would silently ignore the name and kill far more
 			// than the user asked for.
@@ -117,7 +115,7 @@ func runKill(cmd *cobra.Command, args []string) error {
 		// An empty target name (docker:// or k8s://ns/) opens the session
 		// picker scoped to that runtime and namespace.
 		if target.Name == "" {
-			return killInteractive(ctx, cmd, rt, target, kubeContext, target.Namespace, flagAllNamespaces)
+			return killInteractive(ctx, cmd, rt, target, kubeContext, target.Namespace, flagBool(cmd, "all-namespaces"))
 		}
 
 		// Kill specific target
@@ -132,8 +130,8 @@ func runKill(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if flagKillAll {
-		return killAll(ctx, cmd, rt, nil, flagKubeContext, flagNamespace)
+	if flagBool(cmd, "all") {
+		return killAll(ctx, cmd, rt, nil, flagString(cmd, "context"), flagString(cmd, "namespace"))
 	}
 
 	// No target, no --all: show interactive picker across Docker and the
@@ -142,7 +140,7 @@ func runKill(cmd *cobra.Command, args []string) error {
 	if kubernetesFlagsSet {
 		pickerRuntime = "kubernetes"
 	}
-	return killInteractive(ctx, cmd, pickerRuntime, nil, flagKubeContext, flagNamespace, flagAllNamespaces)
+	return killInteractive(ctx, cmd, pickerRuntime, nil, flagString(cmd, "context"), flagString(cmd, "namespace"), flagBool(cmd, "all-namespaces"))
 }
 
 // dockerTarget carries the daemon selection (podman:// vs docker://) through
@@ -188,22 +186,6 @@ func killInteractive(ctx context.Context, cmd *cobra.Command, rt string, dockerT
 }
 
 func killDebugSession(ctx context.Context, cmd *cobra.Command, session runtime.DebugSessionInfo) error {
-	target, err := runtime.ParseTarget(session.Target)
-	if err != nil {
-		return fmt.Errorf("invalid session target %q: %w", session.Target, err)
-	}
-
-	switch target.Runtime {
-	case "docker":
-		return runtime.DockerKill(ctx, target)
-	case "kubernetes":
-		kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
-		kubeContext := target.Context
-		if kubeContext == "" {
-			kubeContext = session.Context
-		}
-		return runtime.KubernetesKill(ctx, target, kubeconfig, kubeContext)
-	default:
-		return fmt.Errorf("kill is not supported for runtime %q", target.Runtime)
-	}
+	kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
+	return runtime.KillDebugSession(ctx, session, kubeconfig)
 }

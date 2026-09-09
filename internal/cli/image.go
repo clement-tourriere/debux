@@ -40,10 +40,10 @@ func runImage(cmd *cobra.Command, args []string) error {
 	}
 
 	opts := runtime.ImageOpts{
-		DebugImage: resolveImage(flagImage),
-		Privileged: flagPrivileged,
-		User:       flagUser,
-		AutoRemove: flagRemove,
+		DebugImage: resolveImage(flagString(cmd, "image")),
+		Privileged: flagBool(cmd, "privileged"),
+		User:       flagString(cmd, "user"),
+		AutoRemove: flagBool(cmd, "rm"),
 		Command:    command,
 	}
 

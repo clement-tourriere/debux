@@ -1,7 +1,7 @@
 # debux
 
 <p align="center">
-  <strong>Debug any container — even distroless, scratch, and minimal images — with a rich Nix-powered shell.</strong>
+  <strong>Debug any container — even distroless, scratch, and minimal images — with a rich, ready-to-use debug shell.</strong>
 </p>
 
 <p align="center">
@@ -42,8 +42,8 @@ If `debux` saves you a debugging session, a GitHub star helps other Docker and K
 - **Works when `docker exec` is useless** — distroless, scratch, Alpine, and tiny production images.
 - **Debug even stopped containers** — debux falls back to the target's filesystem, including its writable layer, when the container is exited or crash-looping.
 - **Docker + Kubernetes** — same workflow locally and in clusters, plus Docker Compose, Podman, and Kubernetes nodes.
-- **Nix-powered shell** — zsh plus tools like `curl`, `strace`, `tcpdump`, `vim`, `jq`, `dig`, `nmap`, and more.
-- **Install tools on demand** — `dctl install <pkg>` pulls from nixpkgs during a debug session; `--tools` preloads a set at startup.
+- **Ready-to-use toolbox** — zsh plus tools like `curl`, `strace`, `tcpdump`, `vim`, `jq`, `dig`, `nmap`, and more.
+- **Install tools on demand** — `dctl install <pkg>` uses mise behind the scenes during a debug session; `--tools` preloads a set at startup.
 - **Target-aware shell** — jump into the target root, inspect target processes, reuse the target network namespace, and run the target's own binaries via chroot when the toolbox lacks them.
 - **Forward ports and copy files** — reach and pull files from any target, even containers started without `-p` and distroless pods where `kubectl cp` fails.
 - **Open source** — no paid Docker Desktop or OrbStack subscription required.
@@ -60,7 +60,7 @@ If `debux` saves you a debugging session, a GitHub star helps other Docker and K
 | Usual option | Where it falls short | Debux approach |
 |---|---|---|
 | `docker exec` | Requires tools and a shell inside the target image, and the container must be running. | Starts a separate toolbox and attaches it to the target — and falls back to the filesystem (including the writable layer) for stopped or crash-looping containers. |
-| `kubectl debug` | Kubernetes-only, and you still need to curate a debug image. | Provides one Docker, Compose, Podman, and Kubernetes workflow with a Nix toolbox. |
+| `kubectl debug` | Kubernetes-only, and you still need to curate a debug image. | Provides one Docker, Compose, Podman, and Kubernetes workflow with one preinstalled toolbox. |
 | `kubectl cp` | Needs `tar` inside the target, so it fails on distroless/scratch. | Streams `debux cp` through the toolbox, so copies work on shell-less images. |
 | Rebuilding the app image | Slow during incidents and changes the artifact you are debugging. | Leaves the application image untouched; the toolbox still runs the target's own binaries via chroot when needed. |
 | Shipping debug tools in prod | Increases image size and attack surface. | Keeps production images minimal and installs tools on demand. |
@@ -101,8 +101,9 @@ cd debux
 
 mise run install         # Build and copy debux to ~/.local/bin
 mise run image-build     # Build ghcr.io/clement-tourriere/debux:latest locally
-# For Kubernetes after image changes:
-# docker push ghcr.io/clement-tourriere/debux:latest
+./bin/debux docker:// --pull-policy Never  # Test the local image, not a registry pull
+# For Kubernetes, load the image into an isolated kind cluster, or publish a
+# tested custom image under your own registry namespace and pass --image.
 ```
 
 ### Docker
@@ -209,7 +210,7 @@ so voluntary node consolidation leaves it alone. Forceful disruption — spot
 interruptions, node failure, manual drains — still wins.
 
 ```bash
-# Keep the copy pod when the session ends; it self-destructs after 48h
+# Keep the copy pod when the session ends; its workloads stop after 48h
 debux k8s://my-namespace/my-pod --copy --keep --ttl=48h
 
 # See currently reattachable sessions, then pick one from a searchable picker.
@@ -250,7 +251,7 @@ debux k8s://my-namespace/my-pod/my-container \
 
 ### Debug a Kubernetes node
 
-Like `kubectl debug node/`, but with the Nix toolbox. `debux node` schedules a
+Like `kubectl debug node/`, but with the Debux toolbox. `debux node` schedules a
 host-namespace toolbox pod on the node (`hostPID`/`hostNetwork`/`hostIPC`),
 mounts the node root filesystem at `/host` (`$DEBUX_TARGET_ROOT`), and tolerates
 taints so cordoned or NotReady nodes can still be debugged. Node binaries like
@@ -272,7 +273,7 @@ debux node worker-1 --profile=sysadmin --keep
 
 `debux` does **not** modify your application image.
 
-1. It starts a debug container using the debux Nix toolbox image.
+1. It starts a debug container using the debux toolbox image.
 2. It joins the target's useful namespaces: network and process namespaces where supported.
 3. It exposes the target filesystem at:
 
@@ -298,16 +299,19 @@ strace -p 1                         # trace target PID 1, may require more privi
 | Category | Tools |
 |---|---|
 | Network | `curl`, `wget`, `dig`, `nmap`, `tcpdump`, `nettools`, `iproute2` |
-| Debugging | `strace`, `ltrace`, `htop`, `procps` |
+| Debugging | `strace`, `ltrace`, `gdb`, `htop`, `procps` |
 | Editors | `vim` |
+| Security | `ggshield` |
 | Text/files | `jq`, `less`, `grep`, `awk`, `diff`, `find`, `file`, `tree` |
-| Other | `git`, `openssh`, `zsh` |
+| Other | `git`, `openssh`, `zsh`, `tmux` |
+| Build support | C/C++, `make`, `cmake`, `ninja`, `pkg-config`, autotools and common development headers |
 
 ### Install more tools with `dctl`
 
 ```bash
-dctl search postgres
-dctl install postgresql
+dctl install --help
+dctl search yq
+dctl install yq
 dctl list
 ```
 
@@ -322,7 +326,34 @@ python3: command not found
   Install now? [y/N]
 ```
 
-Packages are backed by [nixpkgs](https://search.nixos.org/packages).
+Additional tools are managed by [mise](https://mise.jdx.dev/registry.html), without
+activation or project setup. Familiar aliases (`python3`, `nodejs`, `rg`) still
+work. Pin a version with `dctl install yq@4.53.6`. Repeating `dctl install yq`
+reuses the saved pinned installation, without looking up a newer version.
+`dctl update` refreshes metadata; `dctl install yq@latest` explicitly upgrades.
+`ggshield` is preinstalled from Wolfi's APK repository on both architectures;
+version overrides such as `dctl install ggshield@1.54.0` use its Python package
+rather than Aqua's platform-limited binary. Removing an override restores the
+preinstalled command. Use `dctl help install` or `dctl install --help` for usage.
+
+**Upgrading from the Nix toolbox:** the new image contains no Nix runtime or
+fallback. Reinstall additional tools once with `dctl` or `--tools`; old Nix tools
+and history remain in their original volumes, but are not imported. Changing the
+image also selects a new tool/history store. Keep the old image explicitly with
+`--image` if you still need access to that state.
+
+Tools use prebuilt binaries where their backend provides them, or compile on
+demand. The image includes a C/C++ toolchain and common development libraries,
+so `dctl install redis postgresql` works without root or a custom image. The
+compiled tools, pinned configuration and caches are saved in the Docker tool
+volume: a matching fresh debug container can reuse them **without a network or
+rebuild**. Installing PostgreSQL does not initialize or start a database; run
+`initdb` explicitly if you need a server.
+
+The package catalogue is still mise's, not nixpkgs: Nix expressions and arbitrary
+OS packages are not interchangeable, and uncommon backends can need additional
+prerequisites. Debux never silently elevates privileges or switches package
+managers to make an install succeed.
 
 ### Target-binary fallback
 
@@ -335,7 +366,7 @@ or node binaries like `crictl`) without installing anything.
 ### Preload tools at session start
 
 ```bash
-# Install specific nixpkgs packages before the shell opens
+# Install tools before the shell opens
 debux my-app --tools py-spy --tools gdb
 
 # Or reference a named tool set from the config file (see Configuration)
@@ -344,11 +375,11 @@ debux k8s://prod/api --tools python
 
 Persistence model:
 
-- **Docker:** installed tools and shell history live in image-specific Nix volumes, so they survive across Docker sessions without breaking rebuilt debug images.
+- **Docker:** installed tools and shell history live in image- and security-specific volumes. Matching sessions keep their tools; changing image, user, profile, privilege or capabilities selects a separate store. Old Nix volumes are left untouched, not imported into the new image.
 - **Kubernetes:** ephemeral containers cannot add arbitrary new volumes, so debux cannot mount your local Docker toolbox/history into pods. Reusing the same debug container on the same pod keeps its tools and history; a fresh debug container starts from the debug image.
 - **Cross-pod Kubernetes toolbox:** bake common tools into a custom debug image and pass it with `--image`, or rebuild/push the default debug image and use `--pull-policy=Always`.
-- **Restricted Kubernetes profile:** `dctl install` works with the current debug image. If you see Nix lock-file permission errors, rebuild/push the image and start a fresh session.
-- **Pinned runtime installs:** `dctl install` uses the same pinned nixpkgs revision as the debug image unless you override `NIXPKGS_REF` in a custom image.
+- **Restricted Kubernetes profile:** supported tools install as UID 65534 without extra capabilities. The image also supports root; other UIDs may need a custom image with appropriate store ownership.
+- **Security:** system tools stay outside the writable store, and Debux does not activate target-controlled mise configuration. Later tool downloads need their own vulnerability review; see [toolbox image security](docs/image-security.md).
 
 ## Usage
 
@@ -405,7 +436,7 @@ Use `debux completion <bash|zsh|fish|powershell>` for other shells.
 | `--read-only-volumes` | Mount target volumes read-only in the debug container to reduce accidental writes. This is not a security boundary if `/proc/1/root` is accessible. |
 | `--env <KEY=VALUE>` | Inject an extra environment variable into the debug container (repeatable, both runtimes). |
 | `--cap-add <CAP>` | Add a Linux capability to the debug container (repeatable, both runtimes). |
-| `--tools <name-or-packages>` | Auto-install a config tool set or nixpkgs packages at session start (repeatable). |
+| `--tools <name-or-packages>` | Auto-install a config tool set or tools (optionally `name@version`) at session start (repeatable). |
 | `--pull-policy <policy>` | Debug image pull policy for Docker/Kubernetes: `Always`, `IfNotPresent`, `Never`. |
 | `--privileged` | Run privileged (Docker); Kubernetes alias for `--profile=sysadmin`. |
 | `--profile <profile>` | Kubernetes security profile: `general`, `baseline`, `restricted`, `netadmin`, `sysadmin`. |
@@ -492,6 +523,11 @@ debux cp ./debug-tool k8s://prod/api-pod:/tmp
 debux cp compose://web:/usr/share/nginx/html ./html
 ```
 
+Kubernetes `cp` honors the configured `profile` and `image` (or explicit
+`--profile`, `--image`, `--user`, `--pull-policy`). It never silently upgrades a
+restricted profile to gain filesystem access; insufficient access is an error.
+These creation flags are Kubernetes-only for `cp`.
+
 ### Scripting and CI
 
 Pass a command after `--` to run it non-interactively in the toolbox instead of
@@ -504,13 +540,26 @@ debux docker://my-app -- curl -fsS localhost/health
 debux k8s://prod/api-pod/app -- ps aux
 
 # Use it as a CI gate
-debux k8s://prod/api-pod/app -- sh -c 'test -f /app/ready' || exit 1
+debux k8s://prod/api-pod/app -- sh -c 'test -f "$DEBUX_TARGET_ROOT/app/ready"' || exit 1
 ```
 
 Pair it with `debux doctor --strict --json` to verify in CI that debugging is
 even permitted before an incident (see below).
 
 ### Manage debux sessions and stores
+
+Automatic reuse requires matching creation options: image, privilege/profile,
+user, environment, tools, capabilities, mount sharing/permissions, pull policy,
+and target generation. Changed options create a new session; `--pull-policy=Always`
+always creates a fresh one. Legacy sessions without compatibility metadata are
+not reused automatically but remain available via `attach`.
+
+`attach` and active-session pickers address the exact selected debug container,
+not the first session with the same application target. `attach` does not accept
+creation flags; use `exec` to request different settings. For multiple sessions,
+use the picker or `debux attach TARGET --debug-container NAME`. `debux list` emits
+identity-pinned attach commands. Attaching intentionally retains the session's
+existing privileges, even if your config defaults have changed.
 
 ```bash
 # List and reattach to active debux sessions (attach opens a searchable picker)
@@ -536,7 +585,7 @@ debux kill --all
 debux kill k8s://my-namespace/ --all
 debux kill --all --namespace my-namespace
 
-# Inspect or clean persistent Docker Nix stores
+# Inspect or clean persistent Docker tool stores
 debux store info
 debux store clean
 
@@ -578,23 +627,35 @@ debux docs --open
 
 `debux doctor` runs local diagnostics. With no target it checks the debux
 binary, Docker, and the current Kubernetes context. With a target it focuses on
-that runtime and, for Kubernetes, performs a per-profile RBAC preflight — so you
+that runtime and, for Kubernetes, performs an operation-specific RBAC preflight — so you
 know **before** an incident whether debugging is allowed.
 
 ```bash
-# Check the selected profile's required permissions against a real pod
+# Check ephemeral-debug permissions and report the chosen Linux profile
 debux doctor k8s://prod/api-pod/app --profile=restricted
 
 # Machine-readable output for CI, non-zero exit on any failing check
 debux doctor k8s://prod/api-pod/app --json --strict
+
+# Copy-mode pod creation/deletion permissions (other modes: pod, node, forward)
+debux doctor --context prod --namespace prod --mode copy --strict
 ```
+
+Profiles change Linux privileges, not API permissions. See the generated
+[RBAC reference](docs/rbac.md) and [complete CLI reference](docs/reference.md).
 
 ## Configuration
 
 debux reads optional defaults from `$XDG_CONFIG_HOME/debux/config.yaml` (or the
 path in `$DEBUX_CONFIG`). A missing file is fine, and flags always override the
 config. Supported keys are `image`, `profile`, `pull-policy`, `terminal`, and
-`tools` (a map of set name → list of nixpkgs packages).
+`tools` (a map of set name → list of tool names, optionally `name@version`). If `XDG_CONFIG_HOME` is
+unset, Debux uses the OS user-config directory.
+
+Malformed YAML, unknown keys, and multiple documents fail operational commands
+instead of discarding a restricted profile. Fix the file, or explicitly bypass
+it with `DEBUX_CONFIG=/dev/null debux ...`. `--env DEBUX_*` is reserved for internal
+session metadata and is rejected.
 
 ```yaml
 image: ghcr.io/clement-tourriere/debux:latest
@@ -613,7 +674,7 @@ start:
 # Auto-installs python3, py-spy, and gdb before the shell opens
 debux k8s://prod/api --tools python
 
-# --tools also accepts literal nixpkgs packages
+# --tools also accepts literal tool names
 debux my-app --tools socat --tools iperf3
 ```
 
@@ -643,11 +704,18 @@ It does **not** automatically grant:
 
 `--no-volumes` only disables direct volume mounts into the debug container, and `--read-only-volumes` makes those direct mounts read-only. Neither is a security boundary if the debug container can still access the target via `/proc/1/root`.
 
-Docker mode persists Nix tools and shell history in Debux-managed Docker volumes. Treat those volumes as trusted debug-session state: tools installed with `dctl` can affect later sessions using the same debug image, and `debux store clean` removes that state.
+Docker mode persists installed tools and shell history in Debux-managed Docker volumes. Treat those volumes as trusted debug-session state: tools installed with `dctl` can affect later sessions using the same debug image and security identity, and `debux store clean` removes that state.
 
 RBAC implication: granting a user the ability to update `pods/ephemeralcontainers` and create `pods/exec` is effectively granting the ability to run code inside selected pods. Treat it like production shell access.
 
-Minimal namespace-scoped RBAC for ephemeral-container debugging:
+In-place debugging and `cp` reject `shareProcessNamespace` and `hostPID` pods:
+PID 1 is not reliably the selected application's filesystem. For shared-PID pods,
+consider `--copy` only after evaluating workload side effects. Copy mode starts
+new application/init processes and can share PVCs; it is **not a snapshot**.
+Host-PID pods are also rejected in copy mode; use `debux node` for explicit host access.
+
+Minimal namespace-scoped RBAC for ephemeral-container debugging (bind this Role
+to the intended user/group; copy/pod/node/forward roles are in [docs/rbac.md](docs/rbac.md)):
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -658,10 +726,10 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "create"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["create", "get"]
   - apiGroups: [""]
     resources: ["pods/ephemeralcontainers"]
     verbs: ["update"]
@@ -696,13 +764,12 @@ Example custom team toolbox:
 
 ```Dockerfile
 FROM ghcr.io/clement-tourriere/debux:latest
-ARG NIXPKGS_REF=github:NixOS/nixpkgs/1c3fe55ad329cbcb28471bb30f05c9827f724c76
-RUN NIX_CONFIG="experimental-features = nix-command flakes" \
-    nix profile add --profile /nix/var/debux-profile \
-      "${NIXPKGS_REF}#postgresql" \
-      "${NIXPKGS_REF}#redis" \
-      "${NIXPKGS_REF}#kubectl" \
-      "${NIXPKGS_REF}#ripgrep"
+# System packages are baked as root.
+RUN apk add --no-cache postgresql-17-client
+# Bake additional tools as the supported non-root UID, so both profiles work.
+USER 65534:0
+RUN dctl install kubectl ripgrep
+USER 0
 ```
 
 ```bash
@@ -713,6 +780,12 @@ debux k8s://prod/api --image ghcr.io/my-org/debux-toolbox:latest
 ```
 
 ## Development
+
+Go **1.26.8+** is required (also pinned in `mise.toml`). CI exercises the candidate
+CLI **and locally built toolbox image** in Docker and kind on PRs. A manual E2E
+image override separately checks compatibility with published images. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for shell/browser tests and toolbox refresh policy.
+
 
 ```bash
 mise run build          # Build CLI
@@ -732,13 +805,17 @@ mise run release:push   # push main + tags to trigger GitHub release
 mise run e2e:docker     # run Docker end-to-end smoke tests
 mise run e2e:kubernetes # run Kubernetes e2e against the current kube-context
 mise run docs           # serve docs at http://localhost:8000
+mise run docs:generate  # refresh generated CLI/RBAC reference
+mise run docs:check     # reference drift and release-script regression checks
+mise run docs:test      # Playwright + axe checks (npm/browser install required)
+mise run image:scan     # scan a locally built debux:security image
 mise run docs:open      # open local docs in your browser
 
 debux docs              # print documentation URL
 debux docs --open       # open documentation in your browser
 ```
 
-The repository uses [hk](https://hk.jdx.dev/) for git hooks, [pkl](https://pkl-lang.org/) for hk configuration, and [Commitizen](https://commitizen-tools.github.io/commitizen/) for release bumps. Commitizen is installed by mise via `pipx:commitizen`.
+The repository uses [hk](https://hk.jdx.dev/) for git hooks, [pkl](https://pkl-lang.org/) for hk configuration, and [Commitizen](https://commitizen-tools.github.io/commitizen/) for release bumps. Mise pins `uv`; Python regression scripts declare Python 3.11+ through inline PEP 723 metadata, and release bumps use `uvx --python 3.11 --from commitizen==4.13.7 cz`. No global Python or Commitizen installation is required for those steps.
 
 `mise run e2e:kubernetes` creates and deletes a namespace in your current kube-context. By default it only manages namespaces matching `debux-e2e-*`; set `DEBUX_E2E_ALLOW_ARBITRARY_NAMESPACE=1` only when you intentionally want to override that guard.
 
@@ -810,6 +887,30 @@ If this is the first deployment for a fork or new repository, enable **GitHub Pa
 
 ## Troubleshooting
 
+### Zellij panics at `current_dir().unwrap()` under `/proc/1/root`
+
+Linux can report a working directory entered through another container's
+`/proc/<pid>/root` as `(unreachable)`: it is outside the debugger's own filesystem
+root. The shell can retain a logical `$PWD`, while `getcwd()`-based programs fail.
+Zellij 0.45.1 unwraps that error when starting its server. Its generic socket
+permission hint does not fix this particular failure.
+
+Start the server from the debugger's own root, setting the panes' directory
+explicitly:
+
+```bash
+pane_dir="$PWD"
+cd /
+zellij options --default-cwd "$pane_dir" --default-shell /bin/zsh
+```
+
+This does not chroot Zellij or require extra capabilities. Use absolute paths
+under `$DEBUX_TARGET_ROOT` to inspect target files. Other tools that need
+`getcwd()` may likewise need to start from `/` and receive an absolute target
+path. Stray `997;2n` text after the crash is a terminal theme-status reply, not a
+package-installation error; clear pending input with Ctrl+C. If theme reports
+continue, `printf '\033[?2031l'` disables that terminal notification subscription.
+
 ### Docker: debux talks to the wrong daemon (colima, Docker Desktop, remote)
 
 debux honors the same daemon selection as the docker CLI: `DOCKER_HOST` first,
@@ -829,24 +930,28 @@ and set `DOCKER_HOST` instead.
 
 ### Kubernetes: `openat etc/passwd: path escapes from parent`
 
-Your cluster runtime rejected debug images with NixOS-style absolute symlinks in `/etc/passwd` or `/etc/group`. Rebuild and push the latest debux image, then force Kubernetes to pull it:
+With older Nix-based images, your cluster runtime may reject absolute symlinks in
+`/etc/passwd` or `/etc/group`. Upgrade to the current release, then create a new
+container with its matching versioned image:
 
 ```bash
-mise run image-build
-docker push ghcr.io/clement-tourriere/debux:latest
-
+debux update
 debux k8s://my-namespace/my-pod --fresh --pull-policy=Always
 ```
 
 ### Docker: `exec: "/bin/sh": stat /bin/sh: no such file or directory`
 
-This is usually a stale Nix store volume mounted over a rebuilt debug image. Recent debux versions use image-specific volumes. Upgrade and clean old stores if needed:
+With older Nix-based images, this is usually a stale store volume mounted over a
+rebuilt image. Current images keep system binaries outside mutable tool storage.
+Upgrade and start fresh; deleting existing tools/history is not required:
 
 ```bash
-mise run install
-debux store clean
-debux docker://my-container --fresh
+debux update
+debux docker://my-container --fresh --pull-policy=Always
 ```
+
+`debux store clean` is an optional, destructive reset of **all unused Debux
+stores**, not just old Nix stores. It permanently removes their tools and history.
 
 ### Ephemeral containers denied
 
@@ -862,11 +967,12 @@ debux k8s://my-namespace/my-pod --profile=baseline
 
 ### Kubernetes restricted: `dctl install` says permission denied
 
-The pod likely pulled an older debug image whose Nix store was root-only. Rebuild and push the current image, then force Kubernetes to pull it and create a fresh debug container:
+The pod may have pulled an older image with a root-only store. The current image
+supports `dctl` as root and UID 65534. Upgrade to the current release, then force
+Kubernetes to pull its image and create a fresh debug container:
 
 ```bash
-mise run image-build
-docker push ghcr.io/clement-tourriere/debux:latest
+debux update
 
 debux k8s://my-namespace/my-pod \
   --profile=restricted \

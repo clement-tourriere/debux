@@ -128,7 +128,7 @@ type DebugOpts struct {
 	Command         []string      // optional command to run instead of opening an interactive shell
 	Env             []string      // extra KEY=VALUE environment for the debug container
 	CapAdd          []string      // extra Linux capabilities for the debug container
-	Tools           []string      // nixpkgs packages auto-installed at session start (dctl)
+	Tools           []string      // tools auto-installed at session start (dctl)
 }
 
 // PodOpts are options for creating a standalone debug pod.
@@ -144,7 +144,7 @@ type PodOpts struct {
 	Profile     string   // security profile (general, baseline, restricted, netadmin, sysadmin)
 	Env         []string // extra KEY=VALUE environment for the debug container
 	CapAdd      []string // extra Linux capabilities for the debug container
-	Tools       []string // nixpkgs packages auto-installed at session start (dctl)
+	Tools       []string // tools auto-installed at session start (dctl)
 }
 
 // ImageOpts are options for debugging a Docker image directly.
@@ -156,13 +156,12 @@ type ImageOpts struct {
 	Command    []string // optional one-shot command instead of an interactive shell
 }
 
-// toolNamePattern matches a single nixpkgs package name or flake reference
-// fragment. It is intentionally restrictive so values injected into the debug
-// container's shell cannot carry shell metacharacters.
-var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9._+/#:\-]+$`)
+// Tool identifiers may include a backend and @version. Retain # for explicitly
+// selected legacy images, but reject flags and shell metacharacters.
+var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+/#:@\-]*$`)
 
 // ValidateTools checks that every requested tool name only contains characters
-// safe for both the shell and nixpkgs/flake references.
+// safe to pass as arguments to dctl (including legacy image references).
 func ValidateTools(tools []string) error {
 	for _, t := range tools {
 		t = strings.TrimSpace(t)
@@ -170,7 +169,7 @@ func ValidateTools(tools []string) error {
 			return fmt.Errorf("invalid --tools: empty value")
 		}
 		if !toolNamePattern.MatchString(t) {
-			return fmt.Errorf("invalid --tools %q: only letters, digits, and ._+/#:- are allowed", t)
+			return fmt.Errorf("invalid --tools %q: must start with a letter/digit and contain only letters, digits, or ._+/#:@-", t)
 		}
 	}
 	return nil
@@ -181,6 +180,9 @@ func ValidateTools(tools []string) error {
 // embedding them so shell scripts that consume DEBUX_TOOLS cannot be tricked
 // into executing injected commands.
 func debugExtraEnv(env, tools []string) ([]string, error) {
+	if err := ValidateEnvVars(env); err != nil {
+		return nil, err
+	}
 	if err := ValidateTools(tools); err != nil {
 		return nil, err
 	}
@@ -211,6 +213,12 @@ func ValidateEnvVars(env []string) error {
 		key, _, ok := strings.Cut(entry, "=")
 		if !ok || key == "" {
 			return fmt.Errorf("invalid --env %q: expected KEY=VALUE", entry)
+		}
+		if strings.HasPrefix(key, "DEBUX_") {
+			return fmt.Errorf("--env key %q is reserved for debux session metadata", key)
+		}
+		if strings.ContainsRune(entry, '\x00') {
+			return fmt.Errorf("--env key %q contains a NUL value", key)
 		}
 		for i, r := range key {
 			validStart := r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')

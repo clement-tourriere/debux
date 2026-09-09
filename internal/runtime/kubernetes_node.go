@@ -158,8 +158,7 @@ func KubernetesNode(ctx context.Context, nodeName string, opts PodOpts) error {
 	if !opts.Keep {
 		defer func() {
 			statusf("Deleting node debug pod %s...\n", created.Name)
-			_ = clientset.CoreV1().Pods(opts.Namespace).Delete(
-				context.WithoutCancel(ctx), created.Name, metav1.DeleteOptions{})
+			cleanupKubernetesPod(ctx, clientset, created)
 		}()
 	}
 

@@ -88,8 +88,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 
 	// Parse --ttl before any pickers or cluster roundtrips so a typo fails fast.
 	var copyTTL time.Duration
-	if flagCopy {
-		ttl, err := parseCopyPodTTL(flagTTL)
+	if flagBool(cmd, "copy") {
+		ttl, err := parseCopyPodTTL(flagString(cmd, "ttl"))
 		if err != nil {
 			return err
 		}
@@ -129,7 +129,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 
 	// In copy mode the runtime resolves the container from the pod spec, so a
 	// crash-looping pod (no running containers) is still a valid target.
-	if target.Runtime == "kubernetes" && target.Container == "" && !flagCopy {
+	if target.Runtime == "kubernetes" && target.Container == "" && !flagBool(cmd, "copy") {
 		containerName, err := resolveK8sContainerName(ctx, cmd, target, kubeContext)
 		if err != nil {
 			return err
@@ -146,34 +146,34 @@ func runExec(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	pullPolicy, err := resolvePullPolicy(configuredPullPolicy(flagPullPolicy))
+	pullPolicy, err := resolvePullPolicy(configuredPullPolicy(flagString(cmd, "pull-policy")))
 	if err != nil {
 		return err
 	}
 
-	if err := runtime.ValidateEnvVars(flagEnv); err != nil {
+	if err := runtime.ValidateEnvVars(flagStrings(cmd, "env")); err != nil {
 		return err
 	}
-	if err := runtime.ValidateTools(config.ResolveTools(flagTools)); err != nil {
+	if err := runtime.ValidateTools(config.ResolveTools(flagStrings(cmd, "tools"))); err != nil {
 		return err
 	}
 
 	opts := runtime.DebugOpts{
-		Image:           resolveImage(flagImage),
-		Privileged:      flagPrivileged,
-		User:            flagUser,
-		ShareVolumes:    !flagNoVolumes,
-		ReadOnlyVolumes: flagReadOnlyVolumes,
+		Image:           resolveImage(flagString(cmd, "image")),
+		Privileged:      flagBool(cmd, "privileged"),
+		User:            flagString(cmd, "user"),
+		ShareVolumes:    !flagBool(cmd, "no-volumes"),
+		ReadOnlyVolumes: flagBool(cmd, "read-only-volumes"),
 		PullPolicy:      pullPolicy,
-		Fresh:           flagFresh,
-		Copy:            flagCopy,
-		Keep:            flagKeep,
+		Fresh:           flagBool(cmd, "fresh"),
+		Copy:            flagBool(cmd, "copy"),
+		Keep:            flagBool(cmd, "keep"),
 		TTL:             copyTTL,
 		Profile:         profile,
 		Command:         command,
-		Env:             flagEnv,
-		CapAdd:          flagCapAdd,
-		Tools:           config.ResolveTools(flagTools),
+		Env:             flagStrings(cmd, "env"),
+		CapAdd:          flagStrings(cmd, "cap-add"),
+		Tools:           config.ResolveTools(flagStrings(cmd, "tools")),
 	}
 
 	recordDebugHistory(cmd, target, opts)
@@ -270,15 +270,15 @@ func resolveKubeContext(cmd *cobra.Command, targetContext string) (string, error
 	if !flagChanged(cmd, "context") {
 		return targetContext, nil
 	}
-	if targetContext != "" && targetContext != flagKubeContext {
-		return "", fmt.Errorf("conflicting Kubernetes contexts: target uses %q but --context=%q", targetContext, flagKubeContext)
+	if targetContext != "" && targetContext != flagString(cmd, "context") {
+		return "", fmt.Errorf("conflicting Kubernetes contexts: target uses %q but --context=%q", targetContext, flagString(cmd, "context"))
 	}
-	return flagKubeContext, nil
+	return flagString(cmd, "context"), nil
 }
 
 func validateExecFlags(cmd *cobra.Command, targetRuntime string) error {
 	if targetRuntime == "kubernetes" {
-		if ((flagChanged(cmd, "keep") && flagKeep) || flagChanged(cmd, "ttl")) && !flagCopy {
+		if ((flagChanged(cmd, "keep") && flagBool(cmd, "keep")) || flagChanged(cmd, "ttl")) && !flagBool(cmd, "copy") {
 			return fmt.Errorf("--keep and --ttl are only supported with --copy: ephemeral debug containers live inside the target pod and cannot outlive it")
 		}
 		return nil
@@ -291,7 +291,7 @@ func validateExecFlags(cmd *cobra.Command, targetRuntime string) error {
 		}
 		// An explicit --copy=false / --keep=false is a no-op, not a
 		// Kubernetes request; don't fail a Docker target over it.
-		if (name == "copy" && !flagCopy) || (name == "keep" && !flagKeep) {
+		if (name == "copy" && !flagBool(cmd, "copy")) || (name == "keep" && !flagBool(cmd, "keep")) {
 			continue
 		}
 		invalid = append(invalid, "--"+name)

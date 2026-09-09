@@ -19,6 +19,7 @@ type DebugSessionInfo struct {
 	Namespace       string
 	TargetContainer string
 	DebugName       string
+	ID              string // immutable Docker container ID or Kubernetes pod UID
 	Source          string
 	Image           string
 	User            string

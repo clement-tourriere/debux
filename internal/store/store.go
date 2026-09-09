@@ -2,10 +2,12 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/clement-tourriere/debux/internal/dockerclient"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 )
 
@@ -19,6 +21,27 @@ const (
 type VolumeSet struct {
 	NixStore string
 	NixVar   string
+	Data     string
+}
+
+// ToolVolumesForImage separates mutable tools from the immutable system image,
+// and separates users/security profiles so a restricted store is never loaded
+// into a more privileged session. Existing Nix volumes are left untouched.
+func ToolVolumesForImage(imageID, scope string) VolumeSet {
+	return VolumeSet{Data: "debux-tools-" + imageIDSuffix(imageID) + "-" + imageIDSuffix(scope)}
+}
+
+// Mounts supports both current images and explicitly selected legacy images.
+func (v VolumeSet) Mounts() []mount.Mount {
+	var out []mount.Mount
+	for _, item := range []struct{ source, target string }{
+		{v.NixStore, "/nix/store"}, {v.NixVar, "/nix/var"}, {v.Data, "/var/lib/debux"},
+	} {
+		if item.source != "" {
+			out = append(out, mount.Mount{Type: mount.TypeVolume, Source: item.source, Target: item.target})
+		}
+	}
+	return out
 }
 
 // Volumes returns the legacy volume names managed by debux.
@@ -49,13 +72,13 @@ func imageIDSuffix(imageID string) string {
 	return imageID
 }
 
-// EnsureVolumes creates the persistent Nix volumes if they don't exist.
+// EnsureVolumes creates the persistent tool volumes if they don't exist.
 func EnsureVolumes(ctx context.Context, cli *client.Client, volumes VolumeSet) error {
-	if err := ensureVolume(ctx, cli, volumes.NixStore, "nix-store"); err != nil {
-		return err
-	}
-	if err := ensureVolume(ctx, cli, volumes.NixVar, "nix-var"); err != nil {
-		return err
+	for _, m := range volumes.Mounts() {
+		kind := strings.ReplaceAll(strings.TrimPrefix(m.Target, "/"), "/", "-")
+		if err := ensureVolume(ctx, cli, m.Source, kind); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -99,12 +122,14 @@ func Clean(ctx context.Context) error {
 		return nil
 	}
 
+	var failures []error
 	var kept []string
 	for _, v := range list.Items {
 		if _, err := cli.VolumeRemove(ctx, v.Name, client.VolumeRemoveOptions{Force: true}); err != nil {
 			// Keep going: a volume mounted by a live debug session must not
 			// abort cleanup of the others.
 			fmt.Printf("Warning: could not remove %s: %v\n", v.Name, err)
+			failures = append(failures, fmt.Errorf("removing volume %s: %w", v.Name, err))
 			kept = append(kept, v.Name)
 			continue
 		}
@@ -113,10 +138,10 @@ func Clean(ctx context.Context) error {
 	if len(kept) > 0 {
 		fmt.Printf("Kept %d volume(s) still in use (%s); close their debug sessions and rerun.\n", len(kept), strings.Join(kept, ", "))
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
-// Info prints information about the persistent Nix volumes.
+// Info prints information about persistent tool volumes, including legacy stores.
 func Info(ctx context.Context) error {
 	cli, err := dockerclient.New()
 	if err != nil {

@@ -1,18 +1,11 @@
 package runtime
 
 import (
-	"archive/tar"
-	"bufio"
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"fmt"
-	"io"
-	"os"
 	"sort"
 	"strings"
-	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
 
@@ -20,11 +13,9 @@ import (
 	"github.com/clement-tourriere/debux/internal/entrypoint"
 	dbximage "github.com/clement-tourriere/debux/internal/image"
 	"github.com/clement-tourriere/debux/internal/store"
-	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
-	"github.com/moby/term"
 )
 
 const (
@@ -173,6 +164,7 @@ func dockerSessionFromSidecar(c container.Summary, scheme string) (DebugSessionI
 		Target:    scheme + "://" + targetName,
 		Name:      targetName,
 		DebugName: debugName,
+		ID:        c.ID,
 		Source:    c.Labels[dockerLabelTargetImage],
 		Image:     image,
 		User:      c.Labels[dockerLabelDebugUser],
@@ -266,6 +258,7 @@ func DockerKillAll(ctx context.Context, target *Target) error {
 	}
 
 	killed := 0
+	var failures []error
 	for _, c := range containers {
 		if c.State != "running" || !isDebuxDockerSidecar(c) {
 			continue
@@ -273,18 +266,19 @@ func DockerKillAll(ctx context.Context, target *Target) error {
 		name := dockerContainerPrimaryName(c)
 		if _, err := cli.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true}); err != nil {
 			statusf("Warning: failed to kill %s: %v\n", name, err)
+			failures = append(failures, fmt.Errorf("removing %s: %w", name, err))
 			continue
 		}
 		statusf("Killed %s\n", name)
 		killed++
 	}
 
-	if killed == 0 {
+	if killed == 0 && len(failures) == 0 {
 		statusln("No running debux sessions found")
 	} else {
 		statusf("Killed %d debug session(s)\n", killed)
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 func listDockerContainers(ctx context.Context, cli *client.Client) ([]container.Summary, error) {
@@ -328,6 +322,9 @@ func shortImageID(id string) string {
 func isDebuxDockerSidecar(c container.Summary) bool {
 	if c.Labels[dockerLabelManagedBy] == dockerLabelManagedByVal && c.Labels[dockerLabelKind] == dockerLabelKindSidecar {
 		return true
+	}
+	if c.Labels[dockerLabelManagedBy] == dockerLabelManagedByVal {
+		return false // another managed kind must not fall through to legacy detection
 	}
 	// Backward-compatible legacy detection: old debux sidecars were named
 	// debux-<target> but had no labels. Require the image reference to mention
@@ -376,13 +373,16 @@ func isDebuxDockerManagedKind(kind string) bool {
 	}
 }
 
-func findDockerDebugContainer(ctx context.Context, cli *client.Client, targetID, targetName, requestedUser, requestedImage string) (id, name string, err error) {
+func findDockerDebugContainer(ctx context.Context, cli *client.Client, targetID, targetName, requestedUser, requestedImage string, optionsHash ...string) (id, name string, err error) {
 	containers, err := listDockerContainers(ctx, cli)
 	if err != nil {
 		return "", "", fmt.Errorf("listing containers: %w", err)
 	}
 	for _, c := range containers {
 		if c.State != "running" || !isDebuxDockerSidecar(c) {
+			continue
+		}
+		if len(optionsHash) > 0 && c.Labels[sessionOptionsLabel] != optionsHash[0] {
 			continue
 		}
 		if !dockerDebugContainerUserMatches(c, requestedUser) {
@@ -400,7 +400,7 @@ func findDockerDebugContainer(ctx context.Context, cli *client.Client, targetID,
 	}
 
 	// Legacy fallback by container name for sessions created before labels.
-	if targetName != "" && (requestedUser == "" || requestedUser == dockerAnyDebugUser) {
+	if len(optionsHash) == 0 && targetName != "" && (requestedUser == "" || requestedUser == dockerAnyDebugUser) {
 		legacyName := "debux-" + targetName
 		if info, err := inspectDockerContainer(ctx, cli, legacyName); err == nil && info.State != nil && info.State.Running {
 			if info.Config != nil && info.Config.Labels[dockerLabelManagedBy] == dockerLabelManagedByVal {
@@ -539,12 +539,23 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		targetImage = targetInfo.Config.Image
 	}
 	containerName := fmt.Sprintf("debux-%s", targetName)
+	if err := dbximage.EnsureImageWithPolicy(ctx, cli, opts.Image, opts.PullPolicy); err != nil {
+		return fmt.Errorf("ensuring debug image: %w", err)
+	}
+	debugImage, err := cli.ImageInspect(ctx, opts.Image)
+	if err != nil {
+		return fmt.Errorf("inspecting debug image: %w", err)
+	}
+	optionsHash := sessionOptionsHash(opts, debugImage.ID, targetInfo.State.StartedAt)
+	if opts.PullPolicy == "Always" {
+		opts.Fresh = true
+	}
 
 	// Try to reuse an existing running debux sidecar for this exact target
 	// container. Labels avoid reusing stale sessions after a target container is
 	// recreated with the same name.
 	if !opts.Fresh {
-		if existingID, existingName, err := findDockerDebugContainer(ctx, cli, targetID, targetName, opts.User, opts.Image); err != nil {
+		if existingID, existingName, err := findDockerDebugContainer(ctx, cli, targetID, targetName, opts.User, opts.Image, optionsHash); err != nil {
 			return err
 		} else if existingID != "" {
 			statusf("Reusing debug container %q\n", existingName)
@@ -554,7 +565,7 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		if existingID, existingName, err := findDockerDebugContainer(ctx, cli, targetID, targetName, opts.User, dockerAnyDebugImage); err != nil {
 			return err
 		} else if existingID != "" {
-			statusf("Existing debug session %q uses a different image; replacing it with %s\n", existingName, opts.Image)
+			statusf("Existing debug session %q has incompatible or unknown options; replacing it with %s\n", existingName, opts.Image)
 		} else if otherID, otherName, err := findDockerDebugContainer(ctx, cli, targetID, targetName, dockerAnyDebugUser, dockerAnyDebugImage); err != nil {
 			return err
 		} else if otherID != "" {
@@ -562,19 +573,12 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		}
 	}
 
-	// Ensure debug image is available
-	if err := dbximage.EnsureImageWithPolicy(ctx, cli, opts.Image, opts.PullPolicy); err != nil {
-		return fmt.Errorf("ensuring debug image: %w", err)
-	}
-
-	// Ensure persistent Nix volumes for this exact debug image. The image-specific
-	// names avoid mounting an old /nix/store over a rebuilt image, which can make
-	// /bin/sh point at a missing store path before the container starts.
-	nixVolumes, err := debugImageVolumes(ctx, cli, opts.Image)
+	// Keep mutable tools outside the image and separate security identities.
+	volumes, err := debugImageVolumes(ctx, cli, opts)
 	if err != nil {
 		return err
 	}
-	if err := store.EnsureVolumes(ctx, cli, nixVolumes); err != nil {
+	if err := store.EnsureVolumes(ctx, cli, volumes); err != nil {
 		return fmt.Errorf("ensuring store volumes: %w", err)
 	}
 
@@ -585,6 +589,7 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		Labels: map[string]string{
 			dockerLabelManagedBy:   dockerLabelManagedByVal,
 			dockerLabelKind:        dockerLabelKindSidecar,
+			sessionOptionsLabel:    optionsHash,
 			dockerLabelTargetID:    targetID,
 			dockerLabelTargetName:  targetName,
 			dockerLabelTargetImage: targetImage,
@@ -623,19 +628,8 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 		PidMode:     container.PidMode(fmt.Sprintf("container:%s", targetID)),
 		IpcMode:     ipcMode,
 		CapAdd:      append([]string{"SYS_PTRACE"}, normalizeCapabilities(opts.CapAdd)...),
-		Mounts: []mount.Mount{
-			{
-				Type:   mount.TypeVolume,
-				Source: nixVolumes.NixStore,
-				Target: "/nix/store",
-			},
-			{
-				Type:   mount.TypeVolume,
-				Source: nixVolumes.NixVar,
-				Target: "/nix/var",
-			},
-		},
-		Privileged: opts.Privileged,
+		Mounts:      volumes.Mounts(),
+		Privileged:  opts.Privileged,
 	}
 
 	// Share target container's volumes
@@ -673,7 +667,10 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	// Clean up with an uncancelled context so a Ctrl-C between create and
 	// start does not leak the created container.
 	if _, err := cli.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
-		_, _ = cli.ContainerRemove(context.WithoutCancel(ctx), resp.ID, client.ContainerRemoveOptions{Force: true})
+		cleanupResource(ctx, resp.ID, func(cleanupCtx context.Context) error {
+			_, err := cli.ContainerRemove(cleanupCtx, resp.ID, client.ContainerRemoveOptions{Force: true})
+			return err
+		})
 		return fmt.Errorf("starting debug container: %w", err)
 	}
 
@@ -685,458 +682,35 @@ func DockerExec(ctx context.Context, target *Target, opts DebugOpts) error {
 	return execInContainer(ctx, cli, resp.ID, opts.Command)
 }
 
-func debugImageVolumes(ctx context.Context, cli *client.Client, imageRef string) (store.VolumeSet, error) {
-	info, err := cli.ImageInspect(ctx, imageRef)
+func debugImageVolumes(ctx context.Context, cli *client.Client, opts DebugOpts) (store.VolumeSet, error) {
+	info, err := cli.ImageInspect(ctx, opts.Image)
 	if err != nil {
-		return store.VolumeSet{}, fmt.Errorf("inspecting debug image %q: %w", imageRef, err)
+		return store.VolumeSet{}, fmt.Errorf("inspecting debug image %q: %w", opts.Image, err)
 	}
-	return store.VolumesForImage(info.ID), nil
-}
-
-// stdioIsTTY reports whether both stdin and stdout are terminals; only then
-// does debux allocate a remote TTY, mirroring docker/kubectl CLI behavior so
-// piped output is not CRLF-mangled and stderr stays separate.
-func stdioIsTTY() bool {
-	_, stdinIsTerminal := term.GetFdInfo(os.Stdin)
-	_, stdoutIsTerminal := term.GetFdInfo(os.Stdout)
-	return stdinIsTerminal && stdoutIsTerminal
-}
-
-// runInteractiveContainer attaches to a created container, starts it, streams
-// I/O (raw terminal mode and TTY resize when stdio is a terminal), waits for
-// it to exit, and propagates the container's exit status.
-func runInteractiveContainer(ctx context.Context, cli *client.Client, containerID string, tty, autoRemove bool) error {
-	hijacked, err := cli.ContainerAttach(ctx, containerID, client.ContainerAttachOptions{
-		Stream: true,
-		Stdin:  true,
-		Stdout: true,
-		Stderr: true,
-	})
-	if err != nil {
-		return fmt.Errorf("attaching to container: %w", err)
+	backend := ""
+	if info.Config != nil {
+		backend = info.Config.Labels["io.debux.toolbox"]
 	}
-	defer hijacked.Close()
-
-	// Register the wait before starting so a container that exits (and, with
-	// --rm, is auto-removed) immediately cannot slip past the wait.
-	cond := container.WaitConditionNextExit
-	if autoRemove {
-		cond = container.WaitConditionRemoved
-	}
-	waitResult := cli.ContainerWait(ctx, containerID, client.ContainerWaitOptions{Condition: cond})
-
-	if _, err := cli.ContainerStart(ctx, containerID, client.ContainerStartOptions{}); err != nil {
-		return fmt.Errorf("starting container: %w", err)
-	}
-
-	stdinFd, _ := term.GetFdInfo(os.Stdin)
-	if tty {
-		oldState, err := term.SetRawTerminal(stdinFd)
-		if err == nil {
-			defer func() {
-				_ = term.RestoreTerminal(stdinFd, oldState)
-				resetTerminalEmulator()
-			}()
+	switch backend {
+	case "mise-v1":
+		if opts.User == "" && info.Config != nil {
+			opts.User = info.Config.User
 		}
-		resizeTTY(ctx, cli, containerID, stdinFd)
-	}
-
-	outputDone := make(chan error, 1)
-	go func() {
-		var err error
-		if tty {
-			_, err = io.Copy(os.Stdout, hijacked.Reader)
-		} else {
-			_, err = stdcopy.StdCopy(os.Stdout, os.Stderr, hijacked.Reader)
-		}
-		outputDone <- err
-	}()
-
-	// This goroutine outlives the session, parked in os.Stdin.Read (and may
-	// swallow one keystroke into the closed conn). Fine while every command
-	// is one-shot per process; revisit before any flow reads stdin twice.
-	go func() {
-		_, _ = io.Copy(hijacked.Conn, os.Stdin)
-		// Propagate stdin EOF so piped/CI sessions can finish instead of
-		// hanging until SIGKILL.
-		_ = hijacked.CloseWrite()
-	}()
-
-	select {
-	case err := <-waitResult.Error:
-		if err != nil {
-			return fmt.Errorf("waiting for container: %w", err)
-		}
-		return nil
-	case status := <-waitResult.Result:
-		// Let the output goroutine flush the tail before the deferred
-		// RestoreTerminal runs.
-		select {
-		case <-outputDone:
-		case <-time.After(2 * time.Second):
-		}
-		if status.Error != nil && status.Error.Message != "" {
-			return fmt.Errorf("waiting for container: %s", status.Error.Message)
-		}
-		if status.StatusCode != 0 {
-			return &ExitError{Code: int(status.StatusCode)}
-		}
-		return nil
-	case <-ctx.Done():
-		select {
-		case <-outputDone:
-		case <-time.After(2 * time.Second):
-		}
-		return ctx.Err()
+		return store.ToolVolumesForImage(info.ID, toolStoreScope(opts)), nil
+	case "": // Explicit compatibility with existing Nix-based/custom images.
+		return store.VolumesForImage(info.ID), nil
+	default:
+		return store.VolumeSet{}, fmt.Errorf("unsupported toolbox storage format %q; upgrade debux", backend)
 	}
 }
 
-// DockerImage debugs a Docker image by copying its filesystem into a debug container.
-// This works for ALL images including scratch/distroless — the target image is never started.
-func DockerImage(ctx context.Context, imageRef string, opts ImageOpts) error {
-	cli, err := dockerclient.New()
-	if err != nil {
-		return fmt.Errorf("connecting to Docker: %w", err)
+func toolStoreScope(opts DebugOpts) string {
+	user := opts.User
+	if user == "" || user == "root" {
+		user = "0"
 	}
-	defer func() { _ = cli.Close() }()
-
-	// Check if the target image exists locally; if not, try pulling it.
-	// Unlike the debug image, the target may be a local-only build that
-	// should never be pulled from a registry.
-	_, inspectErr := cli.ImageInspect(ctx, imageRef)
-	if inspectErr != nil {
-		// Image not found locally — attempt a pull (works for remote images)
-		if pullErr := dbximage.EnsureImage(ctx, cli, imageRef); pullErr != nil {
-			return fmt.Errorf("image %q not found locally and could not be pulled: %w", imageRef, pullErr)
-		}
-	}
-
-	// Create a stopped container from the target image to access its filesystem.
-	// We use "true" as the command — it's never started, we just need the container layer.
-	targetName := fmt.Sprintf("debux-image-target-%s", sanitizeImageRef(imageRef))
-	if err := removeDockerContainerNameIfManaged(ctx, cli, targetName); err != nil {
-		return err
-	}
-
-	statusf("Creating target container from %s...\n", imageRef)
-	targetResp, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
-		Config: &container.Config{
-			Image: imageRef,
-			Cmd:   []string{"true"},
-			Labels: map[string]string{
-				dockerLabelManagedBy:  dockerLabelManagedByVal,
-				dockerLabelKind:       dockerLabelKindImageTarget,
-				dockerLabelTargetName: imageRef,
-			},
-		},
-		Name: targetName,
-	})
-	if err != nil {
-		return fmt.Errorf("creating target container: %w", err)
-	}
-	targetID := targetResp.ID
-	defer func() {
-		_, _ = cli.ContainerRemove(context.Background(), targetID, client.ContainerRemoveOptions{Force: true})
-	}()
-
-	// Stream the entire target filesystem
-	statusf("Copying filesystem from %s...\n", imageRef)
-	copyResult, err := cli.CopyFromContainer(ctx, targetID, client.CopyFromContainerOptions{SourcePath: "/"})
-	if err != nil {
-		return fmt.Errorf("copying filesystem from target: %w", err)
-	}
-	tarReader := copyResult.Content
-	defer func() { _ = tarReader.Close() }()
-
-	// Ensure debug image and image-specific Nix volumes.
-	if err := dbximage.EnsureImage(ctx, cli, opts.DebugImage); err != nil {
-		return fmt.Errorf("ensuring debug image: %w", err)
-	}
-	nixVolumes, err := debugImageVolumes(ctx, cli, opts.DebugImage)
-	if err != nil {
-		return err
-	}
-	if err := store.EnsureVolumes(ctx, cli, nixVolumes); err != nil {
-		return fmt.Errorf("ensuring store volumes: %w", err)
-	}
-
-	// Create the debug container
-	debugName := fmt.Sprintf("debux-image-%s", sanitizeImageRef(imageRef))
-	if err := removeDockerContainerNameIfManaged(ctx, cli, debugName); err != nil {
-		return err
-	}
-
-	tty := stdioIsTTY()
-	config := &container.Config{
-		Image:        opts.DebugImage,
-		Entrypoint:   []string{"/bin/sh", "-c", entrypoint.ImageScript},
-		Tty:          tty,
-		OpenStdin:    true,
-		AttachStdin:  true,
-		AttachStdout: true,
-		AttachStderr: true,
-		Labels: map[string]string{
-			dockerLabelManagedBy:  dockerLabelManagedByVal,
-			dockerLabelKind:       dockerLabelKindImageMode,
-			dockerLabelTargetName: imageRef,
-			dockerLabelDebugImage: opts.DebugImage,
-			dockerLabelDebugUser:  opts.User,
-		},
-		Env: []string{
-			"HOME=/root",
-			fmt.Sprintf("DEBUX_TARGET=%s", imageRef),
-		},
-	}
-	if len(opts.Command) > 0 {
-		config.Env = append(config.Env, "DEBUX_EXEC_COMMAND="+shellJoin(opts.Command))
-	}
-
-	hostConfig := &container.HostConfig{
-		Mounts: []mount.Mount{
-			{
-				Type:   mount.TypeVolume,
-				Source: nixVolumes.NixStore,
-				Target: "/nix/store",
-			},
-			{
-				Type:   mount.TypeVolume,
-				Source: nixVolumes.NixVar,
-				Target: "/nix/var",
-			},
-		},
-		AutoRemove: opts.AutoRemove,
-		Privileged: opts.Privileged,
-	}
-
-	if opts.User != "" {
-		config.User = opts.User
-	}
-
-	debugResp, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
-		Config:     config,
-		HostConfig: hostConfig,
-		Name:       debugName,
-	})
-	if err != nil {
-		return fmt.Errorf("creating debug container: %w", err)
-	}
-	debugID := debugResp.ID
-
-	if opts.AutoRemove {
-		defer func() {
-			// Docker removes the container automatically after it exits, but this
-			// also cleans up failures that happen before the container starts.
-			_, _ = cli.ContainerRemove(context.Background(), debugID, client.ContainerRemoveOptions{Force: true})
-		}()
-	}
-
-	// Create /target directory inside the debug container via a tar archive
-	if err := mkdirViaTar(ctx, cli, debugID, "target"); err != nil {
-		return fmt.Errorf("creating /target directory: %w", err)
-	}
-
-	// Copy the target filesystem into /target inside the debug container
-	if _, err := cli.CopyToContainer(ctx, debugID, client.CopyToContainerOptions{DestinationPath: "/target", Content: tarReader}); err != nil {
-		return fmt.Errorf("copying filesystem to debug container: %w", err)
-	}
-
-	statusf("Debugging image %s (container: %s)\n", imageRef, debugName)
-
-	return runInteractiveContainer(ctx, cli, debugID, tty, opts.AutoRemove)
-}
-
-const stoppedTargetEnvironPath = "/tmp/debux-target-environ"
-
-// dockerExecCopy debugs a non-running container by copying its filesystem —
-// including the writable layer with logs, crash artifacts, and modified
-// config — into a fresh debug container at /target. The original container is
-// never started; changes outside mounted volumes are discarded on exit.
-func dockerExecCopy(ctx context.Context, cli *client.Client, targetInfo container.InspectResponse, target *Target, opts DebugOpts) error {
-	targetID := targetInfo.ID
-	targetName := strings.TrimPrefix(targetInfo.Name, "/")
-	status := "stopped"
-	if targetInfo.State != nil && targetInfo.State.Status != "" {
-		status = string(targetInfo.State.Status)
-	}
-	statusf("Target container %q is %s; debugging a copy of its filesystem (changes outside volumes are discarded on exit).\n", targetName, status)
-
-	copyResult, err := cli.CopyFromContainer(ctx, targetID, client.CopyFromContainerOptions{SourcePath: "/"})
-	if err != nil {
-		return fmt.Errorf("copying filesystem from target: %w", err)
-	}
-	tarReader := copyResult.Content
-	defer func() { _ = tarReader.Close() }()
-
-	if err := dbximage.EnsureImageWithPolicy(ctx, cli, opts.Image, opts.PullPolicy); err != nil {
-		return fmt.Errorf("ensuring debug image: %w", err)
-	}
-	nixVolumes, err := debugImageVolumes(ctx, cli, opts.Image)
-	if err != nil {
-		return err
-	}
-	if err := store.EnsureVolumes(ctx, cli, nixVolumes); err != nil {
-		return fmt.Errorf("ensuring store volumes: %w", err)
-	}
-
-	debugName := fmt.Sprintf("debux-%s", targetName)
-	if err := removeDockerContainerNameIfManaged(ctx, cli, debugName); err != nil {
-		return err
-	}
-
-	tty := stdioIsTTY()
-	targetImage := ""
-	var targetEnv []string
-	if targetInfo.Config != nil {
-		targetImage = targetInfo.Config.Image
-		targetEnv = targetInfo.Config.Env
-	}
-
-	config := &container.Config{
-		Image:        opts.Image,
-		Entrypoint:   []string{"/bin/sh", "-c", entrypoint.ImageScript},
-		Tty:          tty,
-		OpenStdin:    true,
-		AttachStdin:  true,
-		AttachStdout: true,
-		AttachStderr: true,
-		Labels: map[string]string{
-			dockerLabelManagedBy:   dockerLabelManagedByVal,
-			dockerLabelKind:        dockerLabelKindStoppedCopy,
-			dockerLabelTargetID:    targetID,
-			dockerLabelTargetName:  targetName,
-			dockerLabelTargetImage: targetImage,
-			dockerLabelDebugImage:  opts.Image,
-			dockerLabelDebugUser:   opts.User,
-		},
-		Env: []string{
-			"HOME=/root",
-			fmt.Sprintf("DEBUX_TARGET=%s", targetName),
-			fmt.Sprintf("DEBUX_TARGET_ID=%s", targetID),
-			// The chroot fallback and env import read the target environment
-			// from this file since there is no live /proc/1.
-			fmt.Sprintf("DEBUX_TARGET_ENVIRON=%s", stoppedTargetEnvironPath),
-		},
-	}
-	extraEnv, err := debugExtraEnv(opts.Env, opts.Tools)
-	if err != nil {
-		return err
-	}
-	config.Env = append(config.Env, extraEnv...)
-	if len(opts.Command) > 0 {
-		config.Env = append(config.Env, "DEBUX_EXEC_COMMAND="+shellJoin(opts.Command))
-	}
-	if opts.User != "" {
-		config.User = opts.User
-	}
-
-	hostConfig := &container.HostConfig{
-		Mounts: []mount.Mount{
-			{Type: mount.TypeVolume, Source: nixVolumes.NixStore, Target: "/nix/store"},
-			{Type: mount.TypeVolume, Source: nixVolumes.NixVar, Target: "/nix/var"},
-		},
-		AutoRemove: true,
-		Privileged: opts.Privileged,
-		CapAdd:     normalizeCapabilities(opts.CapAdd),
-	}
-	if opts.ShareVolumes {
-		shared := targetMountsAt(targetInfo, opts.ReadOnlyVolumes, "/target")
-		if len(shared) > 0 {
-			statusf("Mounting %d volume(s) from %s under /target\n", len(shared), targetName)
-			hostConfig.Mounts = append(hostConfig.Mounts, shared...)
-		}
-	}
-
-	debugResp, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
-		Config:     config,
-		HostConfig: hostConfig,
-		Name:       debugName,
-	})
-	if err != nil {
-		return fmt.Errorf("creating debug container: %w", err)
-	}
-	debugID := debugResp.ID
-	defer func() {
-		// AutoRemove covers the started case; this cleans up failures that
-		// happen before the container starts.
-		_, _ = cli.ContainerRemove(context.WithoutCancel(ctx), debugID, client.ContainerRemoveOptions{Force: true})
-	}()
-
-	if err := mkdirViaTar(ctx, cli, debugID, "target"); err != nil {
-		return fmt.Errorf("creating /target directory: %w", err)
-	}
-	statusf("Copying filesystem from %s...\n", targetName)
-	if _, err := cli.CopyToContainer(ctx, debugID, client.CopyToContainerOptions{DestinationPath: "/target", Content: tarReader}); err != nil {
-		return fmt.Errorf("copying filesystem to debug container: %w", err)
-	}
-	if err := copyTargetEnvironFile(ctx, cli, debugID, targetEnv); err != nil {
-		return fmt.Errorf("writing target environment file: %w", err)
-	}
-
-	statusf("Debugging %s (container: %s, target root: /target)\n", targetName, debugName)
-	return runInteractiveContainer(ctx, cli, debugID, tty, true)
-}
-
-// copyTargetEnvironFile writes the target container's configured environment
-// into the debug container as a NUL-separated file — the /proc/<pid>/environ
-// format the shell helpers already understand.
-func copyTargetEnvironFile(ctx context.Context, cli *client.Client, containerID string, env []string) error {
-	if len(env) == 0 {
-		return nil
-	}
-	content := strings.Join(env, "\x00") + "\x00"
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	if err := tw.WriteHeader(&tar.Header{
-		Name:     strings.TrimPrefix(stoppedTargetEnvironPath, "/"),
-		Typeflag: tar.TypeReg,
-		Mode:     0o644,
-		Size:     int64(len(content)),
-	}); err != nil {
-		return err
-	}
-	if _, err := tw.Write([]byte(content)); err != nil {
-		return err
-	}
-	if err := tw.Close(); err != nil {
-		return err
-	}
-	_, err := cli.CopyToContainer(ctx, containerID, client.CopyToContainerOptions{DestinationPath: "/", Content: &buf})
-	return err
-}
-
-// mkdirViaTar creates a directory at /<name> inside a stopped container by
-// copying a minimal tar archive containing a single directory entry.
-func mkdirViaTar(ctx context.Context, cli *client.Client, containerID, name string) error {
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	if err := tw.WriteHeader(&tar.Header{
-		Name:     name + "/",
-		Typeflag: tar.TypeDir,
-		Mode:     0o755,
-	}); err != nil {
-		return err
-	}
-	if err := tw.Close(); err != nil {
-		return err
-	}
-	_, err := cli.CopyToContainer(ctx, containerID, client.CopyToContainerOptions{DestinationPath: "/", Content: &buf})
-	return err
-}
-
-// sanitizeImageRef converts an image reference into a valid container name suffix.
-// e.g. "gcr.io/distroless/static:latest" → "gcr-io-distroless-static-latest-abc123"
-// A short hash of the original reference is appended so different refs such as
-// "a/b" and "a-b" cannot collide after sanitization.
-func sanitizeImageRef(ref string) string {
-	replacer := strings.NewReplacer(
-		"/", "-",
-		":", "-",
-		".", "-",
-		"@", "-",
-	)
-	sanitized := replacer.Replace(ref)
-	hash := sha256.Sum256([]byte(ref))
-	return sanitized + "-" + hex.EncodeToString(hash[:])[:8]
+	return sessionOptionsHash(DebugOpts{User: user, Profile: opts.Profile,
+		Privileged: opts.Privileged, CapAdd: opts.CapAdd})
 }
 
 // targetMounts extracts the target container's mounts and converts them to
@@ -1156,16 +730,9 @@ func targetMountsAt(info container.InspectResponse, readOnly bool, prefix string
 	// volumes there breaks sessions on readOnlyRootFilesystem-style targets
 	// and writes debux files into target data. The target's /tmp stays
 	// reachable via $DEBUX_TARGET_ROOT/tmp.
-	reserved := map[string]bool{
-		"/nix":       true,
-		"/nix/store": true,
-		"/nix/var":   true,
-		"/tmp":       true,
-		"/root":      true,
-	}
 	var mounts []mount.Mount
 	for _, mp := range info.Mounts {
-		if reserved[prefix+mp.Destination] {
+		if isReservedDebugMountPath(prefix + mp.Destination) {
 			continue
 		}
 		m := mount.Mount{
@@ -1189,215 +756,4 @@ func targetMountsAt(info container.InspectResponse, readOnly bool, prefix string
 		mounts = append(mounts, m)
 	}
 	return mounts
-}
-
-func resizeTTY(ctx context.Context, cli *client.Client, containerID string, fd uintptr) {
-	resize := func() {
-		size, err := term.GetWinsize(fd)
-		if err != nil || size == nil {
-			return
-		}
-		_, _ = cli.ContainerResize(ctx, containerID, client.ContainerResizeOptions{
-			Height: uint(size.Height),
-			Width:  uint(size.Width),
-		})
-	}
-
-	// Initial resize
-	resize()
-
-	// Watch for terminal resize signals
-	sigCh, stopSig := watchSIGWINCH()
-	go func() {
-		defer stopSig()
-		for {
-			select {
-			case <-sigCh:
-				resize()
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-}
-
-// execInContainer starts an interactive zsh session inside a running container
-// using docker exec, similar to how K8s uses exec into daemon ephemeral containers.
-func execInContainer(ctx context.Context, cli *client.Client, containerID string, command []string) error {
-	if err := bootstrapDockerShell(ctx, cli, containerID); err != nil {
-		return fmt.Errorf("preparing debux shell config: %w", err)
-	}
-
-	tty := stdioIsTTY()
-	stdinFd, _ := term.GetFdInfo(os.Stdin)
-
-	createOpts := client.ExecCreateOptions{
-		Cmd:          debuxExecCommand(command),
-		AttachStdin:  true,
-		AttachStdout: true,
-		AttachStderr: true,
-		TTY:          tty,
-	}
-	if tty {
-		// Set the initial size at create time; resizing only after attach
-		// races exec start and can leave the session at 80x24.
-		if size, err := term.GetWinsize(stdinFd); err == nil && size != nil {
-			createOpts.ConsoleSize = client.ConsoleSize{Height: uint(size.Height), Width: uint(size.Width)}
-		}
-	}
-
-	resp, err := cli.ExecCreate(ctx, containerID, createOpts)
-	if err != nil {
-		return fmt.Errorf("creating exec session: %w", err)
-	}
-
-	hijacked, err := cli.ExecAttach(ctx, resp.ID, client.ExecAttachOptions{
-		TTY: tty,
-	})
-	if err != nil {
-		return fmt.Errorf("attaching to exec session: %w", err)
-	}
-	defer hijacked.Close()
-
-	if tty {
-		oldState, err := term.SetRawTerminal(stdinFd)
-		if err == nil {
-			defer func() {
-				_ = term.RestoreTerminal(stdinFd, oldState)
-				resetTerminalEmulator()
-			}()
-		}
-
-		resizeExec := func() {
-			size, err := term.GetWinsize(stdinFd)
-			if err == nil && size != nil {
-				_, _ = cli.ExecResize(ctx, resp.ID, client.ExecResizeOptions{
-					Height: uint(size.Height),
-					Width:  uint(size.Width),
-				})
-			}
-		}
-
-		sigCh, stopSig := watchSIGWINCH()
-		go func() {
-			defer stopSig()
-			for {
-				select {
-				case <-sigCh:
-					resizeExec()
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
-	}
-
-	outputDone := make(chan error, 1)
-	go func() {
-		var err error
-		if tty {
-			_, err = io.Copy(os.Stdout, hijacked.Reader)
-		} else {
-			_, err = stdcopy.StdCopy(os.Stdout, os.Stderr, hijacked.Reader)
-		}
-		outputDone <- err
-	}()
-
-	go func() {
-		_, _ = io.Copy(hijacked.Conn, os.Stdin)
-		// Propagate stdin EOF to the remote shell so piped/CI sessions finish
-		// instead of hanging until SIGKILL.
-		_ = hijacked.CloseWrite()
-	}()
-
-	select {
-	case <-outputDone:
-	case <-ctx.Done():
-		// Wait briefly for the output goroutine to flush remaining data
-		// before terminal state is restored by the deferred RestoreTerminal.
-		select {
-		case <-outputDone:
-		case <-time.After(2 * time.Second):
-		}
-		return ctx.Err()
-	}
-
-	inspect, err := cli.ExecInspect(ctx, resp.ID, client.ExecInspectOptions{})
-	if err != nil {
-		// Swallowing this would make one-shot commands (`debux app -- false`)
-		// exit 0 on a daemon hiccup, breaking CI gates that rely on the
-		// propagated exit code.
-		return fmt.Errorf("inspecting exec result: %w", err)
-	}
-	if !inspect.Running && inspect.ExitCode != 0 {
-		return &ExitError{Code: inspect.ExitCode}
-	}
-
-	return nil
-}
-
-func bootstrapDockerShell(ctx context.Context, cli *client.Client, containerID string) error {
-	resp, err := cli.ExecCreate(ctx, containerID, client.ExecCreateOptions{
-		Cmd:          []string{"/bin/sh", "-c", entrypoint.ShellBootstrapScript()},
-		AttachStdout: true,
-		AttachStderr: true,
-		TTY:          true,
-	})
-	if err != nil {
-		return fmt.Errorf("creating bootstrap exec: %w", err)
-	}
-
-	hijacked, err := cli.ExecAttach(ctx, resp.ID, client.ExecAttachOptions{TTY: true})
-	if err != nil {
-		return fmt.Errorf("attaching bootstrap exec: %w", err)
-	}
-	defer hijacked.Close()
-
-	var output bytes.Buffer
-	_, copyErr := io.Copy(&output, hijacked.Reader)
-	if copyErr != nil {
-		return fmt.Errorf("reading bootstrap output: %w", copyErr)
-	}
-
-	inspect, err := cli.ExecInspect(ctx, resp.ID, client.ExecInspectOptions{})
-	if err != nil {
-		return fmt.Errorf("inspecting bootstrap exec: %w", err)
-	}
-	if inspect.ExitCode != 0 {
-		details := strings.TrimSpace(output.String())
-		if details != "" {
-			return fmt.Errorf("bootstrap exited with status %d: %s", inspect.ExitCode, details)
-		}
-		return fmt.Errorf("bootstrap exited with status %d", inspect.ExitCode)
-	}
-	return nil
-}
-
-// showEntrypointOutput streams the sidecar entrypoint output (volume listing,
-// warnings) to stderr. The entrypoint prints info then enters daemon mode
-// (tail -f /dev/null). We follow the logs until we see a blank line marking
-// the end of the entrypoint output, with a timeout as safety net.
-func showEntrypointOutput(ctx context.Context, cli *client.Client, containerID string) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	reader, err := cli.ContainerLogs(ctx, containerID, client.ContainerLogsOptions{
-		ShowStdout: true,
-		ShowStderr: true,
-		Follow:     true,
-	})
-	if err != nil {
-		return
-	}
-	defer func() { _ = reader.Close() }()
-
-	scanner := bufio.NewScanner(reader)
-	for scanner.Scan() {
-		line := scanner.Text()
-		// Empty line (possibly with \r from TTY) marks end of entrypoint output
-		if strings.TrimRight(line, "\r") == "" {
-			break
-		}
-		statusln(strings.TrimRight(line, "\r"))
-	}
 }

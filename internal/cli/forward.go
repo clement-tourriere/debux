@@ -49,7 +49,7 @@ func runForward(cmd *cobra.Command, args []string) error {
 		if kubernetesFlagsChanged(cmd) {
 			return fmt.Errorf("--context, --kubeconfig, and --namespace are only supported for Kubernetes targets; use k8s://... or remove the flag")
 		}
-		return runtime.DockerForward(ctx, target, mappings, configuredPullPolicy(flagPullPolicy), resolveImage(""))
+		return runtime.DockerForward(ctx, target, mappings, configuredPullPolicy(flagString(cmd, "pull-policy")), resolveImage(""))
 	case "kubernetes":
 		applyKubeNamespaceFlagContainerShorthand(cmd, target)
 		kubeContext, err := resolveKubeContext(cmd, target.Context)

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -550,17 +551,21 @@ func applyKubernetesUser(sc *corev1.SecurityContext, user string) (*corev1.Secur
 }
 
 func isReservedDebugMountPath(mountPath string) bool {
-	switch mountPath {
-	// /tmp and /root hold the debug shell's own state (ZDOTDIR, HOME).
-	// Mounting target volumes there breaks sessions on pods that keep an
-	// emptyDir at /tmp (standard with readOnlyRootFilesystem) and writes
-	// debux files into target data. The target's /tmp stays reachable via
-	// $DEBUX_TARGET_ROOT/tmp.
-	case "/nix", "/nix/store", "/nix/var", "/tmp", "/root":
+	mountPath = path.Clean(mountPath)
+	// Root-level startup/config files must not come from the target either.
+	if strings.HasPrefix(mountPath, "/.") || mountPath == "/mise.toml" || mountPath == "/miserc.toml" {
 		return true
-	default:
-		return false
 	}
+	// Never let shared target volumes replace the toolbox, trusted tool
+	// configuration, or persistent state, including via a parent/child mount.
+	// These target directories remain accessible through DEBUX_TARGET_ROOT.
+	for _, reserved := range []string{"/nix", "/tmp", "/root", "/var/lib/debux",
+		"/bin", "/sbin", "/usr", "/etc", "/lib", "/lib64", "/proc", "/sys", "/dev"} {
+		if mountPath == "/" || mountPath == reserved || strings.HasPrefix(mountPath, reserved+"/") || strings.HasPrefix(reserved, mountPath+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func targetKubernetesVolumeMounts(pod *corev1.Pod, targetContainer string, readOnly bool, allowSubPath bool) []corev1.VolumeMount {
@@ -687,7 +692,7 @@ func podContainerNames(pod *corev1.Pod) []string {
 }
 
 func findContainerID(pod *corev1.Pod, containerName string) string {
-	for _, cs := range pod.Status.ContainerStatuses {
+	for _, cs := range append(append([]corev1.ContainerStatus(nil), pod.Status.ContainerStatuses...), pod.Status.InitContainerStatuses...) {
 		if cs.Name != containerName {
 			continue
 		}
@@ -735,7 +740,7 @@ func findRunningDebuxContainersForKill(pod *corev1.Pod, targetContainer string) 
 // the shell in the wrong PID/root namespace; reusing a different profile, user,
 // or image would silently ignore the flags the user passed. An empty image
 // matches any (used to detect image-mismatched sessions for messaging).
-func findRunningDebuxContainerForTarget(pod *corev1.Pod, targetContainer, profile, user, image string) string {
+func findRunningDebuxContainerForTarget(pod *corev1.Pod, targetContainer, profile, user, image string, optionsHash ...string) string {
 	running := runningDebuxEphemeralContainers(pod)
 
 	for _, ec := range pod.Spec.EphemeralContainers {
@@ -751,6 +756,9 @@ func findRunningDebuxContainerForTarget(pod *corev1.Pod, targetContainer, profil
 		if image != "" && ec.Image != image {
 			continue
 		}
+		if len(optionsHash) > 0 && !ephemeralOptionsMatch(ec, optionsHash[0]) {
+			continue
+		}
 		if !debuxEphemeralContainerProfileMatches(ec, profile) {
 			continue
 		}
@@ -761,6 +769,15 @@ func findRunningDebuxContainerForTarget(pod *corev1.Pod, targetContainer, profil
 	}
 
 	return ""
+}
+
+func ephemeralOptionsMatch(ec corev1.EphemeralContainer, hash string) bool {
+	for _, env := range ec.Env {
+		if env.Name == sessionOptionsEnv {
+			return env.Value == hash
+		}
+	}
+	return false
 }
 
 func runningDebuxEphemeralContainers(pod *corev1.Pod) map[string]struct{} {
@@ -896,8 +913,7 @@ func KubernetesPod(ctx context.Context, opts PodOpts) error {
 	if !opts.Keep {
 		defer func() {
 			statusf("Deleting debug pod %s...\n", podName)
-			_ = clientset.CoreV1().Pods(opts.Namespace).Delete(
-				context.Background(), podName, metav1.DeleteOptions{})
+			cleanupKubernetesPod(ctx, clientset, created)
 		}()
 	}
 

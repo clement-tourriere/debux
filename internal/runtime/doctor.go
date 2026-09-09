@@ -82,7 +82,15 @@ func DockerDoctor(ctx context.Context, targetName ...string) []DoctorCheck {
 }
 
 // KubernetesDoctor checks Kubernetes connectivity, target existence, and common RBAC permissions.
-func KubernetesDoctor(ctx context.Context, kubeconfig, kubeContext, namespace, podName, containerName, profile string) []DoctorCheck {
+func KubernetesDoctor(ctx context.Context, kubeconfig, kubeContext, namespace, podName, containerName, profile string, operation ...string) []DoctorCheck {
+	mode := "ephemeral"
+	if len(operation) > 0 && operation[0] != "" {
+		mode = operation[0]
+	}
+	permissions, err := KubernetesPermissions(mode)
+	if err != nil {
+		return []DoctorCheck{fail("Operation", err.Error())}
+	}
 	_, clientset, err := getK8sClient(kubeconfig, kubeContext)
 	if err != nil {
 		return []DoctorCheck{fail("Kubernetes client", err.Error())}
@@ -103,6 +111,11 @@ func KubernetesDoctor(ctx context.Context, kubeconfig, kubeContext, namespace, p
 			checks = append(checks, fail("Target pod", fmt.Sprintf("getting %s/%s: %v", resolvedNamespace, podName, err)))
 		} else {
 			checks = append(checks, pass("Target pod", fmt.Sprintf("%s/%s is %s", resolvedNamespace, podName, pod.Status.Phase)))
+			if mode == "ephemeral" {
+				if err := validateKubernetesTargetNamespace(pod); err != nil {
+					checks = append(checks, fail("Target PID namespace", err.Error()))
+				}
+			}
 			if container, err := selectKubernetesTargetContainer(pod, containerName); err == nil {
 				checks = append(checks, pass("Target container", container))
 			} else {
@@ -111,13 +124,13 @@ func KubernetesDoctor(ctx context.Context, kubeconfig, kubeContext, namespace, p
 		}
 	}
 
-	checks = append(checks,
-		kubernetesAccessCheck(ctx, clientset, resolvedNamespace, "list", "pods", ""),
-		kubernetesAccessCheck(ctx, clientset, resolvedNamespace, "get", "pods", ""),
-		kubernetesAccessCheck(ctx, clientset, resolvedNamespace, "update", "pods", "ephemeralcontainers"),
-		kubernetesAccessCheck(ctx, clientset, resolvedNamespace, "create", "pods", "exec"),
-		kubernetesAccessCheck(ctx, clientset, resolvedNamespace, "create", "pods", ""),
-	)
+	for _, permission := range permissions {
+		ns := resolvedNamespace
+		if permission.ClusterScoped {
+			ns = ""
+		}
+		checks = append(checks, kubernetesAccessCheck(ctx, clientset, ns, permission.Verb, permission.Resource, permission.Subresource))
+	}
 
 	switch profile {
 	case ProfileGeneral, "":
@@ -156,7 +169,7 @@ func kubernetesAccessCheck(ctx context.Context, clientset kubernetes.Interface, 
 		name += "/" + subresource
 	}
 	if err != nil {
-		return warn(name, fmt.Sprintf("could not check: %v", err))
+		return fail(name, fmt.Sprintf("could not verify permission: %v", err))
 	}
 	if created.Status.Allowed {
 		return pass(name, "allowed")

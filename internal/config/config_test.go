@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -75,6 +76,28 @@ func TestGetMissingFileIsEmpty(t *testing.T) {
 // TestGetRejectsUnknownKeys locks the strict-decode behavior: a typo'd key
 // ("profil:") must be reported instead of silently applying built-in defaults
 // — for profile that could mean a more privileged session than configured.
+func TestValidationFailsClosed(t *testing.T) {
+	for _, body := range []string{"profile: restricted\ntoolz: {}\n", "profile: restricted\n---\nprofile: general\n", "tools: [invalid]\n"} {
+		writeConfig(t, body)
+		if err := Validate(); err == nil || !strings.Contains(err.Error(), "DEBUX_CONFIG=/dev/null") {
+			t.Fatalf("malformed config accepted: %v", err)
+		}
+	}
+	writeConfig(t, "")
+	if err := Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPathHonorsXDG(t *testing.T) {
+	t.Setenv("DEBUX_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	path, err := Path()
+	if err != nil || path != filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "debux", "config.yaml") {
+		t.Fatalf("XDG path: %q %v", path, err)
+	}
+}
+
 func TestGetRejectsUnknownKeys(t *testing.T) {
 	writeConfig(t, `profil: restricted
 `)

@@ -6,6 +6,8 @@ DEBUX_IMAGE="${DEBUX_IMAGE:-ghcr.io/clement-tourriere/debux:latest}"
 DEBUX_PULL_POLICY="${DEBUX_PULL_POLICY:-IfNotPresent}"
 NAMESPACE="${DEBUX_E2E_NAMESPACE:-debux-e2e-default}"
 POD="${DEBUX_E2E_POD:-web}"
+created_namespace=0
+export DEBUX_CONFIG=/dev/null
 
 case "$NAMESPACE" in
   debux-e2e-*) ;;
@@ -29,12 +31,22 @@ need() {
 need kubectl
 
 cleanup() {
-  kubectl delete namespace "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
+  if [[ "$created_namespace" == 1 ]]; then
+    kubectl --request-timeout=10s delete namespace "$NAMESPACE" --ignore-not-found --timeout=30s >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT INT TERM
-cleanup
 
+# Refuse an existing namespace rather than deleting unrelated workloads.
 kubectl create namespace "$NAMESPACE" >/dev/null
+created_namespace=1
+# Namespace creation can race the service-account controller on a fresh kind
+# cluster. Wait for its default account instead of failing pod admission.
+for _ in {1..30}; do
+  if kubectl --request-timeout=5s get serviceaccount default -n "$NAMESPACE" >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+kubectl --request-timeout=5s get serviceaccount default -n "$NAMESPACE" >/dev/null
 kubectl run "$POD" -n "$NAMESPACE" --image=nginx:alpine --restart=Never --port=80 >/dev/null
 kubectl wait -n "$NAMESPACE" --for=condition=Ready "pod/$POD" --timeout=180s >/dev/null
 
@@ -49,6 +61,18 @@ if ! grep -q 'debux-e2e-k8s-ok' <<<"$output"; then
   echo "error: expected sentinel 'debux-e2e-k8s-ok' in debux output" >&2
   exit 1
 fi
+
+echo "Checking option changes without --fresh"
+for value in first second; do
+  output="$("$DEBUX_BIN" "k8s://$NAMESPACE/$POD/$POD" --image "$DEBUX_IMAGE" \
+    --pull-policy "$DEBUX_PULL_POLICY" --env "E2E_OPTION=$value" -- printenv E2E_OPTION)"
+  [[ "$output" == "$value" ]] || { echo "error: reused stale environment" >&2; exit 1; }
+done
+
+echo "Checking command failures propagate"
+status=0
+"$DEBUX_BIN" "k8s://$NAMESPACE/$POD/$POD" --image "$DEBUX_IMAGE" --pull-policy "$DEBUX_PULL_POLICY" -- sh -c 'exit 42' || status=$?
+[[ "$status" == 42 ]] || { echo "error: expected exit 42, got $status" >&2; exit 1; }
 
 echo "Checking debux list shows the ephemeral session"
 list_output="$("$DEBUX_BIN" list "k8s://$NAMESPACE/")"
@@ -68,6 +92,22 @@ echo "Checking restricted profile startup"
   --fresh \
   --pull-policy "$DEBUX_PULL_POLICY" \
   -- id >/dev/null
+
+if [[ "${DEBUX_E2E_TOOL_TESTS:-0}" == 1 ]]; then
+  echo "Checking restricted --tools installs and reuse in Kubernetes"
+  previous_sessions=""
+  for attempt in first reuse; do
+    "$DEBUX_BIN" "k8s://$NAMESPACE/$POD/$POD" --image "$DEBUX_IMAGE" \
+      --profile=restricted --pull-policy "$DEBUX_PULL_POLICY" \
+      --tools yq@4.53.6 -- yq --version | grep -q v4.53.6
+    current_sessions="$(kubectl get pod -n "$NAMESPACE" "$POD" -o jsonpath='{.spec.ephemeralContainers[*].name}')"
+    if [[ "$attempt" == reuse && "$current_sessions" != "$previous_sessions" ]]; then
+      echo 'error: identical --tools options did not reuse the session' >&2
+      exit 1
+    fi
+    previous_sessions="$current_sessions"
+  done
+fi
 
 echo "Running --copy --keep session"
 copy_output="$("$DEBUX_BIN" "k8s://$NAMESPACE/$POD" \
@@ -107,5 +147,25 @@ if kubectl get pod -n "$NAMESPACE" "$copy_pod" >/dev/null 2>&1; then
   echo "error: copy pod $copy_pod still exists after debux kill" >&2
   exit 1
 fi
+
+echo "Checking shared-PID pods are rejected rather than exposing the sandbox root"
+kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: shared-pid
+  namespace: $NAMESPACE
+spec:
+  shareProcessNamespace: true
+  containers:
+    - name: app
+      image: nginx:alpine
+EOF
+kubectl wait -n "$NAMESPACE" --for=condition=Ready pod/shared-pid --timeout=180s >/dev/null
+if output="$("$DEBUX_BIN" "k8s://$NAMESPACE/shared-pid/app" --image "$DEBUX_IMAGE" --pull-policy "$DEBUX_PULL_POLICY" -- true 2>&1)"; then
+  echo "error: shared-PID targeting unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -q 'PID namespace' <<<"$output"
 
 echo "Kubernetes e2e passed"

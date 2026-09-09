@@ -9,6 +9,15 @@ updates:
         patterns:
           - "*"
 
+  - package-ecosystem: npm
+    directory: /docs
+    schedule:
+      interval: weekly
+    groups:
+      docs-checks:
+        patterns:
+          - "*"
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

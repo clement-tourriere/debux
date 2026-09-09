@@ -17,27 +17,7 @@ const docsURL = "https://clement-tourriere.github.io/debux/"
 // without cleaning up (power loss, SIGKILL) cannot leak a pod forever.
 const defaultCopyPodTTL = "24h"
 
-var (
-	flagImage           string
-	flagPrivileged      bool
-	flagUser            string
-	flagRemove          bool
-	flagNoVolumes       bool
-	flagReadOnlyVolumes bool
-	flagPullPolicy      string
-	flagKubeContext     string
-	flagNamespace       string
-	flagFresh           bool
-	flagCopy            bool
-	flagKeep            bool
-	flagTTL             string
-	flagProfile         string
-	flagEnv             []string
-	flagCapAdd          []string
-	flagTools           []string
-)
-
-const rootLong = `debux starts a rich Nix-powered debug container next to your target.
+const rootLong = `debux starts a rich debug toolbox next to your target.
 
 It is built for production-style images that do not contain a useful shell:
 distroless, scratch, Alpine, minimal images, and locked-down Kubernetes pods.
@@ -116,13 +96,20 @@ const rootExample = `  # Pick a Docker container interactively
 
 func NewRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:           "debux [target] [-- command...]",
-		Short:         "Debug any Docker or Kubernetes container",
-		Long:          rootLong,
-		Example:       rootExample,
-		Version:       version.Details(),
-		Args:          cobra.ArbitraryArgs,
-		RunE:          runExec,
+		Use:     "debux [target] [-- command...]",
+		Short:   "Debug any Docker or Kubernetes container",
+		Long:    rootLong,
+		Example: rootExample,
+		Version: version.Details(),
+		Args:    cobra.ArbitraryArgs,
+		RunE:    runExec,
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			switch cmd.Name() {
+			case "version", "update", "docs", "completion", "__complete", "__completeNoDesc":
+				return nil // recovery and read-only commands must remain available
+			}
+			return config.Validate()
+		},
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -156,49 +143,49 @@ func NewRootCmd() *cobra.Command {
 
 func addExecFlags(cmd *cobra.Command) {
 	cmd.Flags().SortFlags = false
-	cmd.Flags().StringVar(&flagImage, "image", "", fmt.Sprintf("Debug image (default %s)", runtime.DefaultImage))
-	cmd.Flags().BoolVar(&flagFresh, "fresh", false, "Create a fresh debug container instead of reusing an existing debux session")
-	cmd.Flags().BoolVar(&flagNoVolumes, "no-volumes", false, "Do not directly mount target volumes (not a security boundary if /proc/1/root is accessible)")
-	cmd.Flags().BoolVar(&flagReadOnlyVolumes, "read-only-volumes", false, "Mount target volumes read-only in the debug container")
-	cmd.Flags().StringVar(&flagUser, "user", "", "Run debug container as uid[:gid]")
-	cmd.Flags().BoolVar(&flagPrivileged, "privileged", false, "Run privileged (Docker); Kubernetes alias for --profile=sysadmin")
-	cmd.Flags().BoolVar(&flagCopy, "copy", false, "Kubernetes: use a temporary copied pod instead of an ephemeral container")
-	cmd.Flags().BoolVar(&flagKeep, "keep", false, "Kubernetes: with --copy, keep the copy pod after the session ends (reattach by targeting it, delete with debux kill)")
-	cmd.Flags().StringVar(&flagTTL, "ttl", defaultCopyPodTTL, "Kubernetes: with --copy, kubelet-enforced deadline after which the copy pod is stopped (Go duration; 0 disables)")
-	cmd.Flags().StringVar(&flagPullPolicy, "pull-policy", "", "Image pull policy for the debug image (Always, IfNotPresent, Never)")
-	cmd.Flags().StringVar(&flagProfile, "profile", runtime.ProfileGeneral,
+	cmd.Flags().String("image", "", fmt.Sprintf("Debug image (default %s)", runtime.DefaultImage))
+	cmd.Flags().Bool("fresh", false, "Create a fresh debug container instead of reusing an existing debux session")
+	cmd.Flags().Bool("no-volumes", false, "Do not directly mount target volumes (not a security boundary if /proc/1/root is accessible)")
+	cmd.Flags().Bool("read-only-volumes", false, "Mount target volumes read-only in the debug container")
+	cmd.Flags().String("user", "", "Run debug container as uid[:gid]")
+	cmd.Flags().Bool("privileged", false, "Run privileged (Docker); Kubernetes alias for --profile=sysadmin")
+	cmd.Flags().Bool("copy", false, "Kubernetes: use a temporary copied pod instead of an ephemeral container")
+	cmd.Flags().Bool("keep", false, "Kubernetes: with --copy, keep the copy pod after the session ends (reattach by targeting it, delete with debux kill)")
+	cmd.Flags().String("ttl", defaultCopyPodTTL, "Kubernetes: with --copy, kubelet-enforced deadline after which the copy pod is stopped (Go duration; 0 disables)")
+	cmd.Flags().String("pull-policy", "", "Image pull policy for the debug image (Always, IfNotPresent, Never)")
+	cmd.Flags().String("profile", runtime.ProfileGeneral,
 		fmt.Sprintf("Kubernetes: security profile (%s)", strings.Join(runtime.ValidProfiles, ", ")))
-	cmd.Flags().StringArrayVar(&flagEnv, "env", nil, "Extra KEY=VALUE environment for the debug container (repeatable)")
-	cmd.Flags().StringArrayVar(&flagCapAdd, "cap-add", nil, "Extra Linux capability for the debug container (repeatable)")
-	cmd.Flags().StringArrayVar(&flagTools, "tools", nil, "Tool set name from the config file, or nixpkgs packages, auto-installed at session start (repeatable)")
+	cmd.Flags().StringArray("env", nil, "Extra KEY=VALUE environment for the debug container (repeatable)")
+	cmd.Flags().StringArray("cap-add", nil, "Extra Linux capability for the debug container (repeatable)")
+	cmd.Flags().StringArray("tools", nil, "Tool set name from the config file, or tool names (optionally name@version), auto-installed at session start (repeatable)")
 	cmd.Flags().String("kubeconfig", "", "Kubernetes: kubeconfig path")
-	cmd.Flags().StringVar(&flagKubeContext, "context", "", "Kubernetes: kube context name")
-	cmd.Flags().StringVarP(&flagNamespace, "namespace", "n", "", "Kubernetes: namespace")
+	cmd.Flags().String("context", "", "Kubernetes: kube context name")
+	cmd.Flags().StringP("namespace", "n", "", "Kubernetes: namespace")
 	registerExecFlagCompletions(cmd)
 }
 
 func addImageFlags(cmd *cobra.Command) {
 	cmd.Flags().SortFlags = false
-	cmd.Flags().StringVar(&flagImage, "image", "", fmt.Sprintf("Debug image (default %s)", runtime.DefaultImage))
-	cmd.Flags().BoolVar(&flagRemove, "rm", true, "Remove the debug container after exit")
-	cmd.Flags().BoolVar(&flagPrivileged, "privileged", false, "Run debug container privileged")
-	cmd.Flags().StringVar(&flagUser, "user", "", "Run debug container as uid[:gid]")
+	cmd.Flags().String("image", "", fmt.Sprintf("Debug image (default %s)", runtime.DefaultImage))
+	cmd.Flags().Bool("rm", true, "Remove the debug container after exit")
+	cmd.Flags().Bool("privileged", false, "Run debug container privileged")
+	cmd.Flags().String("user", "", "Run debug container as uid[:gid]")
 	registerImageFlagCompletion(cmd)
 }
 
 func addPodDebugFlags(cmd *cobra.Command) {
 	cmd.Flags().SortFlags = false
-	cmd.Flags().StringVar(&flagImage, "image", "", fmt.Sprintf("Debug image (default %s)", runtime.DefaultImage))
-	cmd.Flags().StringVar(&flagUser, "user", "", "Run debug container as uid[:gid]")
-	cmd.Flags().BoolVar(&flagPrivileged, "privileged", false, "Alias for --profile=sysadmin")
-	cmd.Flags().StringVar(&flagPullPolicy, "pull-policy", "", "Image pull policy (Always, IfNotPresent, Never)")
-	cmd.Flags().StringVar(&flagProfile, "profile", runtime.ProfileGeneral,
+	cmd.Flags().String("image", "", fmt.Sprintf("Debug image (default %s)", runtime.DefaultImage))
+	cmd.Flags().String("user", "", "Run debug container as uid[:gid]")
+	cmd.Flags().Bool("privileged", false, "Alias for --profile=sysadmin")
+	cmd.Flags().String("pull-policy", "", "Image pull policy (Always, IfNotPresent, Never)")
+	cmd.Flags().String("profile", runtime.ProfileGeneral,
 		fmt.Sprintf("Security profile (%s)", strings.Join(runtime.ValidProfiles, ", ")))
-	cmd.Flags().StringArrayVar(&flagEnv, "env", nil, "Extra KEY=VALUE environment for the debug container (repeatable)")
-	cmd.Flags().StringArrayVar(&flagCapAdd, "cap-add", nil, "Extra Linux capability for the debug container (repeatable)")
-	cmd.Flags().StringArrayVar(&flagTools, "tools", nil, "Tool set name from the config file, or nixpkgs packages, auto-installed at session start (repeatable)")
+	cmd.Flags().StringArray("env", nil, "Extra KEY=VALUE environment for the debug container (repeatable)")
+	cmd.Flags().StringArray("cap-add", nil, "Extra Linux capability for the debug container (repeatable)")
+	cmd.Flags().StringArray("tools", nil, "Tool set name from the config file, or tool names (optionally name@version), auto-installed at session start (repeatable)")
 	cmd.Flags().String("kubeconfig", "", "Kubeconfig path")
-	cmd.Flags().StringVar(&flagKubeContext, "context", "", "Kube context name")
+	cmd.Flags().String("context", "", "Kube context name")
 	registerImageFlagCompletion(cmd)
 	registerKubeContextFlagCompletion(cmd)
 	registerPullPolicyFlagCompletion(cmd)
@@ -208,8 +195,8 @@ func addPodDebugFlags(cmd *cobra.Command) {
 func addKubernetesFlags(cmd *cobra.Command) {
 	cmd.Flags().SortFlags = false
 	cmd.Flags().String("kubeconfig", "", "Kubeconfig path")
-	cmd.Flags().StringVar(&flagKubeContext, "context", "", "Kube context name")
-	cmd.Flags().StringVarP(&flagNamespace, "namespace", "n", "", "Kubernetes namespace")
+	cmd.Flags().String("context", "", "Kube context name")
+	cmd.Flags().StringP("namespace", "n", "", "Kubernetes namespace")
 	registerKubernetesFlagCompletions(cmd)
 }
 
@@ -222,17 +209,17 @@ func resolveKubeNamespace(cmd *cobra.Command, targetNamespace string) (string, e
 	if !flagChanged(cmd, "namespace") {
 		return targetNamespace, nil
 	}
-	if targetNamespace != "" && targetNamespace != flagNamespace {
-		return "", fmt.Errorf("conflicting Kubernetes namespaces: target uses %q but --namespace=%q", targetNamespace, flagNamespace)
+	if targetNamespace != "" && targetNamespace != flagString(cmd, "namespace") {
+		return "", fmt.Errorf("conflicting Kubernetes namespaces: target uses %q but --namespace=%q", targetNamespace, flagString(cmd, "namespace"))
 	}
-	return flagNamespace, nil
+	return flagString(cmd, "namespace"), nil
 }
 
 func applyKubeNamespaceFlagContainerShorthand(cmd *cobra.Command, target *runtime.Target) {
-	if target == nil || target.Runtime != "kubernetes" || !flagChanged(cmd, "namespace") || flagNamespace == "" {
+	if target == nil || target.Runtime != "kubernetes" || !flagChanged(cmd, "namespace") || flagString(cmd, "namespace") == "" {
 		return
 	}
-	if target.Namespace == "" || target.Name == "" || target.Container != "" || target.Namespace == flagNamespace {
+	if target.Namespace == "" || target.Name == "" || target.Container != "" || target.Namespace == flagString(cmd, "namespace") {
 		return
 	}
 
@@ -246,11 +233,14 @@ func applyKubeNamespaceFlagContainerShorthand(cmd *cobra.Command, target *runtim
 
 // resolveProfile resolves the security profile from --profile and --privileged flags.
 func resolveProfile(cmd *cobra.Command) (string, error) {
-	privilegedSet := flagChanged(cmd, "privileged") && flagPrivileged
+	if err := config.Validate(); err != nil {
+		return "", err
+	}
+	privilegedSet := flagChanged(cmd, "privileged") && flagBool(cmd, "privileged")
 	profileSet := flagChanged(cmd, "profile")
 
-	if privilegedSet && profileSet && flagProfile != runtime.ProfileSysadmin {
-		return "", fmt.Errorf("conflicting flags: --privileged and --profile=%s (use --profile=sysadmin or remove --privileged)", flagProfile)
+	if privilegedSet && profileSet && flagString(cmd, "profile") != runtime.ProfileSysadmin {
+		return "", fmt.Errorf("conflicting flags: --privileged and --profile=%s (use --profile=sysadmin or remove --privileged)", flagString(cmd, "profile"))
 	}
 
 	if privilegedSet {
@@ -259,10 +249,10 @@ func resolveProfile(cmd *cobra.Command) (string, error) {
 	}
 
 	if profileSet {
-		if err := validateProfile(flagProfile); err != nil {
+		if err := validateProfile(flagString(cmd, "profile")); err != nil {
 			return "", err
 		}
-		return flagProfile, nil
+		return flagString(cmd, "profile"), nil
 	}
 
 	// Fall back to the config file's default profile before the built-in one.

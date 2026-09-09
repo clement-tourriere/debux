@@ -11,6 +11,13 @@ var scriptBytes []byte
 //go:embed image_script.sh
 var imageScriptBytes []byte
 
+//go:embed zshrc
+var ShellConfig string
+
+func render(script []byte) string {
+	return strings.ReplaceAll(string(script), "__DEBUX_ZSHRC__", strings.TrimSuffix(ShellConfig, "\n"))
+}
+
 // Script is the entrypoint script injected into the debug container.
 // It waits for the target's PID namespace to be visible, sets up
 // convenience symlinks, writes the shell configuration, and launches zsh.
@@ -18,12 +25,12 @@ var imageScriptBytes []byte
 // The shell script is maintained in script.sh and embedded at build time so
 // editors and shellcheck can treat it as a real shell file, while Go rebuilds
 // still pick up changes immediately without requiring a Docker image rebuild.
-var Script = string(scriptBytes)
+var Script = render(scriptBytes)
 
 // ImageScript is the entrypoint script for image debugging.
 // Unlike Script, it does NOT wait for PID namespace sharing (there is no
 // running target process). The image filesystem is copied into /target.
-var ImageScript = string(imageScriptBytes)
+var ImageScript = render(imageScriptBytes)
 
 // ShellBootstrapScript recreates the debux zsh startup files inside an already
 // running debug container before opening an exec session. This makes reused
@@ -39,7 +46,7 @@ func ShellBootstrapScript() string {
 	zshenv := heredocContent(Script, "ZSHENV_EOF")
 	zshrc := heredocContent(Script, "ZSHRC_EOF")
 	return `# If the container runs as a non-root UID, /root is often not writable.
-# Use a per-UID home owned by the current user so zsh and Nix behave normally.
+# Use a per-UID home owned by the current user so tools behave normally.
 if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ] || [ ! -w "$HOME" ]; then
   debux_uid="$(id -u 2>/dev/null || echo 0)"
   export HOME="/tmp/debux-home-$debux_uid"
@@ -47,12 +54,20 @@ if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ] || [ ! -w "$HOME" ]; then
   unset debux_uid
 fi
 export ZDOTDIR=/tmp
-export PATH="/nix/var/debux-profile/bin:/usr/local/bin:${HOME:-/tmp}/.nix-profile/bin:$PATH"
+if [ -r /etc/debux/environment.sh ]; then
+  . /etc/debux/environment.sh
+else
+  export PATH="/nix/var/debux-profile/bin:/usr/local/bin:${HOME:-/tmp}/.nix-profile/bin:$PATH"
+fi
 : "${DEBUX_TARGET_ROOT:=/proc/1/root}"
 : "${DEBUX_TARGET_ENVIRON:=/proc/1/environ}"
 : "${DEBUX_TARGET_CWD_LINK:=/proc/1/cwd}"
 export DEBUX_TARGET_ROOT DEBUX_TARGET_ENVIRON DEBUX_TARGET_CWD_LINK
-mkdir -p /nix/var/debux-data 2>/dev/null || mkdir -p /tmp/debux-data
+if [ -n "${DEBUX_DATA_DIR:-}" ]; then
+  mkdir -p "$DEBUX_DATA_DIR" 2>/dev/null || mkdir -p /tmp/debux-data
+else
+  mkdir -p /nix/var/debux-data 2>/dev/null || mkdir -p /tmp/debux-data
+fi
 mkdir -p "${HOME:-/tmp}/.config" 2>/dev/null || true
 cat > /tmp/.zshenv << 'ZSHENV_EOF'
 ` + zshenv + `
