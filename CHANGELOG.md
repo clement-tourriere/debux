@@ -1,3 +1,19 @@
+## v0.9.0 (2026-09-09)
+
+### BREAKING CHANGE
+
+- additional Nix tools and history are not imported into the new image. Reinstall tools once with dctl or --tools; original volumes remain available with explicitly selected old images.
+
+### Feat
+
+- replace the Nix toolbox with Wolfi and mise
+
+### Fix
+
+- keep toolbox releases fast with prebuilt dbcrust
+- update toolbox distribution metadata for the mise migration
+- address full-repo review findings across CLI, runtime, and CI
+
 ## v0.8.4 (2026-06-29)
 
 ### Fix
