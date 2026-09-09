@@ -34,7 +34,7 @@ body:
         - Kubernetes
         - TUI
         - Installer / updater
-        - Debug image / Nix tooling
+        - Debug image / tool installation
         - Documentation
         - Other / not sure
     validations:

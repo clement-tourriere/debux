@@ -43,7 +43,7 @@ homebrew_casks:
       name: homebrew-tap
       token: "{{ index .Env \"HOMEBREW_TAP_GITHUB_TOKEN\" }}"
     homepage: "https://clement-tourriere.github.io/debux/"
-    description: "Debug Docker and Kubernetes containers with a Nix-powered toolbox"
+    description: "Debug Docker and Kubernetes containers with a Wolfi and mise toolbox"
     license: MIT
     url:
       verified: github.com/clement-tourriere/debux

@@ -29,7 +29,7 @@ updates:
 
   - package-ecosystem: docker
     # The only Dockerfile lives here; "/" made every Dependabot docker run
-    # fail with "No Dockerfiles found", so the nixos/nix digest pin never
+    # fail with "No Dockerfiles found", so the Wolfi base digest pin never
     # received refresh PRs.
     directory: /images/debug
     schedule:
