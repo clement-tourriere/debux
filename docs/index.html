@@ -1464,7 +1464,7 @@ cat $DEBUX_TARGET_ROOT/etc/hosts</code></pre>
             <article class="card">
               <h3>Install missing tools</h3>
               <pre><code>dctl install --help
-dctl search postgres
+dctl search ripgrep
 dctl install yq
 dctl list
 dctl remove yq</code></pre>
@@ -1699,7 +1699,7 @@ debux k8s://prod/api/app \
         <section id="store" class="doc-section" data-search data-title="Persistent store volumes cleanup">
           <div class="section-heading">
             <h2>Store management</h2>
-            <p>Docker tools and history persist in image- and security-specific volumes. Tools download prebuilt binaries or compile on demand using the included build toolchain and development headers; Redis and PostgreSQL need no custom image. <code>ggshield</code> is preinstalled from Wolfi APK packages on both architectures; explicit version overrides use its Python package. Matching fresh containers reuse saved installations, even offline. <code>dctl install TOOL</code> reuses its pinned version; <code>dctl install TOOL@latest</code> explicitly upgrades, and <code>dctl update</code> only refreshes metadata. Later downloads need their own vulnerability review. Mise is not the whole nixpkgs catalogue: uncommon backends can still need extra prerequisites. Debux never silently elevates privileges to install a tool.</p>
+            <p>Docker tools and history persist in image- and security-specific volumes. Tools download prebuilt binaries or compile on demand using the included build toolchain and development headers; <code>dbcrust</code> (alias <code>dbc</code>) is preinstalled from checksum-verified upstream binaries for PostgreSQL, MySQL, SQLite and other database services. Release tests query SQLite with this client; they do not compile Redis/PostgreSQL servers. Optional source-based tool installs can still be slow. <code>ggshield</code> is preinstalled from Wolfi APK packages on both architectures; explicit version overrides use its Python package. Matching fresh containers reuse saved installations, even offline. <code>dctl install TOOL</code> reuses its pinned version; <code>dctl install TOOL@latest</code> explicitly upgrades, and <code>dctl update</code> only refreshes metadata. Later downloads need their own vulnerability review. Mise is not the whole nixpkgs catalogue: uncommon backends can still need extra prerequisites. Debux never silently elevates privileges to install a tool.</p>
           </div>
           <div class="grid two">
             <div class="card code-card">

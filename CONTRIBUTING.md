@@ -71,18 +71,19 @@ published-image compatibility test.
 
 ## Toolbox dependency maintenance
 
-The Wolfi base, APK packages, mise binary and shell plugins are security
+The Wolfi base, APK packages, mise/dbcrust binaries and shell plugins are security
 dependencies separate from `go.mod`. Review the weekly Toolbox security workflow
 and refresh the pinned base/mise/plugins **at least monthly**, and immediately
 for applicable critical/high advisories:
 
-1. Update the base digest and version/checksums in `images/debug/Dockerfile`.
-   Update the mise version smoke assertion too. Verify both architecture hashes
+1. Update the base digest and mise/dbcrust versions/checksums in
+   `images/debug/Dockerfile`. Update the version smoke assertions too. Verify both architecture hashes
    against the official release; keep plugin sources immutable and hashed.
 2. Rebuild without cache to pick up current signed APK package revisions. No
    source compilation or Nix security overlay is required to build the image
-   itself. Smoke tests do compile Redis/PostgreSQL, then verify offline volume
-   reuse without recompilation. Review the resulting
+   itself. Smoke tests use the prebuilt dbcrust client against a local SQLite
+   fixture and verify offline reuse. Only tiny C/C++ linking probes are compiled,
+   never database servers. Review the resulting
    inventory and [security boundaries](docs/image-security.md).
 3. Build both architectures, run `scripts/test-image.sh`, Docker E2E, and isolated
    kind E2E. Preserve tool aliases, `--tools`, shell behavior and non-root installs.
@@ -91,9 +92,13 @@ for applicable critical/high advisories:
    candidate. Keep the SBOM and complete Grype JSON, including lower-severity
    findings. Missing APK metadata and unresolved High/Critical findings fail
    closed; do not blanket-ignore unfixed findings.
-5. Publication validates the exact multiarch OCI archive, then copies it with
-   digest preservation instead of rebuilding after the gate. A passing scan is
-   not proof of safety; ad-hoc `dctl` installs need their own review.
+5. Publication builds one multiarch OCI archive, validates its exact platform
+   images on native amd64/arm64 workers, then copies that archive with digest
+   preservation. Both successful scan/smoke receipts and their report hashes
+   must match its whole-index digest. Artifacts are passed by immutable IDs,
+   never by a mutable image tag. Database-server builds are not a release gate.
+   There is no post-scan rebuild or skip-security switch. A passing scan is not
+   proof of safety; ad-hoc `dctl` installs need their own review.
 
 ## Pull request checklist
 

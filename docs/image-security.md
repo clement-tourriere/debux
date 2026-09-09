@@ -13,15 +13,20 @@ OpenSSL/Vim rebuilds, source overlays, or Nix-specific CVE exceptions to maintai
 The zsh plugins are fetched from immutable upstream commits, verified by SHA256,
 and reduced to their runtime files. `gdb`, `tmux`, and `ggshield` are preinstalled
 too. `ggshield` and its packaged Python dependencies come from Wolfi's signed APK
-repository on both architectures and are covered by the baked-image scan. Unused
+repository on both architectures and are covered by the baked-image scan.
+`dbcrust` / `dbc` is a prebuilt database client from checksum-pinned upstream
+release archives; no database server is built or shipped for it. The supplied
+binary is scanned as part of the image, subject to the scanner's ability to
+identify embedded dependencies in opaque binaries. Unused
 GDB static development archives are removed in the package-install layer, rather
 than hidden in a later layer. Setuid/setgid bits on system helpers are stripped.
 
 A shared C/C++ toolchain, make/CMake/Ninja/autotools and common development
-headers let source-only backends compile tools without root, sudo, or modifying
-the system image. This includes Redis and PostgreSQL. Debug information is
-removed from selected static dependency archives, retaining static linking and
-LTO; both are exercised by smoke tests.
+headers let optional source-only backends compile tools without root, sudo, or
+modifying the system image. Release checks compile only tiny C/C++ probes to
+verify static linking and LTO, not Redis or PostgreSQL servers. Debug information
+is removed from selected static dependency archives without removing support
+for these operations.
 
 Build support increases the base footprint. Smoke tests enforce a **1280 MiB
 uncompressed image budget** for the build-ready toolbox.
@@ -88,16 +93,28 @@ findings. All severities remain in `dist/security/`; unresolved High/Critical
 matches fail the build. No blanket `wont-fix`, package, ecosystem, or severity
 exclusions are used. Reports are retained even on failure.
 
-Native architecture jobs build, scan, and exercise root/restricted install,
-removal, persistence, shell plugins, and target-configuration isolation. Source
-builds of Redis/PostgreSQL run as UID 65534 with a read-only root filesystem and
-bounded test-container CPU/memory. Fresh containers then reuse the saved tools
-with networking disabled, checking binary hashes and modification times to
-reject accidental rebuilding. The publisher then creates a multiarch **OCI archive**, including BuildKit SBOM and
-provenance attestations. Before any registry publication, it checks the archive
-digest, scans both architectures and runs their smoke tests. Skopeo copies those
-exact bytes with digest preservation; there is no post-scan rebuild. Cosign and
-GitHub provenance attestations refer to the resulting immutable digest.
+The workflow first builds one multiarch **OCI archive**, including BuildKit SBOM
+and provenance attestations. Native amd64 and arm64 workers download that same
+immutable artifact, verify its whole-index digest, and scan/smoke its matching
+platform. They exercise root/restricted installation, removal, persistence,
+shell plugins and target-configuration isolation. The baked dbcrust client
+queries an isolated SQLite file, as root and UID 65534, without a database server.
+Fresh containers repeat the query with networking disabled and check binary
+hashes/modification times. The compiler gets small static C/C++/LTO probes;
+release checks never build Redis/PostgreSQL servers.
+
+Only after each scan and full smoke succeeds does its worker write a validation
+receipt binding the architecture, whole-index digest and report/SBOM hashes.
+A dependent job requires both receipts; publishers download the archive and
+validated reports by immutable artifact IDs from that successful workflow run.
+They recheck the digest, receipts, inventories and vulnerability reports before
+any registry copy. Missing, failed, stale or altered evidence fails closed.
+Receipts are trusted CI outputs, not signatures or a way to waive tests; never
+create them manually to authorize publication. Without supplied receipts,
+`scripts/publish-image-archive.sh` runs both architecture gates locally first.
+Skopeo copies the exact validated bytes with digest preservation: there is no
+post-scan rebuild. Cosign and GitHub provenance attestations refer to the
+resulting immutable digest.
 
 These gates cover the baked image, **not** later installs, external volumes,
 user-supplied images, or every dependency embedded inside opaque binaries.

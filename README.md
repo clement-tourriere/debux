@@ -302,6 +302,7 @@ strace -p 1                         # trace target PID 1, may require more privi
 | Debugging | `strace`, `ltrace`, `gdb`, `htop`, `procps` |
 | Editors | `vim` |
 | Security | `ggshield` |
+| Databases | `dbcrust` / `dbc` (prebuilt multi-database client) |
 | Text/files | `jq`, `less`, `grep`, `awk`, `diff`, `find`, `file`, `tree` |
 | Other | `git`, `openssh`, `zsh`, `tmux` |
 | Build support | C/C++, `make`, `cmake`, `ninja`, `pkg-config`, autotools and common development headers |
@@ -342,13 +343,23 @@ and history remain in their original volumes, but are not imported. Changing the
 image also selects a new tool/history store. Keep the old image explicitly with
 `--image` if you still need access to that state.
 
-Tools use prebuilt binaries where their backend provides them, or compile on
-demand. The image includes a C/C++ toolchain and common development libraries,
-so `dctl install redis postgresql` works without root or a custom image. The
-compiled tools, pinned configuration and caches are saved in the Docker tool
-volume: a matching fresh debug container can reuse them **without a network or
-rebuild**. Installing PostgreSQL does not initialize or start a database; run
-`initdb` explicitly if you need a server.
+For database inspection, **`dbcrust` (alias `dbc`) is preinstalled from
+checksum-verified upstream binaries** on both architectures. It supports
+PostgreSQL, MySQL, SQLite and other database services without building their
+servers. For example, supply your database URL:
+
+```bash
+dbcrust postgres://localhost/mydb --read-only --no-input -c 'SELECT current_database()'
+```
+
+Redis/PostgreSQL servers are neither preinstalled nor built as part of release
+tests. Explicit server-tool installs through `dctl` remain optional and can be
+slow when their backend compiles from source.
+
+Other tools use prebuilt binaries where available, or compile on demand using
+the included C/C++ toolchain and common development libraries. Installed tools,
+pinned configuration and caches are saved in the Docker tool volume: a matching
+fresh debug container can reuse them **without a network or rebuild**.
 
 The package catalogue is still mise's, not nixpkgs: Nix expressions and arbitrary
 OS packages are not interchangeable, and uncommon backends can need additional

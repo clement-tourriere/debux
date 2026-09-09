@@ -9,20 +9,14 @@ export DEBUX_TARGET_ROOT=/dev/null DEBUX_TARGET_ENVIRON=/dev/null DEBUX_TARGET_C
 if [[ "${1:-}" == resume ]]; then
   # The host recreates this container with --network none and a fresh /tmp.
   # Both unversioned --tools-style installs and explicit pins reuse the volume.
-  dctl install ggshield jq gcc
+  dctl install ggshield dbcrust jq gcc
   ggshield --version | grep '^ggshield, version '
+  dbcrust sqlite://"$DEBUX_DATA_DIR/.dbcrust-smoke.sqlite" --no-input -o json \
+    -c 'SELECT 42 AS debux_dbcrust_smoke' | /usr/bin/jq -e '.rows == [["42"]]'
+  sha256sum -c "$DEBUX_DATA_DIR/.dbcrust-hashes"
+  cmp "$DEBUX_DATA_DIR/.dbcrust-stats" <(stat -c '%Y %s' /usr/local/bin/dbcrust)
   dctl install yq
   dctl install yq@4.53.6
-  if [[ "$(id -u)" == 65534 ]]; then
-    dctl install redis-cli postgresql
-    sha256sum -c "$DEBUX_DATA_DIR/.source-build-hashes"
-    stat -c '%Y %s' "$MISE_DATA_DIR/installs/redis/8.10.1/bin/redis-cli" \
-      "$MISE_DATA_DIR/installs/postgres/18.6/bin/psql" > /tmp/build-stats
-    cmp "$DEBUX_DATA_DIR/.source-build-stats" /tmp/build-stats
-    redis-cli --version | grep '8.10.1'
-    psql --version | grep '18.6'
-    dctl remove redis postgresql
-  fi
   yq --version | grep 'v4.53.6'
   grep -q debux-history-smoke "$DEBUX_DATA_DIR/.zsh_history"
   dctl remove yq
@@ -33,7 +27,7 @@ if [[ "${1:-}" == resume ]]; then
 fi
 
 for tool in bash zsh curl wget ps ip ss tcpdump jq tar bsdtar chroot gzip awk grep sed \
-  nsenter which htop strace ltrace gdb tmux ggshield vim less file tree dig nmap ncat nc socat ssh openssl git mise dctl \
+  nsenter which htop strace ltrace gdb tmux ggshield dbcrust dbc vim less file tree dig nmap ncat nc socat ssh openssl git mise dctl \
   cc c++ make cmake ninja pkg-config autoconf automake libtool bison flex; do
   command -v "$tool"
 done
@@ -51,6 +45,17 @@ test -z "$(find /usr -xdev -type f \( -perm -4000 -o -perm -2000 \) -print)"
 curl --fail --silent --show-error --max-time 60 https://mise.jdx.dev >/dev/null
 dctl list | grep 'curl-'
 ggshield --version | grep '^ggshield, version '
+# Query an isolated local database; no database server, source build or network
+# is needed. The same file and baked binary are reused in the offline phase.
+dbcrust --version | grep '0.37.2'
+dbc --version | grep '0.37.2'
+dctl install dbcrust dbc | grep 'provided by the image'
+sha256sum -c /usr/share/debux/dbcrust.sha256
+sha256sum /usr/local/bin/dbcrust > "$DEBUX_DATA_DIR/.dbcrust-hashes"
+stat -c '%Y %s' /usr/local/bin/dbcrust > "$DEBUX_DATA_DIR/.dbcrust-stats"
+touch "$DEBUX_DATA_DIR/.dbcrust-smoke.sqlite"
+dbcrust sqlite://"$DEBUX_DATA_DIR/.dbcrust-smoke.sqlite" --no-input -o json \
+  -c 'SELECT 42 AS debux_dbcrust_smoke' | /usr/bin/jq -e '.rows == [["42"]]'
 dctl install --help | grep 'Usage: dctl install'
 dctl help install | grep 'Usage: dctl install'
 zsh -df -c 'source /etc/debux/zshrc; [[ $HISTFILE == /var/lib/debux/.zsh_history && -n ${functions[_zsh_highlight]:-} && -n ${functions[_zsh_autosuggest_start]:-} ]]'
@@ -114,16 +119,6 @@ if [[ "$(id -u)" == 65534 ]]; then
   # Language runtimes still work from the hostile target directory too.
   test "$(node -p 'process.cwd()')" = /tmp/untrusted-target
   dctl remove nodejs python3
-  # These backends compile from source, as an unprivileged UID, without changing
-  # the read-only system image. Keep the results for the offline resume phase.
-  dctl install redis@8.10.1 postgresql@18.6
-  redis-cli --version | grep '8.10.1'
-  psql --version | grep '18.6'
-  test ! -e "$MISE_DATA_DIR/installs/postgres/18.6/data/PG_VERSION"
-  sha256sum "$MISE_DATA_DIR/installs/redis/8.10.1/bin/redis-cli" \
-    "$MISE_DATA_DIR/installs/postgres/18.6/bin/psql" > "$DEBUX_DATA_DIR/.source-build-hashes"
-  stat -c '%Y %s' "$MISE_DATA_DIR/installs/redis/8.10.1/bin/redis-cli" \
-    "$MISE_DATA_DIR/installs/postgres/18.6/bin/psql" > "$DEBUX_DATA_DIR/.source-build-stats"
   sha256sum -c /tmp/base-hashes
 fi
 printf '%s\n' debux-history-smoke >> "$DEBUX_DATA_DIR/.zsh_history"

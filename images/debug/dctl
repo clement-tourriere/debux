@@ -9,7 +9,7 @@ show_help() {
       printf '%s\n' 'Usage: dctl install <pkg> [pkg...]' '' \
         'Install a tool or reuse its saved pinned version.' \
         'Use name@version to select a version; name@latest explicitly upgrades.' \
-        'Examples: dctl install yq redis postgresql' \
+        'Examples: dctl install yq ripgrep' \
         '          dctl install ggshield@1.54.0'
       ;;
     remove)
@@ -89,6 +89,7 @@ resolve_pkg() {
     # Aqua's ggshield binaries don't support Linux ARM64. Version overrides
     # consistently use the upstream Python package on both architectures.
     ggshield) pkg=pipx:ggshield;;
+    dbcrust|dbc) pkg=pipx:dbcrust;;
     cargo|rustc) pkg=rust;;
     postgresql|psql|pg_dump|pg_restore|pg_dumpall|pg_isready|pg_ctl|initdb) pkg=postgres;;
     redis-cli|redis-server|redis-benchmark|redis-sentinel) pkg=redis;;
@@ -174,8 +175,12 @@ case "${1:-}" in
         baked="$resolved"
         # Bare ggshield uses the baked APK; an explicit pipx:ggshield request
         # still installs a user override. Removal resolves to that same backend.
-        if [[ "$pkg" == ggshield ]]; then baked=ggshield; fi
-        if apk info -e -- "$baked" >/dev/null 2>&1; then
+        case "$pkg" in
+          ggshield) baked=ggshield;;
+          dbcrust|dbc) baked=dbcrust;;
+        esac
+        if apk info -e -- "$baked" >/dev/null 2>&1 ||
+          [[ "$baked" == dbcrust && -x /usr/local/bin/dbcrust ]]; then
           echo "$baked is already provided by the image."
           continue
         fi

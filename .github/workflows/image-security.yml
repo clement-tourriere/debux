@@ -10,6 +10,16 @@ on:
         description: "Immutable candidate commit"
         type: string
         required: true
+    outputs:
+      digest:
+        description: "Validated whole-index OCI digest"
+        value: ${{ jobs.build.outputs.digest }}
+      archive-id:
+        description: "Immutable candidate archive artifact ID"
+        value: ${{ jobs.build.outputs.archive-id }}
+      reports-id:
+        description: "Immutable successful native validation artifact ID"
+        value: ${{ jobs.collect.outputs.reports-id }}
   pull_request:
     paths:
       - "internal/entrypoint/**"
@@ -22,7 +32,44 @@ permissions:
   contents: read
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      archive-id: ${{ steps.archive.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - run: mkdir -p dist
+      - id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: images/debug/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          outputs: type=oci,dest=dist/toolbox.tar
+          tags: debux:validated
+          provenance: true
+          sbom: true
+          # Refresh signed APK packages, not a stale package-install RUN.
+          no-cache: true
+          cache-from: type=gha,scope=toolbox-multiarch
+          cache-to: type=gha,scope=toolbox-multiarch,mode=max
+      - id: archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: toolbox-archive-${{ github.run_attempt }}
+          path: dist/toolbox.tar
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
   scan:
+    needs: build
     strategy:
       fail-fast: false
       matrix:
@@ -43,23 +90,58 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.12.10"
-      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+          enable-cache: false
+      - run: sudo apt-get update && sudo apt-get install -y skopeo
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          context: .
-          file: images/debug/Dockerfile
-          platforms: linux/${{ matrix.arch }}
-          load: true
-          # The weekly scan must refresh APK packages, not reuse a stale RUN.
-          no-cache: true
-          tags: debux:security
-          cache-from: type=gha,scope=toolbox-${{ matrix.arch }}
-          cache-to: type=gha,scope=toolbox-${{ matrix.arch }},mode=max
-      - run: scripts/scan-image.sh docker:debux:security
-      - run: scripts/test-image.sh debux:security
+          artifact-ids: ${{ needs.build.outputs.archive-id }}
+          path: dist
+          merge-multiple: true
+      - name: Validate exact archive on the native architecture
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
+        run: scripts/validate-image-archive.sh dist/toolbox.tar "$DIGEST" "$ARCH"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: toolbox-security-${{ matrix.arch }}
+          name: toolbox-validation-${{ matrix.arch }}
           path: dist/security/
           retention-days: 14
+          # A failed-job retry replaces only its architecture's evidence. The
+          # new artifact gets a new ID; the successful peer can be reused.
+          overwrite: true
+          if-no-files-found: error
+
+  # A receipt is emitted only after scan + the complete offline smoke pass.
+  # This job must not run with always(): both native workers are mandatory.
+  collect:
+    needs: [build, scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      reports-id: ${{ steps.reports.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.10"
+          enable-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: toolbox-validation-*
+          path: dist/security
+          merge-multiple: true
+      - name: Require both matching validation records
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: uv run --script scripts/image_security.py receipts dist/security "$DIGEST"
+      - id: reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: toolbox-validated-reports-${{ github.run_attempt }}
+          path: dist/security/
+          retention-days: 14
+          if-no-files-found: error

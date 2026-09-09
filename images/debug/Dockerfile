@@ -37,6 +37,24 @@ RUN set -eu; \
     printf '%s  /usr/local/bin/mise\n' "$hash" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/mise
 
+ARG DBCRUST_VERSION=0.37.2
+# Database client only: verified upstream binaries, never Redis/PostgreSQL
+# server builds. The short dbc command uses the same executable, not a copy.
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      arm64) arch=aarch64; hash=ea541381a5fe5c2a53f61d98bff929b5d6e2e4052bf72cae27cb3eaeb34d0d96;; \
+      amd64) arch=x86_64; hash=3b916990608eb62f807be09342a5826b21c310a3c70b6a7d2363a37274019481;; \
+      *) echo "Unsupported architecture: $TARGETARCH" >&2; exit 1;; \
+    esac; \
+    curl -fsSL --retry 3 "https://github.com/clement-tourriere/dbcrust/releases/download/v${DBCRUST_VERSION}/dbcrust-${arch}-unknown-linux-gnu.tar.gz" -o /tmp/dbcrust.tar.gz; \
+    printf '%s  /tmp/dbcrust.tar.gz\n' "$hash" | sha256sum -c -; \
+    bsdtar -xOf /tmp/dbcrust.tar.gz dbcrust > /usr/local/bin/dbcrust; \
+    chmod 0755 /usr/local/bin/dbcrust; \
+    ln -s dbcrust /usr/local/bin/dbc; \
+    printf 'dbcrust-%s (upstream binary)\n' "$DBCRUST_VERSION" >> /usr/share/debux/base-packages.txt; \
+    sha256sum /usr/local/bin/dbcrust > /usr/share/debux/dbcrust.sha256; \
+    rm /tmp/dbcrust.tar.gz
+
 # Wolfi doesn't package these zsh plugins. Copy only runtime scripts from
 # immutable, checksum-verified upstream sources (no plugin manager at startup).
 RUN set -eu; \
