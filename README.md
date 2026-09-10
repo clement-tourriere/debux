@@ -227,6 +227,13 @@ debux attach k8s://my-namespace/debux-copy-abc12
 debux kill k8s://my-namespace/debux-copy-abc12
 ```
 
+Session discovery skips history-only contexts that no longer exist in the selected
+kubeconfig (for example, deleted kind test clusters), without deleting history.
+Errors for the current or explicitly requested context, and connection/auth/RBAC
+failures for configured contexts, are still reported. Cluster lookups may trigger
+OIDC browser authentication. To limit discovery to one cluster and namespace, use
+`debux list --context my-context --namespace my-namespace`.
+
 Every copy pod carries a kubelet-enforced deadline (`activeDeadlineSeconds`,
 default `--ttl=24h`), so even one orphaned by a power loss or `kill -9` of the
 CLI stops consuming resources on time — no controller or cron required. The

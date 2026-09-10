@@ -271,10 +271,11 @@ HELPER_EOF
 
   # Collect sidecar's own binaries from the pre-modification PATH
   local -A sidecar_cmds
-  local p
+  local p f
   for p in "${(@s.:.)_debux_sidecar_path}"; do
     [[ -d "$p" ]] || continue
-    for f in "$p"/*(-.:t N); do
+    # N must precede :t; empty tool directories are normal before installs.
+    for f in "$p"/*(N-.:t); do
       sidecar_cmds[$f]=1
     done
   done

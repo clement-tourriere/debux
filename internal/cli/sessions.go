@@ -379,8 +379,20 @@ func kubernetesSessionScopes(kubeconfig, kubeContext, namespace string, includeH
 	}
 
 	entries, err := history.Load()
+	if err != nil || len(entries) == 0 {
+		return scopes
+	}
+	// History can outlive a kubeconfig context (for example, a deleted kind
+	// cluster). Only expand into contexts still configured locally, without
+	// contacting clusters or running authentication plugins. Keep the primary
+	// scope above so explicit/current-context and config errors remain visible.
+	contexts, err := runtime.KubernetesContexts(kubeconfig)
 	if err != nil {
 		return scopes
+	}
+	configured := make(map[string]struct{}, len(contexts))
+	for _, ctx := range contexts {
+		configured[ctx.Name] = struct{}{}
 	}
 	for _, entry := range entries {
 		if len(scopes) >= maxDefaultKubernetesSessionScopes {
@@ -391,6 +403,11 @@ func kubernetesSessionScopes(kubeconfig, kubeContext, namespace string, includeH
 		}
 		if kubeContext != "" && entry.Context != kubeContext {
 			continue
+		}
+		if entry.Context != "" {
+			if _, ok := configured[entry.Context]; !ok {
+				continue
+			}
 		}
 		add(entry.Context, entry.Namespace)
 	}

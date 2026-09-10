@@ -76,6 +76,59 @@ func TestShellIsolatesTargetEnvironmentAndExecutesSafeWrappers(t *testing.T) {
 	}
 }
 
+func TestShellWrapperDiscoveryHandlesSidecarPathEntries(t *testing.T) {
+	for _, kind := range []string{"empty", "directory", "dangling-symlink", "regular", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			dir, bin, rc := shellFixture(t)
+			root := filepath.Join(dir, "target")
+			targetBin := filepath.Join(root, "bin")
+			if err := os.MkdirAll(targetBin, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"debux-target-tool", "debux-sidecar-tool"} {
+				if err := os.WriteFile(filepath.Join(targetBin, name), nil, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sidecarTool := filepath.Join(bin, "debux-sidecar-tool")
+			var err error
+			switch kind {
+			case "directory":
+				err = os.Mkdir(sidecarTool, 0o700)
+			case "dangling-symlink":
+				err = os.Symlink(filepath.Join(dir, "missing"), sidecarTool)
+			case "regular":
+				err = os.WriteFile(sidecarTool, nil, 0o700)
+			case "symlink":
+				err = os.Symlink(filepath.Join(targetBin, "debux-sidecar-tool"), sidecarTool)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			environ := filepath.Join(dir, "environ")
+			if err := os.WriteFile(environ, []byte("PATH=/bin\x00"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			// An empty tool directory is normal before the first dctl install.
+			// Do not depend on the developer's PATH containing one to catch NOMATCH.
+			output := runShell(t, dir, rc, `[[ $(command -v debux-target-tool) == "$HOME/wrappers/debux-target-tool" ]] || exit 41`,
+				"PATH="+bin+":/usr/bin:/bin", "DEBUX_TARGET_ROOT="+root, "DEBUX_TARGET_ENVIRON="+environ)
+			if output != "" {
+				t.Fatalf("wrapper discovery should be quiet, got: %s", output)
+			}
+			_, err = os.Stat(filepath.Join(dir, "wrappers", "debux-sidecar-tool"))
+			if kind == "regular" || kind == "symlink" {
+				if !os.IsNotExist(err) {
+					t.Fatalf("sidecar command must not be shadowed by a target wrapper: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("non-command PATH entry must not prevent a target wrapper: %v", err)
+			}
+		})
+	}
+}
+
 func TestFailedToolInstallationRetriesInsteadOfMarkingSuccess(t *testing.T) {
 	dir, bin, rc := shellFixture(t)
 	scripts := map[string]string{

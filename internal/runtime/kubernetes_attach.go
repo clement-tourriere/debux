@@ -222,7 +222,10 @@ func attachToPod(ctx context.Context, config *rest.Config, clientset kubernetes.
 // ends. Give it a private pipe; only our cancellable pump owns the real stdin.
 func streamKubernetesSession(ctx context.Context, executor remotecommand.Executor, opts remotecommand.StreamOptions) error {
 	input, output := io.Pipe()
-	closePipe := func() { _ = input.Close(); _ = output.Close() }
+	// Close only the writer: client-go's lingering stdin copier must see EOF,
+	// not ErrClosedPipe from closing its reader (logged as "Copying stdin
+	// failed" on normal exit). This also releases any blocked pump write.
+	closePipe := func() { _ = output.Close() }
 	stop, err := startSessionInput(os.Stdin, output, closePipe, output.Close)
 	if err != nil {
 		closePipe()

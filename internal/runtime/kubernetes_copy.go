@@ -152,7 +152,7 @@ func kubernetesExecWithPodCopy(ctx context.Context, config *rest.Config, clients
 			printKeptCopyPod(displayContext, namespace, created.Name, opts.TTL)
 			return
 		}
-		statusf("Deleting debug copy pod %s...\n", created.Name)
+		printTerminalStatusLine("Deleting debug copy pod %s...", created.Name)
 		cleanupKubernetesPod(ctx, clientset, created)
 	}()
 
