@@ -1,6 +1,6 @@
 # Current glibc-based Wolfi packages, not a source-built package-manager closure.
 # Pin the multi-architecture base and mise artifacts; refresh packages on rebuild.
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:918a593b8268c222afd4e2c4f06860ac984e60719b4697e4c71d796bc8fcd042
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:150a90c21d962ea400988490b629e245658391b63a1f625e847f5dea50dd3094
 ARG TARGETARCH
 ARG MISE_VERSION=2026.9.3
 
