@@ -1,3 +1,9 @@
+## v0.9.2 (2026-09-10)
+
+### Fix
+
+- refresh toolbox base and assess fixed curl finding
+
 ## v0.9.1 (2026-09-10)
 
 ### Fix
