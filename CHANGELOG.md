@@ -1,3 +1,9 @@
+## v0.9.1 (2026-09-10)
+
+### Fix
+
+- resolve zsh startup and Kubernetes session lifecycle errors
+
 ## v0.9.0 (2026-09-09)
 
 ### BREAKING CHANGE
