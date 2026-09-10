@@ -6,6 +6,10 @@ mkdir -p "$HOME"
 source /etc/debux/environment.sh
 export DEBUX_TARGET_ROOT=/dev/null DEBUX_TARGET_ENVIRON=/dev/null DEBUX_TARGET_CWD_LINK=/dev/null
 
+# Exercise the actual baked libcurl, including during the network-isolated
+# resume phase. Use ggshield's bundled Python; no extra runtime is installed.
+/usr/share/ggshield/bin/python -I /debux-curl-cookies.py
+
 if [[ "${1:-}" == resume ]]; then
   # The host recreates this container with --network none and a fresh /tmp.
   # Both unversioned --tools-style installs and explicit pins reuse the volume.

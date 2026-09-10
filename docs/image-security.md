@@ -91,7 +91,9 @@ have their own supply-chain and vulnerability risk.
 SBOM with pinned Grype. It requires Wolfi/APK inventory and rejects suppressed
 findings. All severities remain in `dist/security/`; unresolved High/Critical
 matches fail the build. No blanket `wont-fix`, package, ecosystem, or severity
-exclusions are used. Reports are retained even on failure.
+exclusions are used. Reports are retained even on failure. The policy validator,
+not Grype's early severity exit, applies the gate so the exact, temporary
+false-positive assessment below can be audited without rewriting scan output.
 
 The workflow first builds one multiarch **OCI archive**, including BuildKit SBOM
 and provenance attestations. Native amd64 and arm64 workers download that same
@@ -115,6 +117,32 @@ create them manually to authorize publication. Without supplied receipts,
 Skopeo copies the exact validated bytes with digest preservation: there is no
 post-scan rebuild. Cosign and GitHub provenance attestations refer to the
 resulting immutable digest.
+
+## Temporary curl assessment (expires 2026-10-10 UTC)
+
+`CVE-2026-82209` is incorrectly matched by NVD's inclusive `<= 8.22.0` range.
+[Curl's upstream advisory](https://curl.se/docs/CVE-2026-82209.html) and
+[machine-readable affected ranges](https://curl.se/docs/CVE-2026-82209.json)
+identify **8.21.0 as the last affected release and 8.22.0 as fixed**.
+The [fix and upstream test 2318](https://github.com/curl/curl/commit/95c1e8915dce64606bd753fd47fc0bd236e31cd6)
+are ancestors of Wolfi's curl 8.22.0 source commit
+[`01346829096c61b372692f6dc43ffa778c6caccd`](https://github.com/curl/curl/compare/95c1e8915dce64606bd753fd47fc0bd236e31cd6...01346829096c61b372692f6dc43ffa778c6caccd).
+Refreshing the base alone still installs that same fixed package.
+
+Reviewed on 2026-09-10: `image_security.py` accepts **only** the High-severity
+`nvd:cpe` / `apk-matcher` CPE match for Wolfi `curl` **8.22.0-r2**, with the exact
+Wolfi package URL for `aarch64` or `x86_64`. It does not accept other package
+versions, distro findings, CVEs, or Critical severity. It expires automatically
+on 2026-10-10; remove it when the upstream feed is corrected, rather than silently
+extending it. The original finding remains in `grype.json`, and every assessment
+prints an audit message. Grype ignores and suppressed reports remain forbidden.
+
+`scripts/test_curl_cookies.py` reproduces the upstream security test against the
+**baked curl/libcurl** on a loopback HTTP server: a cookie set by the public suffix
+`github.io` must stay host-only, never reach `attacker.github.io`, and still work
+on the original host. Native image smoke runs it as root and UID 65534, including
+with networking disabled. Failed behavior, scanner errors, missing inventory,
+expired assessments, and all other High/Critical findings still block publication.
 
 These gates cover the baked image, **not** later installs, external volumes,
 user-supplied images, or every dependency embedded inside opaque binaries.

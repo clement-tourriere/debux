@@ -3,6 +3,7 @@
 # dependencies = []
 # ///
 import copy
+from datetime import date
 import hashlib
 import json
 import os
@@ -21,6 +22,15 @@ def sample_sbom():
         {"name": name, "type": "apk", "version": "1-r1", "locations": [{"path": "/lib/apk/db/installed"}]}
         for name in ("bash", "zsh", "curl", "openssl", "jq", "gcc", "make", "pkgconf", "openssl-dev", "zlib-dev", "ggshield")
     ]}
+
+
+def reviewed_curl_report(arch="x86_64"):
+    return {"distro": {"name": "wolfi", "version": "20230201"}, "ignoredMatches": [], "matches": [{
+        "vulnerability": {"id": "CVE-2026-82209", "severity": "High", "namespace": "nvd:cpe"},
+        "artifact": {"name": "curl", "type": "apk", "version": "8.22.0-r2",
+                     "purl": f"pkg:apk/wolfi/curl@8.22.0-r2?arch={arch}&distro=wolfi-20230201"},
+        "matchDetails": [{"type": "cpe-match", "matcher": "apk-matcher"}],
+    }]}
 
 
 class ImageSecurityTest(unittest.TestCase):
@@ -61,6 +71,111 @@ class ImageSecurityTest(unittest.TestCase):
         for report in ({}, {"matches": None}, {"matches": [], "ignoredMatches": [{}]}):
             with self.subTest(report=report), self.assertRaises(ValueError):
                 validate_report(report)
+
+
+    def test_reviewed_curl_finding_remains_in_raw_report(self):
+        for arch in ("aarch64", "x86_64"):
+            with self.subTest(arch=arch):
+                report = reviewed_curl_report(arch)
+                original = copy.deepcopy(report)
+                validate_report(report, today=date(2026, 9, 10))
+                self.assertEqual(report, original)
+
+    def test_curl_review_has_a_fixed_expiry(self):
+        report = reviewed_curl_report()
+        validate_report(report, today=date(2026, 10, 9))
+        for day in (date(2026, 9, 9), date(2026, 10, 10), date(2027, 1, 1)):
+            with self.subTest(day=day), self.assertRaises(ValueError):
+                validate_report(report, today=day)
+
+    def test_curl_review_does_not_apply_to_other_findings(self):
+        for section, changes in {
+            "vulnerability": {"id": "CVE-OTHER", "severity": "Critical", "namespace": "wolfi:distro"},
+            "artifact": {"name": "libcurl", "type": "binary", "version": "8.21.0-r0", "purl": "pkg:apk/alpine/curl@8.22.0-r2"},
+        }.items():
+            for key, value in changes.items():
+                with self.subTest(section=section, key=key):
+                    report = reviewed_curl_report()
+                    report["matches"][0][section][key] = value
+                    with self.assertRaises(ValueError):
+                        validate_report(report, today=date(2026, 9, 10))
+        for version in ("8.22.0-r0", "8.22.0-r3", "8.23.0-r0", ""):
+            report = reviewed_curl_report()
+            report["matches"][0]["artifact"]["version"] = version
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                validate_report(report, today=date(2026, 9, 10))
+        for distro in ({}, {"name": "alpine", "version": "20230201"}, {"name": "wolfi", "version": "unknown"}):
+            report = reviewed_curl_report()
+            report["distro"] = distro
+            with self.subTest(distro=distro), self.assertRaises(ValueError):
+                validate_report(report, today=date(2026, 9, 10))
+        for details in ([], [{"type": "exact-direct-match", "matcher": "apk-matcher"}],
+                        [{"type": "cpe-match", "matcher": "stock-matcher"}]):
+            report = reviewed_curl_report()
+            report["matches"][0]["matchDetails"] = details
+            with self.subTest(details=details), self.assertRaises(ValueError):
+                validate_report(report, today=date(2026, 9, 10))
+        with self.assertRaises(ValueError):
+            validate_report(reviewed_curl_report("armv7"), today=date(2026, 9, 10))
+
+    def test_curl_review_cannot_hide_another_high_or_suppressed_finding(self):
+        for severity in ("High", "Critical"):
+            report = reviewed_curl_report()
+            report["matches"].append({"vulnerability": {"id": "CVE-OTHER", "severity": severity}})
+            with self.subTest(severity=severity), self.assertRaises(ValueError):
+                validate_report(report, today=date(2026, 9, 10))
+        report = reviewed_curl_report()
+        report["ignoredMatches"] = [copy.deepcopy(report["matches"][0])]
+        with self.assertRaises(ValueError):
+            validate_report(report, today=date(2026, 9, 10))
+
+
+class ScanImageTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / "bin").mkdir()
+        (self.root / "sbom-source.json").write_text(json.dumps(sample_sbom()))
+        (self.root / "grype-source.json").write_text(json.dumps({"matches": [], "ignoredMatches": []}))
+        self.env = {"PATH": str(self.root / "bin") + os.pathsep + os.environ["PATH"],
+                    "HOME": str(self.root), "TEST_PYTHON": sys.executable,
+                    "DEBUX_SECURITY_REPORT_DIR": str(self.root / "reports")}
+        for name, body in {
+            "go": '''#!/bin/sh
+case "$*" in
+  *syft*) cat "$HOME/sbom-source.json"; exit "${SYFT_STATUS:-0}";;
+  *grype*) cat "$HOME/grype-source.json"; exit "${GRYPE_STATUS:-0}";;
+  *) exit 99;;
+esac
+''',
+            "uv": '#!/bin/sh\nshift 2\nexec "$TEST_PYTHON" "$@"\n',
+        }.items():
+            path = self.root / "bin" / name
+            path.write_text(body)
+            path.chmod(0o755)
+
+    def run_scan(self):
+        script = Path(__file__).resolve().with_name("scan-image.sh")
+        return subprocess.run(["bash", str(script), "docker:fixture"], env=self.env,
+                              capture_output=True, text=True)
+
+    def test_clean_report_passes(self):
+        result = self.run_scan()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_high_finding_blocks_and_preserves_report(self):
+        report = {"matches": [{"vulnerability": {"id": "CVE-OTHER", "severity": "High"}}]}
+        (self.root / "grype-source.json").write_text(json.dumps(report))
+        self.assertNotEqual(self.run_scan().returncode, 0)
+        self.assertEqual(json.loads((self.root / "reports/grype.json").read_text()), report)
+
+    def test_scanner_error_cannot_pass_with_a_clean_report(self):
+        for stage in ("SYFT_STATUS", "GRYPE_STATUS"):
+            with self.subTest(stage=stage):
+                self.env[stage] = "42"
+                self.assertNotEqual(self.run_scan().returncode, 0)
+                del self.env[stage]
 
 
 class PublishImageTest(unittest.TestCase):

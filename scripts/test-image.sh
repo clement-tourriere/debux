@@ -34,6 +34,7 @@ for uid in 0 65534; do
       --env "HOME=/tmp/debux-smoke-$uid" \
       --volume "$volume:/var/lib/debux" \
       --volume "$repo_dir/scripts/test-image-container.sh:/debux-smoke.sh:ro" \
+      --volume "$repo_dir/scripts/test_curl_cookies.py:/debux-curl-cookies.py:ro" \
       --entrypoint /bin/bash "$image" /debux-smoke.sh "$phase"
   done
 done

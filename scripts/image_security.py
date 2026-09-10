@@ -3,6 +3,7 @@
 # dependencies = []
 # ///
 """Reject incomplete toolbox inventories and suppressed/failed scan results."""
+from datetime import date, datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -22,14 +23,49 @@ def validate_sbom(sbom):
         raise ValueError("APK inventory lacks versions or locations")
 
 
-def validate_report(report):
+def reviewed_curl_false_positive(report, match, today):
+    # Temporary, exact-package assessment, NOT a blanket CVE ignore. Upstream
+    # fixed this in 8.22.0; NVD incorrectly includes that release in its range.
+    # Evidence and removal deadline: docs/image-security.md. The image smoke
+    # must also pass curl's PSL cookie-isolation regression on both architectures.
+    if not date(2026, 9, 10) <= today < date(2026, 10, 10):
+        return False
+    vulnerability = match.get("vulnerability", {})
+    artifact = match.get("artifact", {})
+    details = match.get("matchDetails", [])
+    return (
+        report.get("distro", {}).get("name") == "wolfi"
+        and report.get("distro", {}).get("version") == "20230201"
+        and vulnerability.get("id") == "CVE-2026-82209"
+        and vulnerability.get("namespace") == "nvd:cpe"
+        and vulnerability.get("severity") == "High"
+        and artifact.get("name") == "curl"
+        and artifact.get("type") == "apk"
+        and artifact.get("version") == "8.22.0-r2"
+        and artifact.get("purl") in {
+            "pkg:apk/wolfi/curl@8.22.0-r2?arch=aarch64&distro=wolfi-20230201",
+            "pkg:apk/wolfi/curl@8.22.0-r2?arch=x86_64&distro=wolfi-20230201",
+        }
+        and bool(details)
+        and all(d.get("type") == "cpe-match" and d.get("matcher") == "apk-matcher" for d in details)
+    )
+
+
+def validate_report(report, *, today=None):
     if not isinstance(report.get("matches"), list):
         raise ValueError("missing vulnerability matches")
     if report.get("ignoredMatches"):
         raise ValueError("suppressed findings are not allowed in the toolbox gate")
-    if any(m.get("vulnerability", {}).get("severity", "").lower() in ("high", "critical")
-           for m in report["matches"]):
-        raise ValueError("unresolved high/critical vulnerabilities")
+    today = today or datetime.now(timezone.utc).date()
+    for match in report["matches"]:
+        vulnerability = match.get("vulnerability", {})
+        if vulnerability.get("severity", "").lower() not in ("high", "critical"):
+            continue
+        if reviewed_curl_false_positive(report, match, today):
+            print("Reviewed false positive retained in report: CVE-2026-82209, Wolfi curl 8.22.0-r2 "
+                  "(assessment expires 2026-10-10; see docs/image-security.md)", file=sys.stderr)
+            continue
+        raise ValueError(f"unresolved high/critical vulnerability: {vulnerability.get('id', 'unknown')}")
 
 
 def validation_receipt(directory, digest, arch):

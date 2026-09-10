@@ -96,7 +96,10 @@ for applicable critical/high advisories:
    images on native amd64/arm64 workers, then copies that archive with digest
    preservation. Both successful scan/smoke receipts and their report hashes
    must match its whole-index digest. Artifacts are passed by immutable IDs,
-   never by a mutable image tag. Database-server builds are not a release gate.
+   never by a mutable image tag. Any reviewed false-positive assessment must be
+   exact-version scoped, expiring, retain the raw finding, and include primary
+   upstream evidence and a behavioral regression (see `docs/image-security.md`).
+   Database-server builds are not a release gate.
    There is no post-scan rebuild or skip-security switch. A passing scan is not
    proof of safety; ad-hoc `dctl` installs need their own review.
 
